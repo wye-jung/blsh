@@ -1,6 +1,12 @@
-import asyncio
-import blsh.krx.store as krx
+from blsh.wye.domestic import collector, scanner
+from blsh.kis.domestic_stock import domestic_stock_info as info
+
+
+def main():
+    # collector.collect()
+    # scanner.scan()
+    print(info.get_sector_info())
 
 
 if __name__ == "__main__":
-    asyncio.run(krx.store_krx_today())
+    main()

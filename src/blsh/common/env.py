@@ -10,6 +10,9 @@ KIS_DEVLP_YAML = os.path.join(CONFIG_DIR, "kis_devlp.yaml")
 
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
 
+KIS_APP_KEY = os.getenv("KIS_APP_KEY")
+KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")
+
 DB_USER: Final = os.getenv("DB_USER")
 DB_PASSWORD: Final = os.getenv("DB_PASSWORD")
 DB_NAME: Final = os.getenv("DB_NAME")
@@ -24,3 +27,6 @@ KRX_API_URL: Final = "https://data-dbg.krx.co.kr/svc/apis"
 
 KRX_LOGIN_ID: Final = os.getenv("KRX_LOGIN_ID")
 KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
+
+if __name__ == "__main__":
+    print(KIS_APP_KEY, KIS_APP_SECRET)
