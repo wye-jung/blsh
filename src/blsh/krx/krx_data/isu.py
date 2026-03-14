@@ -212,7 +212,7 @@ class Isu(Base):
 
         df = pd.concat([df0, df1, df2, df3], axis=1).reset_index()
         df.insert(0, "trd_dd", trd_dd)
-        df["created"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        df["fetched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         return df
 
 

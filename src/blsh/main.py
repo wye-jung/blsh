@@ -1,12 +1,18 @@
-from blsh.wye.domestic import collector, scanner
-from blsh.kis.domestic_stock import domestic_stock_info as info
+import logging
+from blsh.wye.domestic import collector, scanner, reporter, simulator
 
-
-def main():
-    # collector.collect()
-    # scanner.scan()
-    print(info.get_sector_info())
+log = logging.getLogger(__name__)
 
 
 if __name__ == "__main__":
-    main()
+    # collector.collect()
+
+    # 투자 대상 선정
+    results, base_date, target_date = scanner.scan("20240702")
+
+    # 투자 시뮬레이션
+    simulator.simulate(results, base_date, target_date)
+
+    log.info(
+        f"전체 완료: 총 {len(results)}건  기준일={base_date}  목표일={target_date}"
+    )

@@ -21,17 +21,20 @@ import logging
 log = logging.getLogger(__name__)
 
 _date_fmt = "%Y%m%d"
-create_tables()
-login_krx()
 
 
 def collect(fromdate=None):
+    create_tables()
+    login_krx()
     today = datetime.now().date()
     if fromdate is None:
         date_str = select_one("select max(trd_dd) As d from idx_stk_ohlcv")["d"]
-        date_obj = datetime.strptime(date_str, _date_fmt).date()
-        if date_obj < today:
-            fromdate = (date_obj + timedelta(days=1)).strftime(_date_fmt)
+        if date_str is None:
+            fromdate = today.strftime(_date_fmt)
+        else:
+            date_obj = datetime.strptime(date_str, _date_fmt).date()
+            if date_obj < today:
+                fromdate = (date_obj + timedelta(days=1)).strftime(_date_fmt)
 
     if fromdate:
         _collect(fromdate, today.strftime(_date_fmt))
@@ -123,12 +126,5 @@ def _recreate(df, model, **filters):
 #     return krx.get_index_ohlcv_by_date(date, date, "1001").empty
 
 if __name__ == "__main__":
-    collect()
-    # for d in stock.get_previous_business_days(
-    #     fromdate="20260101", todate=time.strftime(_date_fmt)
-    # ):
-    #     date = d.strftime(_date_fmt)
-    #     isu = Isu(date)
-    #     print(date)
-    #     _recreate(isu.get_daily_info(mktid=Isu.KOSPI), IsuKspInfo, trd_dd=isu.trd_dd)
-    #     _recreate(isu.get_daily_info(mktid=Isu.KOSDAQ), IsuKsdInfo, trd_dd=isu.trd_dd)
+    login_krx()
+    _collect(fromdate="20240115", todate="20241231")

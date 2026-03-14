@@ -54,7 +54,7 @@
 ─────────────────────────────────────────────────────
 """
 
-import argparse
+import time
 import logging
 from datetime import datetime, timedelta
 
@@ -63,37 +63,8 @@ import pandas as pd
 from blsh.database import query
 
 from blsh.wye.domestic import collector, reporter
+from blsh.wye.domestic import _factor as fac
 
-# ─────────────────────────────────────────
-# 설정
-# ─────────────────────────────────────────
-MACD_SHORT = 12
-MACD_LONG = 26
-MACD_SIGNAL = 9
-RSI_PERIOD = 14
-RSI_OVERSOLD = 30
-BB_PERIOD = 20
-BB_STD = 2.0
-STOCH_K = 14
-STOCH_D = 3
-STOCH_SMOOTH = 3
-MA_PERIODS = [5, 20, 60, 120]
-ATR_PERIOD = 14
-ATR_SL_MULT = 1.5  # 손절: 종가 - 1.5×ATR
-ATR_TP_MULT = 3.0  # 익절: 종가 + 3.0×ATR
-GAP_THRESHOLD = 0.02
-LOOKBACK_DAYS = 365  # 52주(252거래일) 신고가 계산을 위해 365일 이상 필요
-MIN_SCORE = 1  # 저장 최소 점수
-ENRICH_SCORE = 2  # 수급 보강 최소 점수
-
-# 0단계 필터
-TRDVAL_MIN = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (10억)
-TRDVAL_DAYS = 20
-INDEX_MA_DAYS = 20  # 지수 환경 체크 이동평균 기간
-
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-)
 log = logging.getLogger(__name__)
 
 
@@ -101,33 +72,33 @@ log = logging.getLogger(__name__)
 # 지표 계산
 # ─────────────────────────────────────────
 def calc_macd(c):
-    es = c.ewm(span=MACD_SHORT, adjust=False).mean()
-    el = c.ewm(span=MACD_LONG, adjust=False).mean()
+    es = c.ewm(span=fac.MACD_SHORT, adjust=False).mean()
+    el = c.ewm(span=fac.MACD_LONG, adjust=False).mean()
     m = es - el
-    s = m.ewm(span=MACD_SIGNAL, adjust=False).mean()
+    s = m.ewm(span=fac.MACD_SIGNAL, adjust=False).mean()
     return m, s, m - s
 
 
-def calc_rsi(c, p=RSI_PERIOD):
+def calc_rsi(c, p=fac.RSI_PERIOD):
     d = c.diff()
     g = d.clip(lower=0).ewm(alpha=1 / p, adjust=False).mean()
     l = (-d.clip(upper=0)).ewm(alpha=1 / p, adjust=False).mean()
     return 100 - 100 / (1 + g / l.replace(0, np.nan))
 
 
-def calc_bb(c, p=BB_PERIOD, k=BB_STD):
+def calc_bb(c, p=fac.BB_PERIOD, k=fac.BB_STD):
     m = c.rolling(p).mean()
     s = c.rolling(p).std()
     return m + k * s, m, m - k * s
 
 
-def calc_atr(h, l, c, p=ATR_PERIOD):
+def calc_atr(h, l, c, p=fac.ATR_PERIOD):
     pc = c.shift(1)
     tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
     return tr.ewm(span=p, adjust=False).mean()
 
 
-def calc_stoch(h, l, c, k=STOCH_K, d=STOCH_D, sm=STOCH_SMOOTH):
+def calc_stoch(h, l, c, k=fac.STOCH_K, d=fac.STOCH_D, sm=fac.STOCH_SMOOTH):
     lo = l.rolling(k).min()
     hi = h.rolling(k).max()
     rk = 100 * (c - lo) / (hi - lo).replace(0, np.nan)
@@ -144,7 +115,7 @@ def calc_obv(c, v):
 # 매수 신호 평가
 # ─────────────────────────────────────────
 def evaluate_buy(close, high, low, volume):
-    min_len = MACD_LONG + MACD_SIGNAL + 5
+    min_len = fac.MACD_LONG + fac.MACD_SIGNAL + 5
     if len(close) < min_len:
         return 0, [], {}
 
@@ -153,7 +124,7 @@ def evaluate_buy(close, high, low, volume):
     bbu, bbm, bbl = calc_bb(close)
     atr = calc_atr(high, low, close)
     sk, sd = calc_stoch(high, low, close)
-    mas = {p: close.rolling(p).mean() for p in MA_PERIODS}
+    mas = {p: close.rolling(p).mean() for p in fac.MA_PERIODS}
     obv = calc_obv(close, volume) if volume is not None else None
 
     c0, c1 = close.iloc[-1], close.iloc[-2]
@@ -185,17 +156,17 @@ def evaluate_buy(close, high, low, volume):
         and len(hist) >= 3
         and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
         and abs(s0) > 0
-        and (s0 - m0) / abs(s0) <= GAP_THRESHOLD
+        and (s0 - m0) / abs(s0) <= fac.GAP_THRESHOLD
     ):
         score += 1
         flags.append("MPGC")
 
     # 3. RSI 30 상향 돌파 (+2)                                   → RBO
-    if r0 > RSI_OVERSOLD and r1 <= RSI_OVERSOLD:
+    if r0 > fac.RSI_OVERSOLD and r1 <= fac.RSI_OVERSOLD:
         score += 2
         flags.append("RBO")
     # 4. RSI 과매도 (+1)                                         → ROV
-    elif r0 < RSI_OVERSOLD:
+    elif r0 < fac.RSI_OVERSOLD:
         score += 1
         flags.append("ROV")
 
@@ -307,8 +278,8 @@ def evaluate_buy(close, high, low, volume):
 
     # ── 매수가 / 손절 / 익절
     entry_price = round(c0 + 0.5 * atr0, 2)
-    stop_loss = round(c0 - ATR_SL_MULT * atr0, 2)
-    take_profit = round(c0 + ATR_TP_MULT * atr0, 2)
+    stop_loss = round(c0 - fac.ATR_SL_MULT * atr0, 2)
+    take_profit = round(c0 + fac.ATR_TP_MULT * atr0, 2)
 
     indicators = {
         "mode": mode,
@@ -344,7 +315,7 @@ def scan_dataframe(
     # base_date 이하 데이터만 사용 (과거 날짜 지정 시 미래 데이터 차단)
     df = df[df.index <= base_date]
 
-    if len(df) < LOOKBACK_DAYS // 3:
+    if len(df) < fac.LOOKBACK_DAYS // 3:
         return None
 
     close = df[close_col].dropna()
@@ -358,7 +329,7 @@ def scan_dataframe(
         vol = vol[idx]
 
     score, flags, ind = evaluate_buy(close, high, low, vol)
-    if score < MIN_SCORE:
+    if score < fac.MIN_SCORE:
         return None
 
     icon = "🔴" if score >= 5 else "🟡" if score >= 3 else "🔵"
@@ -406,9 +377,10 @@ def scan_market(
             "start": start,
             "base_date": base_date,
             "filter_start": (
-                datetime.strptime(base_date, "%Y%m%d") - timedelta(days=TRDVAL_DAYS * 2)
+                datetime.strptime(base_date, "%Y%m%d")
+                - timedelta(days=fac.TRDVAL_DAYS * 2)
             ).strftime("%Y%m%d"),
-            "min_val": TRDVAL_MIN,
+            "min_val": fac.TRDVAL_MIN,
         },
     )
 
@@ -426,7 +398,7 @@ def scan_market(
             low_col,
             vol_col,
         )
-        if row:
+        if row is not None:
             results.append(row)
 
     log.info(f"[{market}] 신호 종목: {len(results)}건 (거래대금 필터 후)")
@@ -531,7 +503,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
     candidates = [
         r
         for r in results
-        if r["buy_score"] >= ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
+        if r["buy_score"] >= fac.ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
     ]
     if not candidates:
         return results
@@ -682,61 +654,29 @@ def get_next_biz_date(base_date: str) -> str:
 # ─────────────────────────────────────────
 # 메인
 # ─────────────────────────────────────────
-def parse_args():
-    parser = argparse.ArgumentParser(description="매수 신호 스캐너")
-    parser.add_argument(
-        "--date",
-        type=str,
-        default=None,
-        metavar="YYYYMMDD",
-        help="스캔 기준일 (예: 20260312). 미지정 시 DB 최근 영업일 사용.",
-    )
-    return parser.parse_args()
-
-
-def main():
-    args = parse_args()
-
-    # ── 기준일 결정
-    if args.date:
-        base_date = args.date
-        log.info(f"기준일 (지정): {base_date}")
-    else:
-        base_date = query.get_latest_biz_date()
-        log.info(f"기준일 (최근 영업일): {base_date}")
+def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
+    log.info(f"기준일: {base_date}")
 
     # ── 다음 영업일 (매수 목표일)
     target_date = get_next_biz_date(base_date)
-    today_str = datetime.today().strftime("%Y%m%d")
-    is_today = base_date == today_str
 
     if target_date:
-        src = "캘린더(공휴일 미반영)" if is_today else "DB"
-        log.info(f"매수 목표일: {target_date}  [{src}]")
-
-    # ── 장중 실행 경고 (오늘 날짜 기준 스캔일 때만)
-    if is_today:
-        now = datetime.now()
-        if now.weekday() < 5 and now.hour < 16:
-            log.warning(
-                "⚠️  장중 실행 감지 (%s). 수급 데이터가 잠정치일 수 있습니다.",
-                now.strftime("%H:%M"),
-            )
+        log.info(f"매수 목표일: {target_date}")
 
     start = (
-        datetime.strptime(base_date, "%Y%m%d") - timedelta(days=LOOKBACK_DAYS)
+        datetime.strptime(base_date, "%Y%m%d") - timedelta(days=fac.LOOKBACK_DAYS)
     ).strftime("%Y%m%d")
     name_map = query.get_ticker_name_map()
 
     # ── 1단계: OHLCV 기술지표 스캔 (0단계 필터 포함)
     results = []
 
-    if check_index_above_ma("코스피", base_date, INDEX_MA_DAYS):
+    if check_index_above_ma("코스피", base_date, fac.INDEX_MA_DAYS):
         results += scan_market("isu_ksp_ohlcv", "KOSPI", start, base_date, name_map)
     else:
         log.warning("[KOSPI] 지수 20MA 아래 → 스캔 스킵")
 
-    if check_index_above_ma("코스닥", base_date, INDEX_MA_DAYS):
+    if check_index_above_ma("코스닥", base_date, fac.INDEX_MA_DAYS):
         results += scan_market("isu_ksd_ohlcv", "KOSDAQ", start, base_date, name_map)
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
@@ -748,14 +688,14 @@ def main():
     # ── 2단계: DB 수급 보강
     results = enrich_with_db(results, base_date)
 
+    # 저장
     query.save_signal(results)
+    # 리포트
     reporter.print_general_summary(results)
     reporter.print_invest_report(results, base_date)
-    reporter.print_return_report(results, base_date, target_date)
-    log.info(
-        f"전체 완료: 총 {len(results)}건  기준일={base_date}  목표일={target_date}"
-    )
+
+    return (results, base_date, target_date)
 
 
 if __name__ == "__main__":
-    main()
+    scan()
