@@ -4,48 +4,33 @@
 
 import logging
 import pandas as pd
-import numpy as np
 from blsh.database import query
 from blsh.wye.domestic import reporter, _factor as fac
 
 log = logging.getLogger(__name__)
 
 
-def simulate(results, base_date, target_date) -> tuple:
+def simulate(screened, target_date) -> tuple:
     """
-    수익률 시뮬레이션 리포트.
+    수익률 시뮬레이트
     """
-    if not results:
+    if not screened:
         return
 
     if not target_date:
         log.info("[시뮬레이트] target_date 없음 (미래 날짜) → 스킵")
         return
 
-    log.info(
-        f"[시뮬레이트] 기준일={base_date}  목표일={target_date}  "
-        f"최대 {fac.MAX_HOLD_DAYS}거래일 추적"
-    )
+    log.info(f"[시뮬레이트] 목표일={target_date}  최대 {fac.MAX_HOLD_DAYS}거래일 추적")
 
-    # 투자 대상 선별 기준 통과 종목만 대상
-    df = pd.DataFrame(results)
-    for col in ("foreign_netbuy", "inst_netbuy", "indi_netbuy"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    cand_mask = (
-        (df["buy_score"] >= fac.INVEST_MIN_SCORE)
-        & (df["mode"].isin(["MIX", "MOM"]))
-        & ((df["foreign_netbuy"] > 0) | (df["inst_netbuy"] > 0))
-        & (~df["buy_flags"].str.contains("P_OV", na=False))
-    )
-    candidates = df[cand_mask].copy()
+    candidates = pd.DataFrame(screened)
     if candidates.empty:
         return
 
     tickers = candidates["ticker"].tolist()
 
     # ── target_date 이후 최대 MAX_HOLD_DAYS 거래일 날짜 목록 조회
-    date_rows = query.get_max_hold_dates(target_date, fac.MAX_HOLD_DAYS)
+    date_rows = pd.DataFrame(query.get_max_hold_dates(target_date, fac.MAX_HOLD_DAYS))
     if date_rows.empty:
         log.info(f"[수익률 리포트] {target_date} 이후 OHLCV 데이터 없음 → 스킵")
         return
@@ -56,7 +41,7 @@ def simulate(results, base_date, target_date) -> tuple:
 
     def fetch_ohlcv_range(table):
         try:
-            return query.get_ohlcv_range(table, hold_dates, tickers)
+            return pd.DataFrame(query.get_ohlcv_range(table, hold_dates, tickers))
         except Exception as e:
             log.warning(f"  OHLCV 조회 오류 ({table}): {e}")
             return pd.DataFrame()
@@ -106,8 +91,18 @@ def simulate(results, base_date, target_date) -> tuple:
         exit_date = None
         last_ohv = t1_ohv
 
+        # 모드별 최대 보유 기간: MOM=2일, MIX=3일, REV=5일
+        mode = sig.get("mode", "")
+        if mode == "MOM":
+            max_days = fac.MAX_HOLD_DAYS_MOM
+        elif mode == "MIX":
+            max_days = fac.MAX_HOLD_DAYS_MIX
+        else:
+            max_days = fac.MAX_HOLD_DAYS
+        sig_hold_dates = hold_dates[:max_days]
+
         # 날짜 순서대로 손익절 확인
-        for d in hold_dates:
+        for d in sig_hold_dates:
             ohv = days.get(d)
             if ohv is None:
                 continue
@@ -131,11 +126,11 @@ def simulate(results, base_date, target_date) -> tuple:
                 exit_date = d
                 break
 
-        # MAX_HOLD_DAYS 후에도 미확정 → 마지막 거래일 종가
+        # 최대 보유기간 후에도 미확정 → 마지막 거래일 종가
         if result_type is None:
-            result_type = f"미확정({actual_days}일)"
+            result_type = f"미확정({len(sig_hold_dates)}일)"
             exit_price = last_ohv["close"]
-            exit_date = hold_dates[-1]
+            exit_date = sig_hold_dates[-1]
 
         ret_pct = (exit_price - buy_price) / buy_price * 100
         rows_ok.append(
@@ -154,8 +149,8 @@ def simulate(results, base_date, target_date) -> tuple:
             }
         )
 
+    # 시뮬레이션 리포트
     reporter.print_simul_report(
-        base_date,
         target_date,
         actual_days,
         candidates,
@@ -163,3 +158,5 @@ def simulate(results, base_date, target_date) -> tuple:
         rows_gap,
         rows_miss,
     )
+
+    return rows_ok, rows_gap, rows_miss

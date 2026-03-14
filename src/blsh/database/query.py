@@ -1,5 +1,4 @@
 import logging
-import pandas as pd
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
 from blsh.database import engine, select_one, select_first, select_all, execute_batch
@@ -91,11 +90,15 @@ def get_netbid_trdvol(table, tickers, base_date):
             ORDER BY isu_srt_cd, trd_dd DESC
             """
         ).bindparams(bindparam("tickers", expanding=True))
-        result = session.execute(stmt, {"tickers": list(tickers), "bd": base_date}).mappings().all()
-    return pd.DataFrame(result)
+        result = (
+            session.execute(stmt, {"tickers": list(tickers), "bd": base_date})
+            .mappings()
+            .all()
+        )
+    return result
 
 
-def save_signal(results):
+def save_signals(results):
     if not results:
         log.info("저장할 데이터 없음")
         return
@@ -145,8 +148,19 @@ def save_signal(results):
     log.info(f"DB 저장 완료: {len(results)}건")
 
 
+def get_singnals(base_date):
+    return select_all(
+        """
+        SELECT * 
+        FROM stock_signals
+        WHERE base_date = :bd
+        """,
+        bd=base_date,
+    )
+
+
 def get_index_clsprc(idx_nm, base_date, ma_days=20):
-    result = select_all(
+    return select_all(
         """
                 SELECT clsprc_idx
                 FROM idx_stk_ohlcv
@@ -156,12 +170,11 @@ def get_index_clsprc(idx_nm, base_date, ma_days=20):
             """,
         **{"nm": idx_nm, "bd": base_date, "days": ma_days + 1},
     )
-    return pd.DataFrame(result)
 
 
 def get_ohlcv(table, close_col, high_col, low_col, vol_col, params: dict):
     _validate_table(table)
-    result = select_all(
+    return select_all(
         f"""
                 SELECT o.isu_srt_cd, o.trd_dd,
                     o.{close_col}, o.{high_col}, o.{low_col},
@@ -181,7 +194,6 @@ def get_ohlcv(table, close_col, high_col, low_col, vol_col, params: dict):
             """,
         **params,
     )
-    return pd.DataFrame(result)
 
 
 def get_ohlcv_range(table, dates: list, tickers: list):
@@ -204,8 +216,10 @@ def get_ohlcv_range(table, dates: list, tickers: list):
             bindparam("dates", expanding=True),
             bindparam("tickers", expanding=True),
         )
-        result = session.execute(stmt, {"dates": dates, "tickers": tickers}).mappings().all()
-    return pd.DataFrame(result)
+        result = (
+            session.execute(stmt, {"dates": dates, "tickers": tickers}).mappings().all()
+        )
+    return result
 
 
 def get_ticker_name_map():
@@ -214,17 +228,16 @@ def get_ticker_name_map():
 
 
 def get_max_hold_dates(target_date, max_hold_days):
-    result = select_all(
+    return select_all(
         """
-                SELECT DISTINCT trd_dd
-                FROM isu_ksp_ohlcv
-                WHERE trd_dd >= :start
-                ORDER BY trd_dd
-                LIMIT :n
-            """,
+        SELECT DISTINCT trd_dd
+        FROM isu_ksp_ohlcv
+        WHERE trd_dd >= :start
+        ORDER BY trd_dd
+        LIMIT :n
+        """,
         **{"start": target_date, "n": max_hold_days},
     )
-    return pd.DataFrame(result)
 
 
 if __name__ == "__main__":

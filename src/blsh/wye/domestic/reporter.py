@@ -58,25 +58,14 @@ def print_general_summary(results):
     log.info("\n─── 매수 신호 TOP15 ───\n" + top.to_string(index=False))
 
 
-def print_invest_report(results, base_date):
+def print_invest_report(screened, base_date):
     _print_header("투자 대상 리포트")
 
-    if not results:
+    if not screened:
         log.info("\n─── 투자 대상 없음 ───")
         return
 
-    df = pd.DataFrame(results)
-    for col in ("foreign_netbuy", "inst_netbuy", "indi_netbuy"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    mask = (
-        (df["buy_score"] >= fac.INVEST_MIN_SCORE)
-        & (df["mode"].isin(["MIX", "MOM"]))
-        & ((df["foreign_netbuy"] > 0) | (df["inst_netbuy"] > 0))
-        & (~df["buy_flags"].str.contains("P_OV", na=False))
-    )
-    candidates = df[mask].copy()
-
+    candidates = pd.DataFrame(screened)
     candidates["_mode_rank"] = candidates["mode"].map({"MIX": 0, "MOM": 1}).fillna(2)
 
     def supply_strength(flags: str) -> int:
@@ -109,6 +98,8 @@ def print_invest_report(results, base_date):
         log.info("  해당 조건을 만족하는 종목이 없습니다.")
         log.info(sep)
         return
+
+    print()
 
     for mode_label, mode_val in [
         ("MIX (추세전환 초입 ★★★)", "MIX"),
@@ -179,14 +170,14 @@ def print_invest_report(results, base_date):
 
 
 def print_simul_report(
-    base_date, target_date, actual_days, candidates, rows_ok, rows_gap, rows_miss
+    target_date, actual_days, candidates, rows_ok, rows_gap, rows_miss
 ):
     _print_header("시뮬레이션 리포트")
 
     sep = "═" * 115
     log.info(f"\n{sep}")
     log.info(
-        f"  📊 수익률 리포트  |  기준일: {base_date}  →  목표일: {target_date}"
+        f"  📊 수익률 리포트  |  매수일: {target_date}"
         f"  (최대 {fac.MAX_HOLD_DAYS}거래일, 실제 {actual_days}거래일)"
     )
     log.info(

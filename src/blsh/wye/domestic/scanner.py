@@ -3,13 +3,6 @@
 ─────────────────────────────────────────────────────
 대상: KOSPI(isu_ksp_ohlcv) / KOSDAQ(isu_ksd_ohlcv)
 
-사용법:
-  python scanner.py                  # 최근 영업일 기준
-  python scanner.py --date 20260312  # 날짜 지정
-
-⚠️  장 마감 후(16:00 이후) 실행 권장
-    장중 실행 시 DB 수급 데이터(잠정치)와 KIS API 데이터 신뢰도 저하
-
 [0단계] 종목 필터 (scan_market SQL)
   - 최근 20일 평균 거래대금(acc_trdval) 10억 이상
   - 지수 환경 체크: KOSPI/KOSDAQ 20MA 아래이면 해당 시장 스킵
@@ -367,21 +360,23 @@ def scan_market(
     log.info(f"[{market}] {table} 스캔 시작  (기준일: {base_date})")
 
     # 0단계: 최근 TRDVAL_DAYS일 평균 거래대금 TRDVAL_MIN 이상 종목만 로드
-    df_all = query.get_ohlcv(
-        table,
-        close_col,
-        high_col,
-        low_col,
-        vol_col,
-        {
-            "start": start,
-            "base_date": base_date,
-            "filter_start": (
-                datetime.strptime(base_date, "%Y%m%d")
-                - timedelta(days=fac.TRDVAL_DAYS * 2)
-            ).strftime("%Y%m%d"),
-            "min_val": fac.TRDVAL_MIN,
-        },
+    df_all = pd.DataFrame(
+        query.get_ohlcv(
+            table,
+            close_col,
+            high_col,
+            low_col,
+            vol_col,
+            {
+                "start": start,
+                "base_date": base_date,
+                "filter_start": (
+                    datetime.strptime(base_date, "%Y%m%d")
+                    - timedelta(days=fac.TRDVAL_DAYS * 2)
+                ).strftime("%Y%m%d"),
+                "min_val": fac.TRDVAL_MIN,
+            },
+        )
     )
 
     results = []
@@ -518,7 +513,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
             return {}
 
         try:
-            df = query.get_netbid_trdvol(table, tickers, base_date)
+            df = pd.DataFrame(query.get_netbid_trdvol(table, tickers, base_date))
         except Exception as e:
             log.warning(f"  DB 수급 조회 오류 ({table}): {e}")
             return {}
@@ -615,7 +610,7 @@ def check_index_above_ma(idx_nm, base_date, ma_days=20):
     True = 정상 (매수 환경), False = 하락장 (스캔 스킵)
     """
     try:
-        df = query.get_index_clsprc(idx_nm, base_date, ma_days)
+        df = pd.DataFrame(query.get_index_clsprc(idx_nm, base_date, ma_days))
         if len(df) < ma_days:
             return True
         prices = df["clsprc_idx"].astype(float).iloc[::-1]
@@ -652,7 +647,7 @@ def get_next_biz_date(base_date: str) -> str:
 
 
 # ─────────────────────────────────────────
-# 메인
+# 스캔
 # ─────────────────────────────────────────
 def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
     log.info(f"기준일: {base_date}")
@@ -689,13 +684,34 @@ def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
     results = enrich_with_db(results, base_date)
 
     # 저장
-    query.save_signal(results)
+    query.save_signals(results)
+
     # 리포트
     reporter.print_general_summary(results)
-    reporter.print_invest_report(results, base_date)
 
-    return (results, base_date, target_date)
+    return (results, target_date, base_date)
+
+
+def screen(results=None, base_date=time.strftime("%Y%m%d")):
+    """투자대상 선별"""
+    results = results if results else query.get_singnals(base_date)
+    if not results:
+        return
+
+    df = pd.DataFrame(results)
+    for col in ("foreign_netbuy", "inst_netbuy", "indi_netbuy"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    cand_mask = (
+        (df["buy_score"] >= fac.INVEST_MIN_SCORE)
+        & (df["mode"].isin(["MIX", "MOM", "REV"]))
+        & (~df["buy_flags"].str.contains("P_OV", na=False))
+    )
+    screened = df[cand_mask].copy().to_dict("records")
+
+    reporter.print_invest_report(screened, base_date)
+    return screened
 
 
 if __name__ == "__main__":
-    scan()
+    screen(scan()[0])

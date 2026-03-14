@@ -27,6 +27,3 @@ KRX_API_URL: Final = "https://data-dbg.krx.co.kr/svc/apis"
 
 KRX_LOGIN_ID: Final = os.getenv("KRX_LOGIN_ID")
 KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
-
-if __name__ == "__main__":
-    print(KIS_APP_KEY, KIS_APP_SECRET)
