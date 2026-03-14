@@ -1,5 +1,5 @@
 import logging
-from blsh.wye.domestic import collector, scanner, reporter, simulator
+from blsh.wye.domestic import collector, scanner, simulator
 
 log = logging.getLogger(__name__)
 
