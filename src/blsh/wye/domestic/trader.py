@@ -1,5 +1,5 @@
 """
-자동 매매 트레이더 v2
+자동 매매 트레이더 v20
 ─────────────────────────────────────────────────────
 실행:
     uv run python -m blsh.wye.domestic.trader
@@ -33,7 +33,11 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeoutError,
+    as_completed,
+)
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -47,17 +51,57 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────
 # 설정
 # ─────────────────────────────────────────
-CASH_USAGE     = 0.9      # 가용 현금의 90% 사용
-MIN_ALLOC      = 10_000   # 종목당 최소 배분액 (1만원)
-POLL_SEC       = 30       # 현재가 체크 주기 (초)
+CASH_USAGE = 0.9  # 가용 현금의 90% 사용
+MIN_ALLOC = 10_000  # 종목당 최소 배분액 (1만원)
+POLL_SEC = 30  # 현재가 체크 주기 (초)
 FILL_WAIT_UNTIL = "091000"  # 체결 대기 마감 (09:10)
-DAYTRADE_CLOSE  = "151500"  # 데이 트레이딩 강제 청산 시각 (30초 여유)
-MARKET_CLOSE    = "153000"  # 장 마감
+DAYTRADE_CLOSE = "151500"  # 데이 트레이딩 강제 청산 시각 (30초 여유)
+MARKET_CLOSE = "153000"  # 장 마감
 
-TP1_MULT       = 1.0      # 1차 익절: buy + ATR × TP1_MULT (50% 분할 매도)
+TP1_MULT = 1.0  # 1차 익절: buy + ATR × TP1_MULT (50% 분할 매도)
+SELL_COST_RATE = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)
 POSITIONS_FILE = Path.home() / ".blsh" / "config" / "trader_positions.json"
 
-_api_sem = threading.Semaphore(3)  # 동시 API 호출 제한
+_API_CONCURRENCY = 3
+_api_sem = threading.Semaphore(_API_CONCURRENCY)  # 동시 API 호출 제한
+
+
+# ─────────────────────────────────────────
+# 호가 단위 보정 (KRX 규정)
+# ─────────────────────────────────────────
+def _tick_size(price: float) -> int:
+    if price < 1_000:
+        return 1
+    elif price < 5_000:
+        return 5
+    elif price < 10_000:
+        return 10
+    elif price < 50_000:
+        return 50
+    elif price < 100_000:
+        return 100
+    elif price < 500_000:
+        return 500
+    else:
+        return 1_000
+
+
+def _floor_tick(price: float) -> int:
+    """가격을 호가 단위 이하로 내림 (SL 등 하한 기준에 사용)"""
+    tick = _tick_size(price)
+    return int(price) // tick * tick
+
+
+def _ceil_tick(price: float) -> int:
+    """가격을 호가 단위 이상으로 올림 (TP 등 상한 기준에 사용)"""
+    tick = _tick_size(price)
+    floored = int(price) // tick * tick
+    result = floored if floored >= price else floored + tick
+    # 올림 결과가 더 높은 tick 구간으로 넘어간 경우 재보정 (실제 발생하지 않으나 방어적 처리)
+    final_tick = _tick_size(result)
+    if result % final_tick != 0:
+        result = (result // final_tick + 1) * final_tick
+    return result
 
 
 # ─────────────────────────────────────────
@@ -65,28 +109,29 @@ _api_sem = threading.Semaphore(3)  # 동시 API 호출 제한
 # ─────────────────────────────────────────
 @dataclass
 class Position:
-    ticker:        str
-    name:          str
-    qty:           int          # 현재 잔여 수량
-    buy_price:     float        # 실제 체결가
-    atr:           float        # 진입 시 ATR
-    sl:            float        # 현재 동적 손절가 (트레일링)
-    tp1:           float        # 1차 목표가 (buy + ATR×TP1_MULT)
-    tp2:           float        # 2차 목표가 (buy + ATR×ATR_TP_MULT)
-    mode:          str
+    ticker: str
+    name: str
+    qty: int  # 현재 잔여 수량
+    buy_price: float  # 실제 체결가
+    atr: float  # 진입 시 ATR
+    sl: float  # 현재 동적 손절가 (트레일링)
+    tp1: float  # 1차 목표가 (buy + ATR×TP1_MULT)
+    tp2: float  # 2차 목표가 (buy + ATR×ATR_TP_MULT)
+    mode: str
     max_hold_days: int
-    entry_date:    str          # YYYYMMDD
-    t1_done:       bool = False # 1차 분할 매도 완료 여부
-    qty_t1:        int  = 0     # 1차 분할 수량 (전체의 50%)
+    entry_date: str  # YYYYMMDD
+    t1_done: bool = False  # 1차 분할 매도 완료 여부
+    qty_t1: int = 0  # 1차 분할 수량 (전체의 50%)
+    realized_pnl: float = 0.0  # 세션 내 누적 추정 실현손익 (매도가 × 수량 기준)
 
 
 def _make_position(c: dict, buy_price: float, qty: int, entry_date: str) -> Position:
     """스캔 결과 dict → Position 생성. qty는 _buy 호출 시 사용한 수량과 일치해야 함."""
-    atr   = float(c["atr"])
-    sl    = round(buy_price - fac.ATR_SL_MULT * atr, 2)
-    tp1   = round(buy_price + TP1_MULT          * atr, 2)
-    tp2   = round(buy_price + fac.ATR_TP_MULT   * atr, 2)
-    mode  = c.get("mode", "REV")
+    atr = float(c["atr"])
+    sl = _floor_tick(buy_price - fac.ATR_SL_MULT * atr)
+    tp1 = _ceil_tick(buy_price + TP1_MULT * atr)
+    tp2 = _ceil_tick(buy_price + fac.ATR_TP_MULT * atr)
+    mode = c.get("mode", "REV")
     if mode == "MOM":
         max_hold = fac.MAX_HOLD_DAYS_MOM
     elif mode == "MIX":
@@ -96,15 +141,24 @@ def _make_position(c: dict, buy_price: float, qty: int, entry_date: str) -> Posi
 
     qty_t1 = max(1, qty // 2)
     if qty < 2:
-        log.warning(f"  {c['ticker']} 수량={qty} → 1차 익절 시 전량 청산, 2차 익절 없음")
+        log.warning(
+            f"  {c['ticker']} 수량={qty} → 1차 익절 시 전량 청산, 2차 익절 없음"
+        )
 
     return Position(
-        ticker=c["ticker"], name=c.get("name", c["ticker"]),
-        qty=qty, buy_price=buy_price, atr=atr,
-        sl=sl, tp1=tp1, tp2=tp2,
-        mode=mode, max_hold_days=max_hold,
+        ticker=c["ticker"],
+        name=c.get("name", c["ticker"]),
+        qty=qty,
+        buy_price=buy_price,
+        atr=atr,
+        sl=sl,
+        tp1=tp1,
+        tp2=tp2,
+        mode=mode,
+        max_hold_days=max_hold,
         entry_date=entry_date,
-        t1_done=False, qty_t1=qty_t1,
+        t1_done=False,
+        qty_t1=qty_t1,
     )
 
 
@@ -119,6 +173,7 @@ def _load_positions() -> dict[str, Position]:
         today = date.today().strftime("%Y%m%d")
         valid: dict[str, Position] = {}
         for t, v in data.items():
+            v.setdefault("realized_pnl", 0.0)  # 구버전 파일 호환
             p = Position(**v)
             if p.max_hold_days == 1 and p.entry_date != today:
                 log.warning(f"  이전 데이 포지션 무시: {t} (entry={p.entry_date})")
@@ -137,13 +192,24 @@ def _save_positions(positions: dict[str, Position], swing_only: bool = False):
     """
     to_save = (
         {t: p for t, p in positions.items() if p.max_hold_days > 1}
-        if swing_only else positions
+        if swing_only
+        else positions
     )
     POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     if to_save:
-        POSITIONS_FILE.write_text(
-            json.dumps({t: asdict(p) for t, p in to_save.items()}, ensure_ascii=False, indent=2)
-        )
+        tmp = POSITIONS_FILE.with_suffix(".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(
+                    {t: asdict(p) for t, p in to_save.items()},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            tmp.replace(POSITIONS_FILE)
+        except Exception as e:
+            log.error(f"포지션 저장 실패: {e}")
+            tmp.unlink(missing_ok=True)
     elif POSITIONS_FILE.exists():
         POSITIONS_FILE.unlink()
 
@@ -168,17 +234,21 @@ def _fetch_prices(env_dv: str, tickers: list[str]) -> dict[str, float]:
     if not tickers:
         return {}
     result: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=min(len(tickers), 5)) as ex:
+    with ThreadPoolExecutor(max_workers=min(len(tickers), _API_CONCURRENCY)) as ex:
         futs = {ex.submit(_get_price, env_dv, t): t for t in tickers}
-        for fut in as_completed(futs):
-            t = futs[fut]
-            try:
-                p = fut.result()
-            except Exception as e:
-                log.warning(f"가격 조회 스레드 오류 ({t}): {e}")
-                p = None
-            if p is not None:
-                result[t] = p
+        try:
+            for fut in as_completed(futs, timeout=POLL_SEC):
+                t = futs[fut]
+                try:
+                    p = fut.result()
+                except Exception as e:
+                    log.warning(f"가격 조회 스레드 오류 ({t}): {e}")
+                    p = None
+                if p is not None:
+                    result[t] = p
+        except FuturesTimeoutError:
+            timed_out = [futs[f] for f in futs if not f.done()]
+            log.warning(f"현재가 조회 타임아웃 ({POLL_SEC}s): {timed_out}")
     return result
 
 
@@ -188,25 +258,32 @@ def _get_balance(env_dv: str, trenv) -> tuple[dict[str, int], float]:
         with _api_sem:
             ka.smart_sleep()
             df1, df2 = ds.inquire_balance(
-                env_dv=env_dv, cano=trenv.my_acct, acnt_prdt_cd=trenv.my_prod,
-                afhr_flpr_yn="N", inqr_dvsn="02", unpr_dvsn="01",
-                fund_sttl_icld_yn="N", fncg_amt_auto_rdpt_yn="N", prcs_dvsn="01",
+                env_dv=env_dv,
+                cano=trenv.my_acct,
+                acnt_prdt_cd=trenv.my_prod,
+                afhr_flpr_yn="N",
+                inqr_dvsn="02",
+                unpr_dvsn="01",
+                fund_sttl_icld_yn="N",
+                fncg_amt_auto_rdpt_yn="N",
+                prcs_dvsn="01",
             )
         holdings = (
-            dict(zip(df1["pdno"].astype(str), df1["hldg_qty"].astype(int)))
-            if df1 is not None and not df1.empty else {}
+            dict(
+                zip(df1["pdno"].astype(str), df1["hldg_qty"].astype(float).astype(int))
+            )
+            if df1 is not None and not df1.empty
+            else {}
         )
         cash = (
             float(df2.iloc[0].get("dnca_tot_amt", 0))
-            if df2 is not None and not df2.empty else 0.0
+            if df2 is not None and not df2.empty
+            else 0.0
         )
         return holdings, cash
     except Exception as e:
         log.warning(f"잔고 조회 실패: {e}")
     return {}, 0.0
-
-
-
 
 
 def _buy(env_dv: str, trenv, ticker: str, qty: int, entry_price: float) -> str | None:
@@ -215,15 +292,21 @@ def _buy(env_dv: str, trenv, ticker: str, qty: int, entry_price: float) -> str |
         with _api_sem:
             ka.smart_sleep()
             df = ds.order_cash(
-                env_dv=env_dv, ord_dv="buy",
-                cano=trenv.my_acct, acnt_prdt_cd=trenv.my_prod,
-                pdno=ticker, ord_dvsn="00",
-                ord_qty=str(qty), ord_unpr=str(int(entry_price)),
+                env_dv=env_dv,
+                ord_dv="buy",
+                cano=trenv.my_acct,
+                acnt_prdt_cd=trenv.my_prod,
+                pdno=ticker,
+                ord_dvsn="00",
+                ord_qty=str(qty),
+                ord_unpr=str(int(entry_price)),
                 excg_id_dvsn_cd="KRX",
             )
         if df is not None and not df.empty:
             odno = str(df.iloc[0].get("odno", ""))
-            log.info(f"  📥 매수주문: {ticker}  수량={qty}  지정가={int(entry_price):,}  no={odno}")
+            log.info(
+                f"  📥 매수주문: {ticker}  수량={qty}  지정가={int(entry_price):,}  no={odno}"
+            )
             return odno
     except Exception as e:
         log.error(f"  매수 오류 ({ticker}): {e}")
@@ -236,11 +319,16 @@ def _sell(env_dv: str, trenv, ticker: str, qty: int, reason: str = "") -> bool:
         with _api_sem:
             ka.smart_sleep()
             df = ds.order_cash(
-                env_dv=env_dv, ord_dv="sell",
-                cano=trenv.my_acct, acnt_prdt_cd=trenv.my_prod,
-                pdno=ticker, ord_dvsn="01",
-                ord_qty=str(qty), ord_unpr="0",
-                excg_id_dvsn_cd="KRX", sll_type="01",
+                env_dv=env_dv,
+                ord_dv="sell",
+                cano=trenv.my_acct,
+                acnt_prdt_cd=trenv.my_prod,
+                pdno=ticker,
+                ord_dvsn="01",
+                ord_qty=str(qty),
+                ord_unpr="0",
+                excg_id_dvsn_cd="KRX",
+                sll_type="01",
             )
         if df is not None and not df.empty:
             log.info(f"  📤 매도완료: {ticker}  수량={qty}  [{reason}]")
@@ -256,11 +344,17 @@ def _cancel_order(env_dv: str, trenv, ticker: str, odno: str, qty: int) -> bool:
         with _api_sem:
             ka.smart_sleep()
             ds.order_rvsecncl(
-                env_dv=env_dv, cano=trenv.my_acct, acnt_prdt_cd=trenv.my_prod,
-                krx_fwdg_ord_orgno="", orgn_odno=odno,
-                ord_dvsn="00", rvse_cncl_dvsn_cd="02",
-                ord_qty=str(qty), ord_unpr="0",
-                qty_all_ord_yn="Y", excg_id_dvsn_cd="KRX",
+                env_dv=env_dv,
+                cano=trenv.my_acct,
+                acnt_prdt_cd=trenv.my_prod,
+                krx_fwdg_ord_orgno="",
+                orgn_odno=odno,
+                ord_dvsn="00",
+                rvse_cncl_dvsn_cd="02",
+                ord_qty=str(qty),
+                ord_unpr="0",
+                qty_all_ord_yn="Y",
+                excg_id_dvsn_cd="KRX",
             )
         log.info(f"  🚫 주문취소: {ticker}  no={odno}")
         return True
@@ -272,9 +366,15 @@ def _cancel_order(env_dv: str, trenv, ticker: str, odno: str, qty: int) -> bool:
 # ─────────────────────────────────────────
 # SL/TP 처리 (단일 포지션)
 # ─────────────────────────────────────────
-def _process_position(
-    pos: Position, current: float, env_dv: str, trenv
-) -> bool:
+def _sell_or_log(env_dv: str, trenv, ticker: str, qty: int, reason: str) -> bool:
+    """매도 시도. 실패 시 CRITICAL 로그 후 False 반환 (다음 틱에서 재시도)."""
+    if _sell(env_dv, trenv, ticker, qty, reason):
+        return True
+    log.critical(f"  🚨 매도 실패: {ticker} [{reason}] → 다음 틱 재시도")
+    return False
+
+
+def _process_position(pos: Position, current: float, env_dv: str, trenv) -> bool:
     """
     현재가 기준으로 SL/TP 처리.
     포지션이 완전 청산되면 True 반환.
@@ -282,7 +382,7 @@ def _process_position(
     ret_pct = (current - pos.buy_price) / pos.buy_price * 100
 
     # ── 트레일링 SL 업데이트 (주가 상승 시에만 상향, 현재가 아래 유지)
-    trail_sl = round(current - fac.ATR_SL_MULT * pos.atr, 2)
+    trail_sl = _floor_tick(current - fac.ATR_SL_MULT * pos.atr)
     if trail_sl > pos.sl and trail_sl < current:
         log.info(
             f"  🔺 트레일링 SL: {pos.ticker}  {pos.sl:,.0f} → {trail_sl:,.0f}"
@@ -294,7 +394,10 @@ def _process_position(
     if current <= pos.sl:
         qty_sell = pos.qty
         reason = f"손절 {ret_pct:+.2f}% (SL={pos.sl:,.0f})"
-        if _sell(env_dv, trenv, pos.ticker, qty_sell, reason):
+        if _sell_or_log(env_dv, trenv, pos.ticker, qty_sell, reason):
+            pos.realized_pnl += (
+                current - pos.buy_price
+            ) * qty_sell - current * qty_sell * SELL_COST_RATE
             pos.qty = 0
         return pos.qty == 0
 
@@ -302,12 +405,17 @@ def _process_position(
     if not pos.t1_done and current >= pos.tp1:
         qty_sell = pos.qty_t1
         reason = f"1차익절 {ret_pct:+.2f}% (TP1={pos.tp1:,.0f})"
-        if _sell(env_dv, trenv, pos.ticker, qty_sell, reason):
+        if _sell_or_log(env_dv, trenv, pos.ticker, qty_sell, reason):
+            pos.realized_pnl += (
+                current - pos.buy_price
+            ) * qty_sell - current * qty_sell * SELL_COST_RATE
             pos.qty -= qty_sell
             pos.t1_done = True
             # SL → 매수가 (본전 보장)
             if pos.buy_price > pos.sl:
-                log.info(f"  🔒 SL 본전 이동: {pos.ticker}  {pos.sl:,.0f} → {pos.buy_price:,.0f}")
+                log.info(
+                    f"  🔒 SL 본전 이동: {pos.ticker}  {pos.sl:,.0f} → {pos.buy_price:,.0f}"
+                )
                 pos.sl = pos.buy_price
         return pos.qty == 0
 
@@ -315,7 +423,10 @@ def _process_position(
     if current >= pos.tp2:
         qty_sell = pos.qty
         reason = f"2차익절 {ret_pct:+.2f}% (TP2={pos.tp2:,.0f})"
-        if _sell(env_dv, trenv, pos.ticker, qty_sell, reason):
+        if _sell_or_log(env_dv, trenv, pos.ticker, qty_sell, reason):
+            pos.realized_pnl += (
+                current - pos.buy_price
+            ) * qty_sell - current * qty_sell * SELL_COST_RATE
             pos.qty = 0
         return pos.qty == 0
 
@@ -337,6 +448,7 @@ def _calc_expiry(pos: Position) -> str:
     """포지션의 만기 거래일(YYYYMMDD) 반환. 실패 시 빈 문자열."""
     try:
         from blsh.database import query
+
         rows = query.get_max_hold_dates(pos.entry_date, pos.max_hold_days)
         return rows[-1]["trd_dd"] if rows else ""
     except Exception as e:
@@ -377,7 +489,7 @@ def run():
     log.info(f"[선별] 투자 대상 {len(candidates)}종목")
     for c in candidates:
         log.info(
-            f"  {c['ticker']:8s} {c.get('name',''):18s}"
+            f"  {c['ticker']:8s} {c.get('name', ''):18s}"
             f"  score={c['buy_score']}  mode={c['mode']}"
             f"  entry={c['entry_price']:,.0f}  ATR={c['atr']:.1f}"
             f"  SL={c['stop_loss']:,.0f}  TP={c['take_profit']:,.0f}"
@@ -405,8 +517,14 @@ def run():
     log.info(f"[잔고] 현금={cash:,.0f}원  보유={len(held)}종목")
 
     # ── 5. 매수 주문 (신규 + 갭 체크 후 배분)
-    new_cands = [c for c in candidates if c["ticker"] not in held and c["ticker"] not in positions]
-    swing_tickers = set(positions.keys())   # 파일에서 로드한 스윙 포지션 (체결확인 오탐 방지)
+    new_cands = [
+        c
+        for c in candidates
+        if c["ticker"] not in held and c["ticker"] not in positions
+    ]
+    swing_tickers = set(
+        positions.keys()
+    )  # 파일에서 로드한 스윙 포지션 (체결확인 오탐 방지)
     pending: dict[str, dict] = {}  # ticker → {cand, odno, entry_price, qty}
 
     if new_cands:
@@ -430,14 +548,21 @@ def run():
             avail = cash * CASH_USAGE
             alloc = avail / len(valid_cands)
             if alloc < MIN_ALLOC:
-                log.warning(f"[매수] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 전체 스킵")
+                log.warning(
+                    f"[매수] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 전체 스킵"
+                )
             else:
                 for c, entry in valid_cands:
                     t = c["ticker"]
                     qty = max(1, int(alloc // entry))
                     odno = _buy(env_dv, trenv, t, qty, entry)
                     if odno:
-                        pending[t] = {"cand": c, "odno": odno, "entry_price": entry, "qty": qty}
+                        pending[t] = {
+                            "cand": c,
+                            "odno": odno,
+                            "entry_price": entry,
+                            "qty": qty,
+                        }
 
     # ── 6. 체결 확인 (09:10까지) — inquire_balance로 실제 보유 여부 확인
     log.info(f"[체결대기] {FILL_WAIT_UNTIL[:2]}:{FILL_WAIT_UNTIL[2:4]}까지 대기")
@@ -449,10 +574,16 @@ def run():
             if actual_qty > 0 and t not in swing_tickers:
                 # 부분 체결: 잔여 주문 즉시 취소
                 if actual_qty < info["qty"]:
-                    log.warning(f"  부분 체결: {t}  주문={info['qty']}  체결={actual_qty} → 잔량 취소")
-                    if not _cancel_order(env_dv, trenv, t, info["odno"], info["qty"] - actual_qty):
+                    log.warning(
+                        f"  부분 체결: {t}  주문={info['qty']}  체결={actual_qty} → 잔량 취소"
+                    )
+                    if not _cancel_order(
+                        env_dv, trenv, t, info["odno"], info["qty"] - actual_qty
+                    ):
                         log.error(f"  잔량 취소 실패 ({t}) → 포지션 수량 불일치 주의")
-                pos = _make_position(info["cand"], info["entry_price"], actual_qty, today)
+                pos = _make_position(
+                    info["cand"], info["entry_price"], actual_qty, today
+                )
                 positions[t] = pos
                 if pos.max_hold_days > 1:
                     expiry_dates[t] = _calc_expiry(pos)
@@ -480,6 +611,7 @@ def run():
 
     # ── 7. 장 중 모니터링
     last_status_min = ""
+    session_closed: dict[str, Position] = {}  # 세션 내 청산된 포지션 누적 (손익 집계용)
     while True:
         now = _now()
 
@@ -491,21 +623,32 @@ def run():
             log.info("[모니터링] 전 포지션 청산")
             break
 
+        # 전 포지션 현재가 병렬 조회 (만기·데이 청산·SL/TP 공용 — API 호출 1회로 통합)
+        cur_prices = _fetch_prices(env_dv, list(positions.keys()))
+
         # 만기 청산 (스윙 보유일 초과) — expiry_dates는 세션 시작 시 1회 계산
-        expired = [t for t in positions if expiry_dates.get(t) and _today() > expiry_dates[t]]
+        expired = [
+            t for t in positions if expiry_dates.get(t) and _today() > expiry_dates[t]
+        ]
         if expired:
-            exp_prices = _fetch_prices(env_dv, expired)
             for t in expired:
                 if t not in positions:
                     continue
                 pos = positions[t]
-                cur = exp_prices.get(t, 0)
-                ret = (cur - pos.buy_price) / pos.buy_price * 100 if cur else 0
-                if _sell(env_dv, trenv, t, pos.qty, reason=f"보유만기 {ret:+.2f}%"):
+                cur = cur_prices.get(t)
+                reason = (
+                    f"보유만기 {(cur - pos.buy_price) / pos.buy_price * 100:+.2f}%"
+                    if cur
+                    else "보유만기 (가격조회실패)"
+                )
+                if _sell(env_dv, trenv, t, pos.qty, reason=reason):
+                    if cur:
+                        pos.realized_pnl += (
+                            cur - pos.buy_price
+                        ) * pos.qty - cur * pos.qty * SELL_COST_RATE
+                    session_closed[t] = pos
                     del positions[t]
-
-        # 전 포지션 현재가 병렬 조회 (데이 청산 + SL/TP 공용)
-        cur_prices = _fetch_prices(env_dv, list(positions.keys()))
+                    expiry_dates.pop(t, None)
 
         # 데이 트레이딩 강제 청산 (max_hold_days==1) — expired 처리 후 재구성
         if now >= DAYTRADE_CLOSE:
@@ -519,6 +662,11 @@ def run():
                     cur = cur_prices.get(t, pos.buy_price)
                     ret = (cur - pos.buy_price) / pos.buy_price * 100
                     if _sell(env_dv, trenv, t, pos.qty, reason=f"데이마감 {ret:+.2f}%"):
+                        # 잔여 수량(pos.qty)에 대한 손익만 계산 (1차 익절분은 _process_position에서 반영됨)
+                        pos.realized_pnl += (
+                            cur - pos.buy_price
+                        ) * pos.qty - cur * pos.qty * SELL_COST_RATE
+                        session_closed[t] = pos
                         del positions[t]
 
         # _sell 실패 시 포지션이 남아 다음 틱 SL/TP 루프에서 재시도됨 (의도된 fallback)
@@ -537,7 +685,9 @@ def run():
                 closed.append(t)
 
         for t in closed:
+            session_closed[t] = positions[t]
             del positions[t]
+            expiry_dates.pop(t, None)
 
         # 포지션 현황 로그 (1분마다)
         cur_min = now[2:4]
@@ -546,7 +696,9 @@ def run():
             log.info(
                 f"[{now[:2]}:{cur_min}] 보유 {len(positions)}종목: "
                 + ", ".join(
-                    f"{t}({p.qty}주 {((cur_prices.get(t, p.buy_price)-p.buy_price)/p.buy_price*100):+.1f}%)"
+                    f"{t}({p.qty}주 {((cur_prices[t] - p.buy_price) / p.buy_price * 100):+.1f}%)"
+                    if t in cur_prices
+                    else f"{t}({p.qty}주 -조회실패-)"
                     for t, p in positions.items()
                 )
             )
@@ -558,7 +710,18 @@ def run():
                 break
             time.sleep(1)
 
-    # ── 8. 종료 처리 (스윙만 파일에 남김)
+    # ── 8. 당일 결과 요약
+    if session_closed:
+        total_pnl = sum(p.realized_pnl for p in session_closed.values())
+        winners = sum(1 for p in session_closed.values() if p.realized_pnl > 0)
+        log.info(
+            f"[당일 결과] 청산 {len(session_closed)}종목  "
+            f"추정손익 {total_pnl:+,.0f}원  수익 {winners}/손실 {len(session_closed) - winners}"
+        )
+        for t, p in session_closed.items():
+            log.info(f"  {t} {p.name}  {p.realized_pnl:+,.0f}원")
+
+    # ── 9. 종료 처리 (스윙만 파일에 남김)
     _save_positions(positions, swing_only=True)
     swing_remaining = {t: p for t, p in positions.items() if p.max_hold_days > 1}
     log.info(
@@ -566,7 +729,9 @@ def run():
         + (f"  → {POSITIONS_FILE}" if swing_remaining else "")
     )
     for t, p in swing_remaining.items():
-        log.info(f"  {t} {p.name}  qty={p.qty}  SL={p.sl:,.0f}  TP2={p.tp2:,.0f}  만기={p.entry_date}+{p.max_hold_days}일")
+        log.info(
+            f"  {t} {p.name}  qty={p.qty}  SL={p.sl:,.0f}  TP2={p.tp2:,.0f}  만기={p.entry_date}+{p.max_hold_days}일"
+        )
 
 
 # ─────────────────────────────────────────
@@ -581,7 +746,9 @@ if __name__ == "__main__":
 
     kis_env = os.environ.get("KIS_ENV", "demo")
     if kis_env == "real":
-        confirm = input("🚨 실전투자(KIS_ENV=real) 모드입니다. 계속하시겠습니까? (yes): ")
+        confirm = input(
+            "🚨 실전투자(KIS_ENV=real) 모드입니다. 계속하시겠습니까? (yes): "
+        )
         if confirm.strip().lower() != "yes":
             raise SystemExit(0)
 

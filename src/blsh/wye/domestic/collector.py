@@ -127,4 +127,4 @@ def _recreate(df, model, **filters):
 
 if __name__ == "__main__":
     login_krx()
-    _collect(fromdate="20240115", todate="20241231")
+    collect("20260313")
