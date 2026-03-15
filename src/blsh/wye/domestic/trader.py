@@ -480,12 +480,12 @@ def run():
 
     log.info(f"[스캔] 기준일={today}")
     try:
-        results, _, base_date = scanner.scan(today)
+        candidates_df, _, base_date = scanner.scan(today)
     except Exception as e:
         log.error(f"[스캔] 오류: {e}")
         return
 
-    candidates = scanner.screen(results, base_date) or []
+    candidates = candidates_df.to_dict("records")
     log.info(f"[선별] 투자 대상 {len(candidates)}종목")
     for c in candidates:
         log.info(

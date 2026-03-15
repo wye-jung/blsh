@@ -1,4 +1,5 @@
 import logging
+import time
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
 from blsh.database import engine, select_one, select_first, select_all, execute_batch
@@ -20,9 +21,11 @@ def _validate_table(table: str) -> None:
         raise ValueError(f"허용되지 않은 테이블명: {table}")
 
 
-def get_latest_biz_date() -> str:
-    """isu_ksp_ohlcv에서 가장 최근 거래일 반환 (YYYYMMDD)"""
-    row = select_one("SELECT MAX(trd_dd) AS d FROM isu_ksp_ohlcv")
+def get_latest_biz_date(base_date: str = time.strftime("%Y%m%d")) -> str:
+    """기준일 이전 최근 거래일 반환 (YYYYMMDD)"""
+    row = select_one(
+        "SELECT MAX(trd_dd) AS d FROM isu_ksp_ohlcv where trd_dd <= :bd", bd=base_date
+    )
     return row["d"] if row else None
 
 
@@ -98,65 +101,65 @@ def get_netbid_trdvol(table, tickers, base_date):
     return result
 
 
-def save_signals(results):
-    if not results:
-        log.info("저장할 데이터 없음")
-        return
+# def save_signals(results):
+#     if not results:
+#         log.info("저장할 데이터 없음")
+#         return
 
-    execute_batch(
-        """
-        INSERT INTO stock_signals (
-            base_date, target_date, ticker, name, market,
-            buy_score, mode, entry_price, stop_loss, take_profit,
-            close, atr, rsi, macd, macd_signal, macd_hist,
-            bb_upper, bb_middle, bb_lower, stoch_k, stoch_d,
-            foreign_netbuy, inst_netbuy, indi_netbuy,
-            buy_flags
-        ) VALUES (
-            %(base_date)s, %(target_date)s, %(ticker)s, %(name)s, %(market)s,
-            %(buy_score)s, %(mode)s, %(entry_price)s, %(stop_loss)s, %(take_profit)s,
-            %(close)s, %(atr)s, %(rsi)s, %(macd)s, %(macd_signal)s, %(macd_hist)s,
-            %(bb_upper)s, %(bb_middle)s, %(bb_lower)s, %(stoch_k)s, %(stoch_d)s,
-            %(foreign_netbuy)s, %(inst_netbuy)s, %(indi_netbuy)s,
-            %(buy_flags)s
-        )
-        ON CONFLICT (base_date, ticker) DO UPDATE SET
-            target_date    = EXCLUDED.target_date,
-            buy_score      = EXCLUDED.buy_score,
-            mode           = EXCLUDED.mode,
-            entry_price    = EXCLUDED.entry_price,
-            stop_loss      = EXCLUDED.stop_loss,
-            take_profit    = EXCLUDED.take_profit,
-            close          = EXCLUDED.close,
-            atr            = EXCLUDED.atr,
-            rsi            = EXCLUDED.rsi,
-            macd           = EXCLUDED.macd,
-            macd_signal    = EXCLUDED.macd_signal,
-            macd_hist      = EXCLUDED.macd_hist,
-            bb_upper       = EXCLUDED.bb_upper,
-            bb_middle      = EXCLUDED.bb_middle,
-            bb_lower       = EXCLUDED.bb_lower,
-            stoch_k        = EXCLUDED.stoch_k,
-            stoch_d        = EXCLUDED.stoch_d,
-            foreign_netbuy = EXCLUDED.foreign_netbuy,
-            inst_netbuy    = EXCLUDED.inst_netbuy,
-            indi_netbuy    = EXCLUDED.indi_netbuy,
-            buy_flags      = EXCLUDED.buy_flags
-        """,
-        results,
-    )
-    log.info(f"DB 저장 완료: {len(results)}건")
+#     execute_batch(
+#         """
+#         INSERT INTO stock_signals (
+#             base_date, target_date, ticker, name, market,
+#             buy_score, mode, entry_price, stop_loss, take_profit,
+#             close, atr, rsi, macd, macd_signal, macd_hist,
+#             bb_upper, bb_middle, bb_lower, stoch_k, stoch_d,
+#             foreign_netbuy, inst_netbuy, indi_netbuy,
+#             buy_flags
+#         ) VALUES (
+#             %(base_date)s, %(target_date)s, %(ticker)s, %(name)s, %(market)s,
+#             %(buy_score)s, %(mode)s, %(entry_price)s, %(stop_loss)s, %(take_profit)s,
+#             %(close)s, %(atr)s, %(rsi)s, %(macd)s, %(macd_signal)s, %(macd_hist)s,
+#             %(bb_upper)s, %(bb_middle)s, %(bb_lower)s, %(stoch_k)s, %(stoch_d)s,
+#             %(foreign_netbuy)s, %(inst_netbuy)s, %(indi_netbuy)s,
+#             %(buy_flags)s
+#         )
+#         ON CONFLICT (base_date, ticker) DO UPDATE SET
+#             target_date    = EXCLUDED.target_date,
+#             buy_score      = EXCLUDED.buy_score,
+#             mode           = EXCLUDED.mode,
+#             entry_price    = EXCLUDED.entry_price,
+#             stop_loss      = EXCLUDED.stop_loss,
+#             take_profit    = EXCLUDED.take_profit,
+#             close          = EXCLUDED.close,
+#             atr            = EXCLUDED.atr,
+#             rsi            = EXCLUDED.rsi,
+#             macd           = EXCLUDED.macd,
+#             macd_signal    = EXCLUDED.macd_signal,
+#             macd_hist      = EXCLUDED.macd_hist,
+#             bb_upper       = EXCLUDED.bb_upper,
+#             bb_middle      = EXCLUDED.bb_middle,
+#             bb_lower       = EXCLUDED.bb_lower,
+#             stoch_k        = EXCLUDED.stoch_k,
+#             stoch_d        = EXCLUDED.stoch_d,
+#             foreign_netbuy = EXCLUDED.foreign_netbuy,
+#             inst_netbuy    = EXCLUDED.inst_netbuy,
+#             indi_netbuy    = EXCLUDED.indi_netbuy,
+#             buy_flags      = EXCLUDED.buy_flags
+#         """,
+#         results,
+#     )
+#     log.info(f"DB 저장 완료: {len(results)}건")
 
 
-def get_singnals(base_date):
-    return select_all(
-        """
-        SELECT * 
-        FROM stock_signals
-        WHERE base_date = :bd
-        """,
-        bd=base_date,
-    )
+# def get_singnals(base_date):
+#     return select_all(
+#         """
+#         SELECT *
+#         FROM stock_signals
+#         WHERE base_date = :bd
+#         """,
+#         bd=base_date,
+#     )
 
 
 def get_index_clsprc(idx_nm, base_date, ma_days=20):

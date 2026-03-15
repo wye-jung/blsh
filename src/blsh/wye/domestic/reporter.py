@@ -10,12 +10,12 @@ from blsh.wye.domestic import _factor as fac
 log = logging.getLogger(__name__)
 
 
-def print_general_summary(results):
+def print_general_summary(df):
     _print_header("스캔 리포트")
 
-    if not results:
+    if df.empty:
+        log.info("─── 스캔 결과 없음 ───")
         return
-    df = pd.DataFrame(results)
 
     summary = (
         df.groupby("market")
@@ -36,36 +36,20 @@ def print_general_summary(results):
         .round(2)
         .reset_index()
     )
-    log.info("\n─── 시장별 요약 ───\n" + summary.to_string(index=False))
-
-    top = df.sort_values("buy_score", ascending=False).head(15)[
-        [
-            "ticker",
-            "name",
-            "market",
-            "buy_score",
-            "mode",
-            "close",
-            "entry_price",
-            "stop_loss",
-            "take_profit",
-            "foreign_netbuy",
-            "inst_netbuy",
-            "indi_netbuy",
-            "buy_flags",
-        ]
-    ]
-    log.info("\n─── 매수 신호 TOP15 ───\n" + top.to_string(index=False))
+    log.info("─── 시장별 요약 ───")
+    print(summary.to_string(index=False))
 
 
-def print_invest_report(screened, base_date):
-    _print_header("투자 대상 리포트")
+def print_invest_report(df, base_date):
+    _print_header(
+        f"★ 투자 대상 선별 리포트  |  기준 거래일: {base_date}  |  총 {len(df)}종목"
+    )
 
-    if not screened:
-        log.info("\n─── 투자 대상 없음 ───")
+    if df.empty:
+        log.info("─── 투자 대상 없음 ───")
         return
 
-    candidates = pd.DataFrame(screened)
+    candidates = df.copy()
     candidates["_mode_rank"] = candidates["mode"].map({"MIX": 0, "MOM": 1}).fillna(2)
 
     def supply_strength(flags: str) -> int:
@@ -84,22 +68,16 @@ def print_invest_report(screened, base_date):
         ["_mode_rank", "_supply_rank", "buy_score"], ascending=[True, False, False]
     )
 
-    sep = "═" * 110
-    log.info(f"\n{sep}")
-    log.info(
-        f"  ★ 투자 대상 선별 리포트  |  기준일: {base_date}  |  총 {len(candidates)}종목"
-    )
     log.info(
         f"  선별 기준: score≥{fac.INVEST_MIN_SCORE}  mode=MIX/MOM  수급(외인or기관)>0  P_OV 제외"
     )
-    log.info(sep)
+
+    _line("=")
 
     if candidates.empty:
         log.info("  해당 조건을 만족하는 종목이 없습니다.")
-        log.info(sep)
+        _line("=")
         return
-
-    print()
 
     for mode_label, mode_val in [
         ("MIX (추세전환 초입 ★★★)", "MIX"),
@@ -108,8 +86,8 @@ def print_invest_report(screened, base_date):
         group = candidates[candidates["mode"] == mode_val]
         if group.empty:
             continue
-        log.info(f"\n  【 {mode_label} 】  {len(group)}종목")
-        log.info("  " + "─" * 108)
+        log.info(f"  【 {mode_label} 】  {len(group)}종목")
+        _line("-", prefix="  ")
 
         for _, row in group.iterrows():
             frgn = (
@@ -139,8 +117,9 @@ def print_invest_report(screened, base_date):
                 f"외인 {frgn:>12s}  기관 {inst:>12s}  개인 {indi:>12s}  "
                 f"flags: {row['buy_flags']}"
             )
+        log.info("")
 
-    log.info(f"\n{sep}\n")
+    _line("=")
 
     if not candidates.empty:
         log.info("  [ 선별 종목 분포 ]")
@@ -174,8 +153,6 @@ def print_simul_report(
 ):
     _print_header("시뮬레이션 리포트")
 
-    sep = "═" * 115
-    log.info(f"\n{sep}")
     log.info(
         f"  📊 수익률 리포트  |  매수일: {target_date}"
         f"  (최대 {fac.MAX_HOLD_DAYS}거래일, 실제 {actual_days}거래일)"
@@ -185,7 +162,6 @@ def print_simul_report(
         f"/ 매수 성공: {len(rows_ok)}  갭 상승(매수 불가): {len(rows_gap)}  "
         f"데이터 없음: {len(rows_miss)}"
     )
-    log.info(sep)
 
     if rows_ok:
         df_ok = pd.DataFrame(rows_ok).sort_values("ret_pct", ascending=False)
@@ -194,10 +170,10 @@ def print_simul_report(
         holds = df_ok[~df_ok["result_type"].isin(["익절", "손절"])]
 
         log.info(
-            f"\n  ▶ 매수 성공 {len(df_ok)}종목  "
+            f"  ▶ 매수 성공 {len(df_ok)}종목  "
             f"(익절 {len(wins)}  손절 {len(cuts)}  미확정 {len(holds)})"
         )
-        log.info("  " + "─" * 113)
+        _line("─", prefix="  ")
 
         for _, r in df_ok.iterrows():
             if r["result_type"] == "익절":
@@ -223,13 +199,13 @@ def print_simul_report(
         avg_ret = df_ok["ret_pct"].mean()
         win_rate = len(wins) / len(df_ok) * 100 if len(df_ok) else 0
         log.info(
-            f"\n  평균 수익률: {avg_ret:+.2f}%  승률: {win_rate:.1f}%  "
+            f"  평균 수익률: {avg_ret:+.2f}%  승률: {win_rate:.1f}%  "
             f"(익절 {len(wins)} / 손절 {len(cuts)} / 미확정 {len(holds)})"
         )
 
     if rows_gap:
-        log.info(f"\n  ▶ 갭 상승 (매수 불가) {len(rows_gap)}종목")
-        log.info("  " + "─" * 113)
+        log.info(f"  ▶ 갭 상승 (매수 불가) {len(rows_gap)}종목")
+        _line("-", prefix="  ")
         for r in rows_gap:
             log.info(
                 f"  ⬆️갭상승  [{r['buy_score']:2d}pt/{r['mode']}]  "
@@ -238,10 +214,15 @@ def print_simul_report(
                 f"시가 {r['t_open']:>8,.0f} ({r['entry_date']})"
             )
 
-    log.info(f"\n{sep}\n")
+    _line()
+
+
+def _line(char="═", len=110, prefix="", appendix=""):
+    log.info(prefix + char * len + appendix)
 
 
 def _print_header(title):
-    print("\n" + "#" * 150)
-    log.info(title)
-    print("#" * 150)
+    print()
+    _line()
+    log.info(f"  {title}")
+    _line()

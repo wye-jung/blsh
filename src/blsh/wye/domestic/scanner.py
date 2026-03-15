@@ -647,16 +647,15 @@ def get_next_biz_date(base_date: str) -> str:
 
 
 # ─────────────────────────────────────────
-# 스캔
+# 스캔 및 대상 선별
 # ─────────────────────────────────────────
 def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
-    log.info(f"기준일: {base_date}")
 
+    # ── 기준 거래일 (분석 대상일)
+    base_date = query.get_latest_biz_date(base_date)
     # ── 다음 영업일 (매수 목표일)
     target_date = get_next_biz_date(base_date)
-
-    if target_date:
-        log.info(f"매수 목표일: {target_date}")
+    log.info(f"기준 거래일: {base_date}, 매수 목표일: {target_date}")
 
     start = (
         datetime.strptime(base_date, "%Y%m%d") - timedelta(days=fac.LOOKBACK_DAYS)
@@ -683,22 +682,12 @@ def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
     # ── 2단계: DB 수급 보강
     results = enrich_with_db(results, base_date)
 
-    # 저장
-    query.save_signals(results)
-
-    # 리포트
-    reporter.print_general_summary(results)
-
-    return (results, target_date, base_date)
-
-
-def screen(results=None, base_date=time.strftime("%Y%m%d")):
-    """투자대상 선별"""
-    results = results if results else query.get_singnals(base_date)
-    if not results:
-        return
+    # query.save_signals(results)
 
     df = pd.DataFrame(results)
+    reporter.print_general_summary(df)
+
+    # ── 3단계: 투자 대상 선별
     for col in ("foreign_netbuy", "inst_netbuy", "indi_netbuy"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -707,11 +696,11 @@ def screen(results=None, base_date=time.strftime("%Y%m%d")):
         & (df["mode"].isin(["MIX", "MOM", "REV"]))
         & (~df["buy_flags"].str.contains("P_OV", na=False))
     )
-    screened = df[cand_mask].copy().to_dict("records")
+    candidates = df[cand_mask].copy()
+    reporter.print_invest_report(candidates, base_date)
 
-    reporter.print_invest_report(screened, base_date)
-    return screened
+    return (candidates, target_date, base_date)
 
 
 if __name__ == "__main__":
-    screen(scan()[0])
+    scan()

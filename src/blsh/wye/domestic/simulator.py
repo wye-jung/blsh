@@ -10,22 +10,15 @@ from blsh.wye.domestic import reporter, _factor as fac
 log = logging.getLogger(__name__)
 
 
-def simulate(screened, target_date) -> tuple:
+def simulate(candidates, target_date) -> tuple:
     """
     수익률 시뮬레이트
     """
-    if not screened:
-        return
-
-    if not target_date:
+    if candidates.empty:
         log.info("[시뮬레이트] target_date 없음 (미래 날짜) → 스킵")
         return
 
     log.info(f"[시뮬레이트] 목표일={target_date}  최대 {fac.MAX_HOLD_DAYS}거래일 추적")
-
-    candidates = pd.DataFrame(screened)
-    if candidates.empty:
-        return
 
     tickers = candidates["ticker"].tolist()
 

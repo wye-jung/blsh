@@ -31,8 +31,8 @@ from blsh.wye.domestic import scanner, simulator, _factor as fac
 log = logging.getLogger(__name__)
 
 INITIAL_CAPITAL = 10_000_000
-CASH_USAGE = 0.9       # 가용 현금의 90% 사용
-MIN_ALLOC = 10_000     # 종목당 최소 배분액 (1만원)
+CASH_USAGE = 0.9  # 가용 현금의 90% 사용
+MIN_ALLOC = 10_000  # 종목당 최소 배분액 (1만원)
 
 
 # ─────────────────────────────────────────
@@ -59,7 +59,7 @@ def run(initial_capital=INITIAL_CAPITAL, from_date="20240102"):
     # 포트폴리오 상태
     cash = float(initial_capital)
     # open_positions: [{base_date, ticker, allocated, ret_pct, entry_date, exit_date, ...}, ...]
-    pending: list[dict] = []   # simulate 결과 대기 중 (target_date 아직 미래)
+    pending: list[dict] = []  # simulate 결과 대기 중 (target_date 아직 미래)
     all_trades: list[dict] = []
     daily_rows: list[dict] = []
 
@@ -70,20 +70,16 @@ def run(initial_capital=INITIAL_CAPITAL, from_date="20240102"):
     for base_date in biz_dates:
         log.info(f"── 스캔: {base_date}")
         try:
-            results, target_date, bd = scanner.scan(base_date)
+            candidates, target_date, bd = scanner.scan(base_date)
         except Exception as e:
             log.warning(f"  scan 오류 ({base_date}): {e}")
             continue
 
-        if not results or not target_date:
-            continue
-
-        screened = scanner.screen(results, bd)
-        if not screened:
+        if candidates.empty or not target_date:
             continue
 
         try:
-            ret = simulator.simulate(screened, target_date)
+            ret = simulator.simulate(candidates, target_date)
         except Exception as e:
             log.warning(f"  simulate 오류 ({base_date}): {e}")
             continue
@@ -117,8 +113,7 @@ def run(initial_capital=INITIAL_CAPITAL, from_date="20240102"):
         # 1. 오늘 진입 (이미 보유 중인 종목 제외)
         open_tickers = {p["ticker"] for p in open_positions}
         new_entries = [
-            r for r in entries_by_date.get(date, [])
-            if r["ticker"] not in open_tickers
+            r for r in entries_by_date.get(date, []) if r["ticker"] not in open_tickers
         ]
         if new_entries:
             avail = cash * CASH_USAGE
@@ -138,24 +133,26 @@ def run(initial_capital=INITIAL_CAPITAL, from_date="20240102"):
                 cash += exit_val
                 profit_amt = exit_val - pos["allocated"]
                 result_type = pos.get("result_type", "미확정")
-                all_trades.append({
-                    "base_date":    pos["base_date"],
-                    "target_date":  pos.get("target_date"),
-                    "ticker":       pos["ticker"],
-                    "name":         pos.get("name"),
-                    "market":       pos.get("market"),
-                    "mode":         pos.get("mode"),
-                    "buy_score":    int(pos.get("buy_score", 0)),
-                    "buy_flags":    pos.get("buy_flags"),
-                    "entry_date":   pos.get("entry_date"),
-                    "exit_date":    date,
-                    "result_type":  result_type,
-                    "buy_price":    pos.get("buy_price"),
-                    "exit_price":   pos.get("exit_price"),
-                    "ret_pct":      round(ret_pct, 4),
-                    "allocated_amt": pos["allocated"],
-                    "profit_amt":   round(profit_amt, 2),
-                })
+                all_trades.append(
+                    {
+                        "base_date": pos["base_date"],
+                        "target_date": pos.get("target_date"),
+                        "ticker": pos["ticker"],
+                        "name": pos.get("name"),
+                        "market": pos.get("market"),
+                        "mode": pos.get("mode"),
+                        "buy_score": int(pos.get("buy_score", 0)),
+                        "buy_flags": pos.get("buy_flags"),
+                        "entry_date": pos.get("entry_date"),
+                        "exit_date": date,
+                        "result_type": result_type,
+                        "buy_price": pos.get("buy_price"),
+                        "exit_price": pos.get("exit_price"),
+                        "ret_pct": round(ret_pct, 4),
+                        "allocated_amt": pos["allocated"],
+                        "profit_amt": round(profit_amt, 2),
+                    }
+                )
                 closed_today.append(pos)
             else:
                 still_open.append(pos)
@@ -177,54 +174,56 @@ def run(initial_capital=INITIAL_CAPITAL, from_date="20240102"):
         )
         decisive = n_wins + n_losses
 
-        daily_rows.append({
-            "trade_date":    date,
-            "portfolio_val": round(portfolio_val, 2),
-            "daily_ret_pct": round(
-                (portfolio_val - prev_val) / prev_val * 100, 4
-            ) if prev_val else 0,
-            "cum_ret_pct": round(
-                (portfolio_val - initial_capital) / initial_capital * 100, 4
-            ),
-            "profit_amt":    round(portfolio_val - prev_val, 2),
-            "n_trades":      n_total,
-            "n_wins":        n_wins,
-            "n_losses":      n_losses,
-            "n_hold_profit": n_hold_profit,
-            "n_hold_loss":   n_hold_loss,
-            "win_rate": round(n_wins / decisive * 100, 2) if decisive else None,
-        })
+        daily_rows.append(
+            {
+                "trade_date": date,
+                "portfolio_val": round(portfolio_val, 2),
+                "daily_ret_pct": round((portfolio_val - prev_val) / prev_val * 100, 4)
+                if prev_val
+                else 0,
+                "cum_ret_pct": round(
+                    (portfolio_val - initial_capital) / initial_capital * 100, 4
+                ),
+                "profit_amt": round(portfolio_val - prev_val, 2),
+                "n_trades": n_total,
+                "n_wins": n_wins,
+                "n_losses": n_losses,
+                "n_hold_profit": n_hold_profit,
+                "n_hold_loss": n_hold_loss,
+                "win_rate": round(n_wins / decisive * 100, 2) if decisive else None,
+            }
+        )
         prev_val = portfolio_val
 
     # 미청산 포지션 → 마지막 날짜 기준 강제 기록 (취득가 기준)
     last_date = biz_dates[-1]
     for pos in open_positions:
-        all_trades.append({
-            "base_date":    pos["base_date"],
-            "target_date":  pos.get("target_date"),
-            "ticker":       pos["ticker"],
-            "name":         pos.get("name"),
-            "market":       pos.get("market"),
-            "mode":         pos.get("mode"),
-            "buy_score":    int(pos.get("buy_score", 0)),
-            "buy_flags":    pos.get("buy_flags"),
-            "entry_date":   pos.get("entry_date"),
-            "exit_date":    last_date,
-            "result_type":  "미청산",
-            "buy_price":    pos.get("buy_price"),
-            "exit_price":   pos.get("buy_price"),
-            "ret_pct":      0.0,
-            "allocated_amt": pos["allocated"],
-            "profit_amt":   0.0,
-        })
+        all_trades.append(
+            {
+                "base_date": pos["base_date"],
+                "target_date": pos.get("target_date"),
+                "ticker": pos["ticker"],
+                "name": pos.get("name"),
+                "market": pos.get("market"),
+                "mode": pos.get("mode"),
+                "buy_score": int(pos.get("buy_score", 0)),
+                "buy_flags": pos.get("buy_flags"),
+                "entry_date": pos.get("entry_date"),
+                "exit_date": last_date,
+                "result_type": "미청산",
+                "buy_price": pos.get("buy_price"),
+                "exit_price": pos.get("buy_price"),
+                "ret_pct": 0.0,
+                "allocated_amt": pos["allocated"],
+                "profit_amt": 0.0,
+            }
+        )
 
     # 저장
     _save_trades(all_trades)
     _save_daily(daily_rows)
     _save_period(daily_rows, all_trades, lambda d: d[:6], "backtest_monthly", "ym")
-    _save_period(
-        daily_rows, all_trades, _quarterly_key, "backtest_quarterly", "yq"
-    )
+    _save_period(daily_rows, all_trades, _quarterly_key, "backtest_quarterly", "yq")
     _save_period(daily_rows, all_trades, lambda d: d[:4], "backtest_yearly", "year")
 
     final_val = daily_rows[-1]["portfolio_val"] if daily_rows else initial_capital
@@ -346,29 +345,27 @@ def _save_period(
             n_trades = len(pt)
             n_wins = int((pt["result_type"] == "익절").sum())
             n_losses = int((pt["result_type"] == "손절").sum())
-            n_hold_profit = int(
-                pt["result_type"].fillna("").str.contains("수익").sum()
-            )
-            n_hold_loss = int(
-                pt["result_type"].fillna("").str.contains("손실").sum()
-            )
+            n_hold_profit = int(pt["result_type"].fillna("").str.contains("수익").sum())
+            n_hold_loss = int(pt["result_type"].fillna("").str.contains("손실").sum())
             decisive = n_wins + n_losses
         else:
             n_trades = n_wins = n_losses = n_hold_profit = n_hold_loss = decisive = 0
 
-        rows.append({
-            period_col:       period,
-            "portfolio_val":  round(end_val, 2),
-            "period_ret_pct": round(period_ret, 4),
-            "cum_ret_pct":    float(grp.iloc[-1]["cum_ret_pct"]),
-            "profit_amt":     round(float(grp["profit_amt"].sum()), 2),
-            "n_trades":       n_trades,
-            "n_wins":         n_wins,
-            "n_losses":       n_losses,
-            "n_hold_profit":  n_hold_profit,
-            "n_hold_loss":    n_hold_loss,
-            "win_rate":       round(n_wins / decisive * 100, 2) if decisive else None,
-        })
+        rows.append(
+            {
+                period_col: period,
+                "portfolio_val": round(end_val, 2),
+                "period_ret_pct": round(period_ret, 4),
+                "cum_ret_pct": float(grp.iloc[-1]["cum_ret_pct"]),
+                "profit_amt": round(float(grp["profit_amt"].sum()), 2),
+                "n_trades": n_trades,
+                "n_wins": n_wins,
+                "n_losses": n_losses,
+                "n_hold_profit": n_hold_profit,
+                "n_hold_loss": n_hold_loss,
+                "win_rate": round(n_wins / decisive * 100, 2) if decisive else None,
+            }
+        )
         period_start_val = end_val
 
     execute_batch(
@@ -402,7 +399,8 @@ def _save_period(
 # ─────────────────────────────────────────
 def _create_tables():
     with engine.connect() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS backtest_trades (
                 base_date      VARCHAR(8)   NOT NULL,
                 ticker         VARCHAR(10)  NOT NULL,
@@ -423,8 +421,10 @@ def _create_tables():
                 created_at     TIMESTAMP DEFAULT NOW(),
                 PRIMARY KEY (base_date, ticker)
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS backtest_daily (
                 trade_date     VARCHAR(8) PRIMARY KEY,
                 portfolio_val  NUMERIC(15,2),
@@ -438,8 +438,10 @@ def _create_tables():
                 n_hold_loss    INTEGER DEFAULT 0,
                 win_rate       NUMERIC(6,2)
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS backtest_monthly (
                 ym             VARCHAR(6) PRIMARY KEY,
                 portfolio_val  NUMERIC(15,2),
@@ -453,8 +455,10 @@ def _create_tables():
                 n_hold_loss    INTEGER DEFAULT 0,
                 win_rate       NUMERIC(6,2)
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS backtest_quarterly (
                 yq             VARCHAR(6) PRIMARY KEY,
                 portfolio_val  NUMERIC(15,2),
@@ -468,8 +472,10 @@ def _create_tables():
                 n_hold_loss    INTEGER DEFAULT 0,
                 win_rate       NUMERIC(6,2)
             )
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             CREATE TABLE IF NOT EXISTS backtest_yearly (
                 year           VARCHAR(4) PRIMARY KEY,
                 portfolio_val  NUMERIC(15,2),
@@ -483,7 +489,8 @@ def _create_tables():
                 n_hold_loss    INTEGER DEFAULT 0,
                 win_rate       NUMERIC(6,2)
             )
-        """))
+        """)
+        )
         conn.commit()
     log.info("백테스트 테이블 생성 완료")
 

@@ -1,4 +1,5 @@
 """파라미터 최적화 스크립트"""
+
 import logging
 from blsh.database import select_all
 from blsh.wye.domestic import scanner, simulator, _factor as fac
@@ -30,16 +31,14 @@ def run_backtest(params: dict, from_date="20250901") -> dict:
     batch_results = {}
     for base_date in biz_dates:
         try:
-            results, target_date, bd = scanner.scan(base_date)
+            candidates, target_date, bd = scanner.scan(base_date)
         except Exception:
             continue
-        if not results or not target_date:
+        if candidates.empty or not target_date:
             continue
-        screened = scanner.screen(results, bd)
-        if not screened:
-            continue
+
         try:
-            ret = simulator.simulate(screened, target_date)
+            ret = simulator.simulate(candidates, target_date)
         except Exception:
             continue
         if ret is None:
@@ -62,7 +61,9 @@ def run_backtest(params: dict, from_date="20250901") -> dict:
 
     for date in biz_dates:
         open_tickers = {p["ticker"] for p in open_positions}
-        new_entries = [r for r in entries_by_date.get(date, []) if r["ticker"] not in open_tickers]
+        new_entries = [
+            r for r in entries_by_date.get(date, []) if r["ticker"] not in open_tickers
+        ]
         if new_entries:
             avail = cash * cash_usage
             alloc = avail / len(new_entries)
@@ -77,10 +78,12 @@ def run_backtest(params: dict, from_date="20250901") -> dict:
                 ret_pct = float(pos.get("ret_pct", 0))
                 exit_val = pos["allocated"] * (1 + ret_pct / 100)
                 cash += exit_val
-                all_trades.append({
-                    "result_type": pos.get("result_type", ""),
-                    "ret_pct": ret_pct,
-                })
+                all_trades.append(
+                    {
+                        "result_type": pos.get("result_type", ""),
+                        "ret_pct": ret_pct,
+                    }
+                )
             else:
                 still_open.append(pos)
         open_positions = still_open
@@ -132,7 +135,9 @@ if __name__ == "__main__":
         print(f"  INVEST_MIN_SCORE={score}: {res}")
 
     # 최적 score 선택
-    all_r1 = [(baseline["INVEST_MIN_SCORE"], r)] + [(s, res) for s, res in round1_results]
+    all_r1 = [(baseline["INVEST_MIN_SCORE"], r)] + [
+        (s, res) for s, res in round1_results
+    ]
     best_r1 = max(all_r1, key=lambda x: x[1]["total_ret"])
     best_params["INVEST_MIN_SCORE"] = best_r1[0]
     print(f"\n>> R1 최적 INVEST_MIN_SCORE={best_r1[0]}: {best_r1[1]}")
@@ -146,7 +151,9 @@ if __name__ == "__main__":
         round2_results.append((tp, res))
         print(f"  ATR_TP_MULT={tp}: {res}")
 
-    all_r2 = [(baseline["ATR_TP_MULT"], run_backtest({**best_params, "ATR_TP_MULT": 3.0}))] + [(tp, res) for tp, res in round2_results]
+    all_r2 = [
+        (baseline["ATR_TP_MULT"], run_backtest({**best_params, "ATR_TP_MULT": 3.0}))
+    ] + [(tp, res) for tp, res in round2_results]
     best_r2 = max(all_r2, key=lambda x: x[1]["total_ret"])
     best_params["ATR_TP_MULT"] = best_r2[0]
     print(f"\n>> R2 최적 ATR_TP_MULT={best_r2[0]}: {best_r2[1]}")
@@ -160,7 +167,9 @@ if __name__ == "__main__":
         round3_results.append((sl, res))
         print(f"  ATR_SL_MULT={sl}: {res}")
 
-    all_r3 = [(baseline["ATR_SL_MULT"], run_backtest({**best_params, "ATR_SL_MULT": 1.5}))] + [(sl, res) for sl, res in round3_results]
+    all_r3 = [
+        (baseline["ATR_SL_MULT"], run_backtest({**best_params, "ATR_SL_MULT": 1.5}))
+    ] + [(sl, res) for sl, res in round3_results]
     best_r3 = max(all_r3, key=lambda x: x[1]["total_ret"])
     best_params["ATR_SL_MULT"] = best_r3[0]
     print(f"\n>> R3 최적 ATR_SL_MULT={best_r3[0]}: {best_r3[1]}")
@@ -174,12 +183,24 @@ if __name__ == "__main__":
     ]
     round4_results = []
     for rev, mix, mom in hold_combos:
-        p = {**best_params, "MAX_HOLD_DAYS": rev, "MAX_HOLD_DAYS_MIX": mix, "MAX_HOLD_DAYS_MOM": mom}
+        p = {
+            **best_params,
+            "MAX_HOLD_DAYS": rev,
+            "MAX_HOLD_DAYS_MIX": mix,
+            "MAX_HOLD_DAYS_MOM": mom,
+        }
         res = run_backtest(p)
         round4_results.append(((rev, mix, mom), res))
         print(f"  (REV={rev},MIX={mix},MOM={mom}): {res}")
 
-    baseline_hold = run_backtest({**best_params, "MAX_HOLD_DAYS": 5, "MAX_HOLD_DAYS_MIX": 3, "MAX_HOLD_DAYS_MOM": 2})
+    baseline_hold = run_backtest(
+        {
+            **best_params,
+            "MAX_HOLD_DAYS": 5,
+            "MAX_HOLD_DAYS_MIX": 3,
+            "MAX_HOLD_DAYS_MOM": 2,
+        }
+    )
     all_r4 = [((5, 3, 2), baseline_hold)] + round4_results
     best_r4 = max(all_r4, key=lambda x: x[1]["total_ret"])
     best_params["MAX_HOLD_DAYS"] = best_r4[0][0]
