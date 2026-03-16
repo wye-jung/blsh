@@ -42,13 +42,24 @@ config_root = CONFIG_DIR
 # config_root = "$HOME/KIS/config/"  # 토큰 파일이 저장될 폴더, 제3자가 찾기 어렵도록 경로 설정하시기 바랍니다.
 # token_tmp = config_root + 'KIS000000'  # 토큰 로컬저장시 파일 이름 지정, 파일이름을 토큰값이 유추가능한 파일명은 삼가바랍니다.
 # token_tmp = config_root + 'KIS' + datetime.today().strftime("%Y%m%d%H%M%S")  # 토큰 로컬저장시 파일명 년월일시분초
-token_tmp = os.path.join(
-    config_root, f"KIS{datetime.today().strftime('%Y%m%d')}"
-)  # 토큰 로컬저장시 파일명 년월일
+# token_tmp = os.path.join(
+#     config_root, f"KIS{datetime.today().strftime('%Y%m%d')}"
+# )  # 토큰 로컬저장시 파일명 년월일
 
-# 접근토큰 관리하는 파일 존재여부 체크, 없으면 생성
-if not os.path.exists(token_tmp):
-    f = open(token_tmp, "w+")
+# # 접근토큰 관리하는 파일 존재여부 체크, 없으면 생성
+# if not os.path.exists(token_tmp):
+#     f = open(token_tmp, "w+")
+
+
+def get_token_file_path(svr):
+    path = os.path.join(
+        config_root, f"KIS{svr}{datetime.today().strftime('%Y%m%d')}"
+    )  # 토큰 로컬저장시 파일명 년월일
+    # 접근토큰 관리하는 파일 존재여부 체크, 없으면 생성
+    if not os.path.exists(path):
+        open(path, "w+")
+    return path
+
 
 # 앱키, 앱시크리트, 토큰, 계좌번호 등 저장관리, 자신만의 경로와 파일명으로 설정하시기 바랍니다.
 # pip install PyYAML (패키지설치)
@@ -79,7 +90,8 @@ _base_headers = {
 
 
 # 토큰 발급 받아 저장 (토큰값, 토큰 유효시간,1일, 6시간 이내 발급신청시는 기존 토큰값과 동일, 발급시 알림톡 발송)
-def save_token(my_token, my_expired):
+def save_token(svr, my_token, my_expired):
+    token_tmp = get_token_file_path(svr)
     # print(type(my_expired), my_expired)
     valid_date = datetime.strptime(my_expired, "%Y-%m-%d %H:%M:%S")
     # print('Save token date: ', valid_date)
@@ -89,9 +101,10 @@ def save_token(my_token, my_expired):
 
 
 # 토큰 확인 (토큰값, 토큰 유효시간_1일, 6시간 이내 발급신청시는 기존 토큰값과 동일, 발급시 알림톡 발송)
-def read_token():
+def read_token(svr):
     try:
         # 토큰이 저장된 파일 읽기
+        token_tmp = get_token_file_path(svr)
         with open(token_tmp, encoding="UTF-8") as f:
             tkg_tmp = yaml.load(f, Loader=yaml.FullLoader)
 
@@ -231,7 +244,7 @@ def auth(svr="prod", product=_cfg["my_prod"], url=None):
     p["appsecret"] = _cfg[ak2]
 
     # 기존 발급된 토큰이 있는지 확인
-    saved_token = read_token()  # 기존 발급 토큰 확인
+    saved_token = read_token(svr)  # 기존 발급 토큰 확인
     # print("saved_token: ", saved_token)
     if saved_token is None:  # 기존 발급 토큰 확인이 안되면 발급처리
         url = f"{_cfg[svr]}/oauth2/tokenP"
@@ -244,7 +257,7 @@ def auth(svr="prod", product=_cfg["my_prod"], url=None):
             my_expired = _getResultObject(
                 res.json()
             ).access_token_token_expired  # 토큰값 만료일시 가져오기
-            save_token(my_token, my_expired)  # 새로 발급 받은 토큰 저장
+            save_token(svr, my_token, my_expired)  # 새로 발급 받은 토큰 저장
         else:
             print("Get Authentification token fail!\nYou have to restart your app!!!")
             return

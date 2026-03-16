@@ -1,7 +1,6 @@
 import time
-from datetime import datetime, timedelta
-from pykrx import stock
-from blsh.database import ModelManager, select_one, query
+from blsh.database import ModelManager, query
+from blsh.common import dtutils
 from blsh.database.models import (
     create_tables,
     IsuKspOhlcv,
@@ -20,28 +19,24 @@ import logging
 
 log = logging.getLogger(__name__)
 
-_date_fmt = "%Y%m%d"
-
 
 def collect(fromdate=None):
     create_tables()
     login_krx()
 
-    today = datetime.now().date()
+    today = dtutils.today()
     if fromdate is None:
-        date_str = select_one("select max(trd_dd) As d from idx_stk_ohlcv")["d"]
+        date_str = query.get_max_ohlcv_date()
         if date_str is None:
-            fromdate = today.strftime(_date_fmt)
-        else:
-            date_obj = datetime.strptime(date_str, _date_fmt).date()
-            if date_obj < today:
-                fromdate = (date_obj + timedelta(days=1)).strftime(_date_fmt)
+            fromdate = today
+        elif date_str < today:
+            fromdate = dtutils.nextday(date_str)
 
     if fromdate:
-        _collect(fromdate, today.strftime(_date_fmt))
+        _collect(fromdate, today)
 
 
-def _collect(fromdate=time.strftime(_date_fmt), todate=time.strftime(_date_fmt)):
+def _collect(fromdate=dtutils.today(), todate=dtutils.today()):
     log.info(f"_collect from {fromdate} to {todate}")
     for d in query.get_biz_dates(fromdate=fromdate, todate=todate):
         date = d["d"]
@@ -97,10 +92,8 @@ def _collect_base_info():
 
 # 휴장일 from KIS
 def _collect_holiday(base_date: str):
-    try:
-        datetime.strptime(base_date, "%Y%m%d")
-    except ValueError as e:
-        print(e)
+    if not dtutils.is_valid_date(base_date):
+        log.warning(f"{base_date} 는 유효하지 않은 날짜 문자열입니다.")
         return
 
     if not query.get_krx_holiday(base_date):
@@ -112,7 +105,7 @@ def _collect_holiday(base_date: str):
         log.info(f"krx_holiday 미보유 ({base_date} 이후) → KIS API 조회")
         log.info(f"chk_holiday로 {base_date} 기준 약 100일치 데이터 반환")
         df = ds.chk_holiday(bass_dt=base_date)
-        df["bass_dt"] = pd.to_datetime(df["bass_dt"]).dt.strftime(_date_fmt)
+        df["bass_dt"] = dtutils.strftime(pd.to_datetime(df["bass_dt"]).dt)
         query.save_holiday(df)
 
 
@@ -128,9 +121,6 @@ def _recreate(df, model, **filters):
         log.info(f"No data to store for {model.__tablename__} with filters {filters}")
         return 0
 
-
-# def _is_holiday(date=time.strftime("%Y%m%d")):
-#     return krx.get_index_ohlcv_by_date(date, date, "1001").empty
 
 if __name__ == "__main__":
     # collect()

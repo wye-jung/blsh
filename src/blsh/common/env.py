@@ -3,8 +3,7 @@ import os
 from dotenv import load_dotenv
 
 _USER_HOME: Final = os.path.expanduser("~")
-_BLSH_HOME: Final = os.path.join(_USER_HOME, "workspace/blsh")
-TEMP_DIR: Final = os.path.join(_BLSH_HOME, ".temp")
+TEMP_DIR: Final = os.path.join(_USER_HOME, ".temp")
 CONFIG_DIR: Final = os.path.join(_USER_HOME, ".blsh/config")
 KIS_DEVLP_YAML = os.path.join(CONFIG_DIR, "kis_devlp.yaml")
 

@@ -241,7 +241,8 @@ class TradeCandidates(Base):
 
     atr_sl_mult = Column(Numeric, comment="ATR_SL_MULT")
     atr_tp_mult = Column(Numeric, comment="ATR_TP_MULT")
-    max_hold_days = Column(SmallInteger, comment="최대 보유일")
+    max_hold_days = Column(SmallInteger, comment="최대 보유 영업일수")
+    expiry_date = Column(String(8), comment="청산일(매수일 + 최대 보유 영업일수)")
     created_at = Column(DateTime, server_default=func.now(), comment="레코드 생성일시")
 
 

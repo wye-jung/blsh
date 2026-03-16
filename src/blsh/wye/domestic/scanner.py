@@ -712,6 +712,7 @@ def save_candidates(candidates, target_date, base_date):
         ]
     ]
     df["atr_sl_mult"] = fac.ATR_SL_MULT
+    df["atr_sl_mult"] = fac.ATR_SL_MULT
     df["atr_tp_mult"] = fac.ATR_TP_MULT
     conditions = [
         df["mode"] == "MIX",
@@ -720,6 +721,7 @@ def save_candidates(candidates, target_date, base_date):
     ]
     days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
     df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
+    df["expiry_date"] = query.get_max_hold_dates(df["target_date"], df["max_hold_days"])
     print(df)
     modelManager = ModelManager(TradeCandidates)
     modelManager.delete(base_date=base_date, target_date=target_date)

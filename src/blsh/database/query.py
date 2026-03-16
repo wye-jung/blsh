@@ -3,8 +3,11 @@ import time
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
 from blsh.database import engine, select_one, select_first, select_all, execute_batch
+from blsh.common import timeutils
 
 log = logging.getLogger(__name__)
+
+_min_krx_holidays_date = select_one("select min(bass_dt) as d from krx_holidays")["d"]
 
 _ALLOWED_TABLES = {
     "isu_ksp_ohlcv",
@@ -21,15 +24,15 @@ def _validate_table(table: str) -> None:
         raise ValueError(f"허용되지 않은 테이블명: {table}")
 
 
+def get_max_ohlcv_date():
+    return select_one("select max(trd_dd) As d from idx_stk_ohlcv")["d"]
+
+
 def get_latest_biz_date(base_date: str = time.strftime("%Y%m%d")) -> str:
+    """최근 거래일"""
     row = select_one(
-        # """
-        # SELECT MAX(trd_dd) AS d FROM krx_holiday
-        # WHERE bass_dt <= :bd
-        # AND opnd_yn = 'Y'
-        # """,
         """
-        SELECT MAX(trd_dd) AS d FROM isu_ksp_ohlcv 
+        SELECT MAX(trd_dd) AS d FROM idx_stk_ohlcv 
         WHERE trd_dd <= :bd
         """,
         bd=base_date,
@@ -37,42 +40,54 @@ def get_latest_biz_date(base_date: str = time.strftime("%Y%m%d")) -> str:
     return row["d"] if row else None
 
 
-def get_krx_holiday(base_date):
-    return select_first(
-        """
-            SELECT * FROM krx_holiday
-            WHERE bass_dt = :bd 
-        """,
-        bd=base_date,
-    )
-
-
 def find_next_biz_date(base_date) -> str | None:
-    if get_krx_holiday(base_date):
+    """다음 영업일"""
+    if base_date < _min_krx_holidays_date:
         row = select_first(
             """
-                SELECT bass_dt AS d FROM krx_holiday
-                WHERE bass_dt > :bd AND opnd_yn = 'Y'
-                ORDER BY bass_dt
-                LIMIT 1
+            SELECT min(trd_dd) AS d FROM idx_stk_ohlcv
+            WHERE trd_dd > :bd
             """,
             bd=base_date,
         )
-        return row["d"] if row else None
-    return None
+    else:
+        row = select_first(
+            """
+            SELECT bass_dt AS d FROM krx_holiday
+            WHERE bass_dt > :bd AND opnd_yn = 'Y'
+            ORDER BY bass_dt
+            LIMIT 1
+            """,
+            bd=base_date,
+        )
+    return row["d"] if row else None
 
 
 def get_biz_dates(fromdate, todate):
     return select_all(
         """
-        SELECT bass_dt AS d FROM krx_holiday
-        WHERE bass_dt >= :fd 
-        AND  bass_dt <= :td 
+        SELECT distinct trd_dd as d 
+        FROM idx_stk_ohlcv 
+        WHERE trd_dd >= :fd AND  trd+dd <= :td 
+        UNION
+        SELECT bass_dt AS d 
+        FROM krx_holiday
+        WHERE bass_dt >= :fd AND  bass_dt <= :td
         AND opnd_yn = 'Y'
-        ORDER BY bass_dt
+        ORDER BY 1
         """,
         fd=fromdate,
         td=todate,
+    )
+
+
+def get_krx_holiday(base_date):
+    return select_first(
+        """
+        SELECT * FROM krx_holiday
+        WHERE bass_dt = :bd 
+        """,
+        bd=base_date,
     )
 
 
