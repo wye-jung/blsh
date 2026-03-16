@@ -1,21 +1,20 @@
 import logging
-from blsh.wye.domestic import collector, scanner, simulator
+from blsh.wye.domestic import collector, scanner, trader, simulator
 
 log = logging.getLogger(__name__)
 
 
 if __name__ == "__main__":
     # 실적 데이터 수집
-    # collector.collect()
+    collector.collect()
 
     # 투자대상 선정
-    candidates, target_date, base_date = scanner.scan("20240702")
-
-    # 투자 시뮬레이션
-    simulator.simulate(candidates, target_date)
-
-    # trader.trade(candidates, target_date)
+    candidates, target_date, base_date = scanner.scan()
 
     log.info(
-        f"전체 완료: 총 {len(candidates)}건  기준일={base_date}  목표일={target_date}"
+        f"투자 대상: 총 {len(candidates)}건  선정 기준일={base_date}  매수 목표일={target_date}"
     )
+
+    # 투자 시뮬레이션
+    # simulator.simulate(candidates, target_date)
+    trader.run()

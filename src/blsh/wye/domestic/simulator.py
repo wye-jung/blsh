@@ -28,7 +28,7 @@ def simulate(candidates, target_date) -> tuple:
         log.info(f"[수익률 리포트] {target_date} 이후 OHLCV 데이터 없음 → 스킵")
         return
 
-    hold_dates = date_rows["trd_dd"].tolist()
+    hold_dates = date_rows["d"].tolist()
     actual_days = len(hold_dates)
     log.info(f"  확인 기간: {hold_dates[0]} ~ {hold_dates[-1]}  ({actual_days}거래일)")
 

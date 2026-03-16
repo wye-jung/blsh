@@ -7,47 +7,15 @@ from blsh.wye.domestic import scanner, simulator, _factor as fac
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
 
-def run_backtest(params: dict, from_date="20250901") -> dict:
-    """
-    params: dict with keys matching _factor attributes + optional backtest keys
-      e.g. {"INVEST_MIN_SCORE": 7, "ATR_SL_MULT": 1.5, ...}
-    Returns: {"total_ret": float, "win_rate": float, "n_trades": int}
-    """
-    # monkey-patch fac
-    for k, v in params.items():
-        if hasattr(fac, k):
-            setattr(fac, k, v)
-
-    cash_usage = params.get("CASH_USAGE", 0.9)
-    min_alloc = 10_000
-    initial_capital = 10_000_000
-
-    rows_db = select_all(
+def _get_biz_dates(from_date):
+    rows = select_all(
         "SELECT DISTINCT trd_dd FROM isu_ksp_ohlcv WHERE trd_dd >= :fd ORDER BY trd_dd",
         fd=from_date,
     )
-    biz_dates = [r["trd_dd"] for r in rows_db]
+    return [r["trd_dd"] for r in rows]
 
-    batch_results = {}
-    for base_date in biz_dates:
-        try:
-            candidates, target_date, bd = scanner.scan(base_date)
-        except Exception:
-            continue
-        if candidates.empty or not target_date:
-            continue
 
-        try:
-            ret = simulator.simulate(candidates, target_date)
-        except Exception:
-            continue
-        if ret is None:
-            continue
-        rows_ok, _, _ = ret
-        if rows_ok:
-            batch_results.setdefault(target_date, []).extend(rows_ok)
-
-    # portfolio tracking
+def _portfolio_stats(batch_results, biz_dates, cash_usage, initial_capital=10_000_000, min_alloc=10_000):
     cash = float(initial_capital)
     open_positions = []
     all_trades = []
@@ -61,9 +29,7 @@ def run_backtest(params: dict, from_date="20250901") -> dict:
 
     for date in biz_dates:
         open_tickers = {p["ticker"] for p in open_positions}
-        new_entries = [
-            r for r in entries_by_date.get(date, []) if r["ticker"] not in open_tickers
-        ]
+        new_entries = [r for r in entries_by_date.get(date, []) if r["ticker"] not in open_tickers]
         if new_entries:
             avail = cash * cash_usage
             alloc = avail / len(new_entries)
@@ -76,21 +42,14 @@ def run_backtest(params: dict, from_date="20250901") -> dict:
         for pos in open_positions:
             if pos.get("exit_date") == date:
                 ret_pct = float(pos.get("ret_pct", 0))
-                exit_val = pos["allocated"] * (1 + ret_pct / 100)
-                cash += exit_val
-                all_trades.append(
-                    {
-                        "result_type": pos.get("result_type", ""),
-                        "ret_pct": ret_pct,
-                    }
-                )
+                cash += pos["allocated"] * (1 + ret_pct / 100)
+                all_trades.append({"result_type": pos.get("result_type", ""), "ret_pct": ret_pct})
             else:
                 still_open.append(pos)
         open_positions = still_open
 
     unrealized = sum(p["allocated"] for p in open_positions)
-    final_val = cash + unrealized
-    total_ret = (final_val - initial_capital) / initial_capital * 100
+    total_ret = (cash + unrealized - initial_capital) / initial_capital * 100
 
     n_wins = sum(1 for t in all_trades if t["result_type"] == "익절")
     n_losses = sum(1 for t in all_trades if t["result_type"] == "손절")
@@ -106,10 +65,120 @@ def run_backtest(params: dict, from_date="20250901") -> dict:
     }
 
 
-if __name__ == "__main__":
-    import sys
+def build_scan_cache(from_date):
+    """
+    전체 날짜를 1회만 스캔해 캐시로 반환.
+    INVEST_MIN_SCORE=1 로 낮춰 모든 신호를 저장 (필터는 run_backtest_cached 에서 재적용).
+    반환: (cache, biz_dates)
+      cache: {base_date: {"signals": DataFrame, "target_date": str}}
+    """
+    orig = fac.INVEST_MIN_SCORE
+    fac.INVEST_MIN_SCORE = 1
 
-    # 베이스라인
+    biz_dates = _get_biz_dates(from_date)
+    cache = {}
+
+    print(f"캐시 빌드: {len(biz_dates)}개 날짜 스캔 중...", flush=True)
+    for i, base_date in enumerate(biz_dates, 1):
+        try:
+            candidates, target_date, _ = scanner.scan(base_date)
+            if not candidates.empty and target_date:
+                cache[base_date] = {"signals": candidates, "target_date": target_date}
+        except Exception:
+            continue
+        if i % 10 == 0:
+            print(f"  {i}/{len(biz_dates)} 완료", flush=True)
+
+    fac.INVEST_MIN_SCORE = orig
+    print(f"캐시 완료: {len(cache)}개 날짜 유효\n", flush=True)
+    return cache, biz_dates
+
+
+def run_backtest_cached(cache, biz_dates, params):
+    """
+    캐시된 스캔 결과에 params 적용 → 빠른 백테스트.
+    스캔을 다시 수행하지 않으므로 각 호출이 수 초 이내.
+    """
+    invest_min = params.get("INVEST_MIN_SCORE", fac.INVEST_MIN_SCORE)
+    sl_mult    = params.get("ATR_SL_MULT",      fac.ATR_SL_MULT)
+    tp_mult    = params.get("ATR_TP_MULT",      fac.ATR_TP_MULT)
+    cash_usage = params.get("CASH_USAGE", 0.9)
+
+    # simulator 가 fac.MAX_HOLD_DAYS* 를 직접 읽으므로 패치
+    for k in ("MAX_HOLD_DAYS", "MAX_HOLD_DAYS_MIX", "MAX_HOLD_DAYS_MOM"):
+        if k in params and hasattr(fac, k):
+            setattr(fac, k, params[k])
+
+    batch_results = {}
+    for base_date, cached in cache.items():
+        df = cached["signals"].copy()
+        target_date = cached["target_date"]
+
+        # INVEST_MIN_SCORE 필터 재적용
+        mask = (
+            (df["buy_score"] >= invest_min)
+            & (df["mode"].isin(["MIX", "MOM", "REV"]))
+            & (~df["buy_flags"].str.contains("P_OV", na=False))
+        )
+        candidates = df[mask].copy()
+        if candidates.empty:
+            continue
+
+        # ATR 멀티플라이어로 entry/SL/TP 재계산
+        candidates["entry_price"] = (candidates["close"] + 0.5  * candidates["atr"]).round(2)
+        candidates["stop_loss"]   = (candidates["close"] - sl_mult * candidates["atr"]).round(2)
+        candidates["take_profit"] = (candidates["close"] + tp_mult * candidates["atr"]).round(2)
+
+        try:
+            ret = simulator.simulate(candidates, target_date)
+        except Exception:
+            continue
+        if ret is None:
+            continue
+        rows_ok, _, _ = ret
+        if rows_ok:
+            batch_results.setdefault(target_date, []).extend(rows_ok)
+
+    return _portfolio_stats(batch_results, biz_dates, cash_usage)
+
+
+def run_backtest(params: dict, from_date="20250901") -> dict:
+    """기존 호환용: 매번 전체 스캔 수행 (느림). 단건 확인 용도."""
+    for k, v in params.items():
+        if hasattr(fac, k):
+            setattr(fac, k, v)
+
+    cash_usage = params.get("CASH_USAGE", 0.9)
+    biz_dates = _get_biz_dates(from_date)
+
+    batch_results = {}
+    for base_date in biz_dates:
+        try:
+            candidates, target_date, _ = scanner.scan(base_date)
+        except Exception:
+            continue
+        if candidates.empty or not target_date:
+            continue
+        try:
+            ret = simulator.simulate(candidates, target_date)
+        except Exception:
+            continue
+        if ret is None:
+            continue
+        rows_ok, _, _ = ret
+        if rows_ok:
+            batch_results.setdefault(target_date, []).extend(rows_ok)
+
+    return _portfolio_stats(batch_results, biz_dates, cash_usage)
+
+
+if __name__ == "__main__":
+    FROM_DATE = "20250915"
+    cache, biz_dates = build_scan_cache(FROM_DATE)
+
+    def bt(p):
+        return run_backtest_cached(cache, biz_dates, p)
+
     baseline = {
         "INVEST_MIN_SCORE": 7,
         "ATR_SL_MULT": 1.5,
@@ -119,96 +188,61 @@ if __name__ == "__main__":
         "MAX_HOLD_DAYS_MOM": 2,
     }
     print("=== 베이스라인 ===")
-    r = run_backtest(baseline)
+    r = bt(baseline)
     print(r)
-
-    best_score = r["total_ret"]
     best_params = dict(baseline)
 
-    # ── 라운드 1: INVEST_MIN_SCORE 탐색
-    print("\n=== 라운드 1: INVEST_MIN_SCORE 탐색 ===")
-    round1_results = []
+    # ── 라운드 1: INVEST_MIN_SCORE
+    print("\n=== R1: INVEST_MIN_SCORE ===")
+    r1 = [(baseline["INVEST_MIN_SCORE"], r)]
     for score in [5, 6, 8, 9]:
         p = {**best_params, "INVEST_MIN_SCORE": score}
-        res = run_backtest(p)
-        round1_results.append((score, res))
-        print(f"  INVEST_MIN_SCORE={score}: {res}")
-
-    # 최적 score 선택
-    all_r1 = [(baseline["INVEST_MIN_SCORE"], r)] + [
-        (s, res) for s, res in round1_results
-    ]
-    best_r1 = max(all_r1, key=lambda x: x[1]["total_ret"])
+        res = bt(p)
+        r1.append((score, res))
+        print(f"  score={score}: {res}")
+    best_r1 = max(r1, key=lambda x: x[1]["total_ret"])
     best_params["INVEST_MIN_SCORE"] = best_r1[0]
-    print(f"\n>> R1 최적 INVEST_MIN_SCORE={best_r1[0]}: {best_r1[1]}")
+    print(f"\n>> 최적 INVEST_MIN_SCORE={best_r1[0]}: {best_r1[1]}")
 
-    # ── 라운드 2: ATR_TP_MULT 탐색
-    print("\n=== 라운드 2: ATR_TP_MULT 탐색 ===")
-    round2_results = []
+    # ── 라운드 2: ATR_TP_MULT
+    print("\n=== R2: ATR_TP_MULT ===")
+    r2 = [(baseline["ATR_TP_MULT"], bt(dict(best_params)))]
     for tp in [2.0, 2.5, 3.5, 4.0]:
         p = {**best_params, "ATR_TP_MULT": tp}
-        res = run_backtest(p)
-        round2_results.append((tp, res))
-        print(f"  ATR_TP_MULT={tp}: {res}")
-
-    all_r2 = [
-        (baseline["ATR_TP_MULT"], run_backtest({**best_params, "ATR_TP_MULT": 3.0}))
-    ] + [(tp, res) for tp, res in round2_results]
-    best_r2 = max(all_r2, key=lambda x: x[1]["total_ret"])
+        res = bt(p)
+        r2.append((tp, res))
+        print(f"  tp={tp}: {res}")
+    best_r2 = max(r2, key=lambda x: x[1]["total_ret"])
     best_params["ATR_TP_MULT"] = best_r2[0]
-    print(f"\n>> R2 최적 ATR_TP_MULT={best_r2[0]}: {best_r2[1]}")
+    print(f"\n>> 최적 ATR_TP_MULT={best_r2[0]}: {best_r2[1]}")
 
-    # ── 라운드 3: ATR_SL_MULT 탐색
-    print("\n=== 라운드 3: ATR_SL_MULT 탐색 ===")
-    round3_results = []
+    # ── 라운드 3: ATR_SL_MULT
+    print("\n=== R3: ATR_SL_MULT ===")
+    r3 = [(baseline["ATR_SL_MULT"], bt(dict(best_params)))]
     for sl in [1.0, 2.0, 2.5]:
         p = {**best_params, "ATR_SL_MULT": sl}
-        res = run_backtest(p)
-        round3_results.append((sl, res))
-        print(f"  ATR_SL_MULT={sl}: {res}")
-
-    all_r3 = [
-        (baseline["ATR_SL_MULT"], run_backtest({**best_params, "ATR_SL_MULT": 1.5}))
-    ] + [(sl, res) for sl, res in round3_results]
-    best_r3 = max(all_r3, key=lambda x: x[1]["total_ret"])
+        res = bt(p)
+        r3.append((sl, res))
+        print(f"  sl={sl}: {res}")
+    best_r3 = max(r3, key=lambda x: x[1]["total_ret"])
     best_params["ATR_SL_MULT"] = best_r3[0]
-    print(f"\n>> R3 최적 ATR_SL_MULT={best_r3[0]}: {best_r3[1]}")
+    print(f"\n>> 최적 ATR_SL_MULT={best_r3[0]}: {best_r3[1]}")
 
-    # ── 라운드 4: MAX_HOLD_DAYS 탐색
-    print("\n=== 라운드 4: MAX_HOLD_DAYS 탐색 ===")
-    hold_combos = [
-        (3, 2, 1),
-        (7, 4, 2),
-        (10, 5, 3),
-    ]
-    round4_results = []
+    # ── 라운드 4: MAX_HOLD_DAYS
+    print("\n=== R4: MAX_HOLD_DAYS ===")
+    hold_combos = [(3, 2, 1), (7, 4, 2), (10, 5, 3)]
+    r4 = [((5, 3, 2), bt({**best_params, "MAX_HOLD_DAYS": 5, "MAX_HOLD_DAYS_MIX": 3, "MAX_HOLD_DAYS_MOM": 2}))]
     for rev, mix, mom in hold_combos:
-        p = {
-            **best_params,
-            "MAX_HOLD_DAYS": rev,
-            "MAX_HOLD_DAYS_MIX": mix,
-            "MAX_HOLD_DAYS_MOM": mom,
-        }
-        res = run_backtest(p)
-        round4_results.append(((rev, mix, mom), res))
+        p = {**best_params, "MAX_HOLD_DAYS": rev, "MAX_HOLD_DAYS_MIX": mix, "MAX_HOLD_DAYS_MOM": mom}
+        res = bt(p)
+        r4.append(((rev, mix, mom), res))
         print(f"  (REV={rev},MIX={mix},MOM={mom}): {res}")
-
-    baseline_hold = run_backtest(
-        {
-            **best_params,
-            "MAX_HOLD_DAYS": 5,
-            "MAX_HOLD_DAYS_MIX": 3,
-            "MAX_HOLD_DAYS_MOM": 2,
-        }
-    )
-    all_r4 = [((5, 3, 2), baseline_hold)] + round4_results
-    best_r4 = max(all_r4, key=lambda x: x[1]["total_ret"])
-    best_params["MAX_HOLD_DAYS"] = best_r4[0][0]
+    best_r4 = max(r4, key=lambda x: x[1]["total_ret"])
+    best_params["MAX_HOLD_DAYS"]     = best_r4[0][0]
     best_params["MAX_HOLD_DAYS_MIX"] = best_r4[0][1]
     best_params["MAX_HOLD_DAYS_MOM"] = best_r4[0][2]
-    print(f"\n>> R4 최적 HOLD_DAYS={best_r4[0]}: {best_r4[1]}")
+    print(f"\n>> 최적 HOLD_DAYS={best_r4[0]}: {best_r4[1]}")
 
     print("\n=== 최종 최적 파라미터 ===")
     print(best_params)
-    final_res = run_backtest(best_params)
-    print(f"최종 결과: {final_res}")
+    print(f"최종 결과: {bt(best_params)}")

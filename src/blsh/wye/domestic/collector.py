@@ -26,6 +26,7 @@ _date_fmt = "%Y%m%d"
 def collect(fromdate=None):
     create_tables()
     login_krx()
+
     today = datetime.now().date()
     if fromdate is None:
         date_str = select_one("select max(trd_dd) As d from idx_stk_ohlcv")["d"]
@@ -42,14 +43,16 @@ def collect(fromdate=None):
 
 def _collect(fromdate=time.strftime(_date_fmt), todate=time.strftime(_date_fmt)):
     log.info(f"_collect from {fromdate} to {todate}")
-    for d in stock.get_previous_business_days(fromdate=fromdate, todate=todate):
-        date = d.strftime(_date_fmt)
+    for d in query.get_biz_dates(fromdate=fromdate, todate=todate):
+        date = d["d"]
         print(date)
         _collect_idx_data(date)
         _collect_isu_data(date)
         _collect_etx_data(date)
 
     _collect_base_info()
+    _collect_holiday(fromdate)
+    _collect_holiday(todate)
 
 
 # 지수 데이터 수집
@@ -93,20 +96,24 @@ def _collect_base_info():
 
 
 # 휴장일 from KIS
-def collect_holiday_if_not_exists(base_date: str) -> str:
-    next_opnday = query.find_next_opnday_from_holiday(base_date)
-    if not next_opnday:
+def _collect_holiday(base_date: str):
+    try:
+        datetime.strptime(base_date, "%Y%m%d")
+    except ValueError as e:
+        print(e)
+        return
+
+    if not query.get_krx_holiday(base_date):
         from blsh.kis import kis_auth as ka
         from blsh.kis.domestic_stock import domestic_stock_functions as ds
         import pandas as pd
 
         ka.auth()
         log.info(f"krx_holiday 미보유 ({base_date} 이후) → KIS API 조회")
-        print(f"chk_holiday로 {base_date} 기준 약 100일치 데이터 반환")
+        log.info(f"chk_holiday로 {base_date} 기준 약 100일치 데이터 반환")
         df = ds.chk_holiday(bass_dt=base_date)
         df["bass_dt"] = pd.to_datetime(df["bass_dt"]).dt.strftime(_date_fmt)
         query.save_holiday(df)
-    return query.find_next_opnday_from_holiday(base_date)
 
 
 # 데이터 저장
@@ -118,7 +125,7 @@ def _recreate(df, model, **filters):
         time.sleep(0.1)
         return len(df)
     else:
-        print(f"No data to store for {model.__tablename__} with filters {filters}")
+        log.info(f"No data to store for {model.__tablename__} with filters {filters}")
         return 0
 
 
@@ -126,5 +133,6 @@ def _recreate(df, model, **filters):
 #     return krx.get_index_ohlcv_by_date(date, date, "1001").empty
 
 if __name__ == "__main__":
-    login_krx()
-    collect("20260313")
+    # collect()
+
+    _collect_holiday("20261131")

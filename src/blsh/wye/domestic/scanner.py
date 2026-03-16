@@ -53,10 +53,11 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
-from blsh.database import query
+from blsh.database import query, ModelManager
 
 from blsh.wye.domestic import collector, reporter
 from blsh.wye.domestic import _factor as fac
+from blsh.database.models import TradeCandidates
 
 log = logging.getLogger(__name__)
 
@@ -631,14 +632,7 @@ def get_next_biz_date(base_date: str) -> str:
     """
     base_date 다음 영업일 반환.
     """
-    # ── 1순위: ohlcv 테이블
-    result = query.find_next_biz_date_from_ohlcv(base_date)
-    if result:
-        log.info(f"다음 영업일: {result}  [isu_ksp_ohlcv]")
-        return result
-
-    # ── 2순위: krx_holiday 테이블 (캐시)
-    result = collector.collect_holiday_if_not_exists(base_date)
+    result = query.find_next_biz_date(base_date)
     if result:
         log.info(f"다음 영업일: {result}  [krx_holiday 테이블]")
         return result
@@ -682,8 +676,6 @@ def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
     # ── 2단계: DB 수급 보강
     results = enrich_with_db(results, base_date)
 
-    # query.save_signals(results)
-
     df = pd.DataFrame(results)
     reporter.print_general_summary(df)
 
@@ -697,9 +689,41 @@ def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
         & (~df["buy_flags"].str.contains("P_OV", na=False))
     )
     candidates = df[cand_mask].copy()
-    reporter.print_invest_report(candidates, base_date)
+    save_candidates(candidates, target_date, base_date)
+    reporter.print_invest_report(candidates, target_date, base_date)
 
     return (candidates, target_date, base_date)
+
+
+def save_candidates(candidates, target_date, base_date):
+    df = candidates[
+        [
+            "base_date",
+            "ticker",
+            "target_date",
+            "name",
+            "market",
+            "buy_score",
+            "mode",
+            "entry_price",
+            "stop_loss",
+            "take_profit",
+            "atr",
+        ]
+    ]
+    df["atr_sl_mult"] = fac.ATR_SL_MULT
+    df["atr_tp_mult"] = fac.ATR_TP_MULT
+    conditions = [
+        df["mode"] == "MIX",
+        df["mode"] == "MOM",
+        df["mode"] == "REV",
+    ]
+    days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
+    df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
+    print(df)
+    modelManager = ModelManager(TradeCandidates)
+    modelManager.delete(base_date=base_date, target_date=target_date)
+    modelManager.create(df)
 
 
 if __name__ == "__main__":

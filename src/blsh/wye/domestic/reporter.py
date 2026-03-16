@@ -40,9 +40,9 @@ def print_general_summary(df):
     print(summary.to_string(index=False))
 
 
-def print_invest_report(df, base_date):
+def print_invest_report(df, target_date, base_date):
     _print_header(
-        f"★ 투자 대상 선별 리포트  |  기준 거래일: {base_date}  |  총 {len(df)}종목"
+        f"★ 투자 대상 선별 리포트  |  목표 거래일: {target_date}  |  기준 거래일: {base_date} | 총 {len(df)}종목"
     )
 
     if df.empty:

@@ -44,7 +44,8 @@ from pathlib import Path
 
 from blsh.kis import kis_auth as ka
 from blsh.kis.domestic_stock import domestic_stock_functions as ds
-from blsh.wye.domestic import scanner, _factor as fac
+from blsh.wye.domestic import _factor as fac
+from blsh.database import query
 
 log = logging.getLogger(__name__)
 
@@ -114,9 +115,11 @@ class Position:
     qty: int  # 현재 잔여 수량
     buy_price: float  # 실제 체결가
     atr: float  # 진입 시 ATR
+    atr_sl_mult: float  # 스캔 시점 ATR_SL_MULT (저장값)
+    atr_tp_mult: float  # 스캔 시점 ATR_TP_MULT (저장값)
     sl: float  # 현재 동적 손절가 (트레일링)
     tp1: float  # 1차 목표가 (buy + ATR×TP1_MULT)
-    tp2: float  # 2차 목표가 (buy + ATR×ATR_TP_MULT)
+    tp2: float  # 2차 목표가 (buy + ATR×atr_tp_mult)
     mode: str
     max_hold_days: int
     entry_date: str  # YYYYMMDD
@@ -128,16 +131,19 @@ class Position:
 def _make_position(c: dict, buy_price: float, qty: int, entry_date: str) -> Position:
     """스캔 결과 dict → Position 생성. qty는 _buy 호출 시 사용한 수량과 일치해야 함."""
     atr = float(c["atr"])
-    sl = _floor_tick(buy_price - fac.ATR_SL_MULT * atr)
+    atr_sl_mult = float(
+        c["atr_sl_mult"] if c.get("atr_sl_mult") is not None else fac.ATR_SL_MULT
+    )
+    atr_tp_mult = float(
+        c["atr_tp_mult"] if c.get("atr_tp_mult") is not None else fac.ATR_TP_MULT
+    )
+    max_hold = int(
+        c["max_hold_days"] if c.get("max_hold_days") is not None else fac.MAX_HOLD_DAYS
+    )
+
+    sl = _floor_tick(buy_price - atr_sl_mult * atr)
     tp1 = _ceil_tick(buy_price + TP1_MULT * atr)
-    tp2 = _ceil_tick(buy_price + fac.ATR_TP_MULT * atr)
-    mode = c.get("mode", "REV")
-    if mode == "MOM":
-        max_hold = fac.MAX_HOLD_DAYS_MOM
-    elif mode == "MIX":
-        max_hold = fac.MAX_HOLD_DAYS_MIX
-    else:
-        max_hold = fac.MAX_HOLD_DAYS
+    tp2 = _ceil_tick(buy_price + atr_tp_mult * atr)
 
     qty_t1 = max(1, qty // 2)
     if qty < 2:
@@ -151,10 +157,12 @@ def _make_position(c: dict, buy_price: float, qty: int, entry_date: str) -> Posi
         qty=qty,
         buy_price=buy_price,
         atr=atr,
+        atr_sl_mult=atr_sl_mult,
+        atr_tp_mult=atr_tp_mult,
         sl=sl,
         tp1=tp1,
         tp2=tp2,
-        mode=mode,
+        mode=c.get("mode", "REV"),
         max_hold_days=max_hold,
         entry_date=entry_date,
         t1_done=False,
@@ -174,6 +182,8 @@ def _load_positions() -> dict[str, Position]:
         valid: dict[str, Position] = {}
         for t, v in data.items():
             v.setdefault("realized_pnl", 0.0)  # 구버전 파일 호환
+            v.setdefault("atr_sl_mult", fac.ATR_SL_MULT)
+            v.setdefault("atr_tp_mult", fac.ATR_TP_MULT)
             p = Position(**v)
             if p.max_hold_days == 1 and p.entry_date != today:
                 log.warning(f"  이전 데이 포지션 무시: {t} (entry={p.entry_date})")
@@ -382,7 +392,7 @@ def _process_position(pos: Position, current: float, env_dv: str, trenv) -> bool
     ret_pct = (current - pos.buy_price) / pos.buy_price * 100
 
     # ── 트레일링 SL 업데이트 (주가 상승 시에만 상향, 현재가 아래 유지)
-    trail_sl = _floor_tick(current - fac.ATR_SL_MULT * pos.atr)
+    trail_sl = _floor_tick(current - pos.atr_sl_mult * pos.atr)
     if trail_sl > pos.sl and trail_sl < current:
         log.info(
             f"  🔺 트레일링 SL: {pos.ticker}  {pos.sl:,.0f} → {trail_sl:,.0f}"
@@ -447,10 +457,8 @@ def _today() -> str:
 def _calc_expiry(pos: Position) -> str:
     """포지션의 만기 거래일(YYYYMMDD) 반환. 실패 시 빈 문자열."""
     try:
-        from blsh.database import query
-
         rows = query.get_max_hold_dates(pos.entry_date, pos.max_hold_days)
-        return rows[-1]["trd_dd"] if rows else ""
+        return rows[-1]["d"] if rows else ""
     except Exception as e:
         log.warning(f"만기일 계산 실패 ({pos.ticker}): {e} → 만기 미처리")
         return ""
@@ -468,9 +476,16 @@ def run():
 
     ka.auth(svr=svr)
     trenv = ka.getTREnv()
+    if not hasattr(trenv, "my_acct"):
+        log.error("인증 실패 — 토큰을 확인하고 다시 실행하세요.")
+        return
     log.info(f"계좌: {trenv.my_acct}-{trenv.my_prod}")
 
     today = _today()
+    # kh = query.get_krx_holiday(today)
+    # if kh["opnd_yn"] != "Y":
+    #     log.info("영업일이 아닙니다.")
+    #     return
 
     # ── 1. 스캔 (08:50 이후)
     if _now() < "085000":
@@ -478,15 +493,13 @@ def run():
         while _now() < "085000":
             time.sleep(10)
 
-    log.info(f"[스캔] 기준일={today}")
     try:
-        candidates_df, _, base_date = scanner.scan(today)
+        candidates = query.get_candidates(today) or []
+        log.info(f"매수 대상 종목 {len(candidates)}건")
     except Exception as e:
-        log.error(f"[스캔] 오류: {e}")
+        log.error(f"매수 대상 종목 조회 실패: {e}")
         return
 
-    candidates = candidates_df.to_dict("records")
-    log.info(f"[선별] 투자 대상 {len(candidates)}종목")
     for c in candidates:
         log.info(
             f"  {c['ticker']:8s} {c.get('name', ''):18s}"
