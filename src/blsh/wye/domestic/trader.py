@@ -18,13 +18,13 @@
        - 2차 익절(TP2 = buy+ATR×ATR_TP_MULT): 잔여 전량 매도
        - 트레일링 SL: 주가 상승 시 SL을 (현재가 - ATR×ATR_SL_MULT) 로 상향
     5. 청산 조건
-       - 데이 트레이딩(max_hold_days=1): 15:20 미청산 전량 매도
-       - 스윙(max_hold_days>1): 보유일 초과 시 또는 다음 영업일 재실행 시 청산
+       - 데이 트레이딩(max_hold_days=0): 15:20 미청산 전량 매도
+       - 스윙(max_hold_days>0): 보유일 초과 시 또는 다음 영업일 재실행 시 청산
          포지션은 ~/.blsh/config/trader_positions.json 에 영속 저장
 
 데이/스윙 모드: 종목 모드별 _factor.py MAX_HOLD_DAYS 기준으로 자동 분류
     MOM → MAX_HOLD_DAYS_MOM, MIX → MAX_HOLD_DAYS_MIX, REV → MAX_HOLD_DAYS
-    max_hold_days == 1 이면 데이 트레이딩
+    max_hold_days == 0 이면 데이 트레이딩
 ─────────────────────────────────────────────────────
 """
 
@@ -124,12 +124,15 @@ class Position:
     mode: str
     max_hold_days: int
     entry_date: str  # YYYYMMDD
+    expiry_date: str = ""  # 만기 거래일 (scanner에서 계산, YYYYMMDD)
     t1_done: bool = False  # 1차 분할 매도 완료 여부
     qty_t1: int = 0  # 1차 분할 수량 (전체의 50%)
     realized_pnl: float = 0.0  # 세션 내 누적 추정 실현손익 (매도가 × 수량 기준)
 
 
-def _make_position(c: dict, buy_price: float, qty: int, entry_date: str) -> Position:
+def _make_position(
+    c: dict, buy_price: float, qty: int, entry_date: str, expiry_date: str = ""
+) -> Position:
     """스캔 결과 dict → Position 생성. qty는 _buy 호출 시 사용한 수량과 일치해야 함."""
     atr = float(c["atr"])
     atr_sl_mult = float(
@@ -166,6 +169,7 @@ def _make_position(c: dict, buy_price: float, qty: int, entry_date: str) -> Posi
         mode=c.get("mode", "REV"),
         max_hold_days=max_hold,
         entry_date=entry_date,
+        expiry_date=expiry_date,
         t1_done=False,
         qty_t1=qty_t1,
     )
@@ -185,8 +189,9 @@ def _load_positions() -> dict[str, Position]:
             v.setdefault("realized_pnl", 0.0)  # 구버전 파일 호환
             v.setdefault("atr_sl_mult", fac.ATR_SL_MULT)
             v.setdefault("atr_tp_mult", fac.ATR_TP_MULT)
+            v.setdefault("expiry_date", "")
             p = Position(**v)
-            if p.max_hold_days == 1 and p.entry_date != today:
+            if p.max_hold_days == 0 and p.entry_date != today:
                 log.warning(f"  이전 데이 포지션 무시: {t} (entry={p.entry_date})")
                 continue
             valid[t] = p
@@ -202,7 +207,7 @@ def _save_positions(positions: dict[str, Position], swing_only: bool = False):
     swing_only=True: 스윙 포지션만 저장 — 세션 종료 시 사용
     """
     to_save = (
-        {t: p for t, p in positions.items() if p.max_hold_days > 1}
+        {t: p for t, p in positions.items() if p.max_hold_days > 0}
         if swing_only
         else positions
     )
@@ -301,23 +306,33 @@ def _process_position(_api, pos: Position, current: float) -> bool:
 def _calc_expiry(pos: Position) -> str:
     """포지션의 만기 거래일(YYYYMMDD) 반환. 실패 시 빈 문자열."""
     try:
-        rows = query.get_max_hold_dates(pos.entry_date, pos.max_hold_days)
-        return rows[-1]["d"] if rows else ""
+        dt = dtutils.add_biz_days(pos.entry_date, pos.max_hold_days)
+        return dt if dt else ""
     except Exception as e:
         log.warning(f"만기일 계산 실패 ({pos.ticker}): {e} → 만기 미처리")
         return ""
 
 
 def run():
+    print()
+    log.info(">>>>> START TRADER <<<<<<")
     today = dtutils.today()
     kh = query.get_krx_holiday(today)
-    if kh["opnd_yn"] != "Y":
+    if kh is None:
+        log.warning(
+            f"krx_holiday에 {today} 데이터 없습니다. 영업일로 간주하고 계속 진행합니다."
+        )
+    elif kh["opnd_yn"] != "Y":
         log.info("영업일이 아닙니다.")
         return
 
     # ── 환경변수로 실전/모의 결정
     kis_env = os.environ.get("KIS_ENV", "demo").lower()
-    _api = _Api(kis_env)
+    try:
+        _api = _Api(kis_env)
+    except RuntimeError as e:
+        log.error(str(e))
+        return
 
     # ── 1. 스캔 (08:50 이후)
     if dtutils.now() < "085000":
@@ -340,13 +355,11 @@ def run():
             f"  SL={c['stop_loss']:,.0f}  TP={c['take_profit']:,.0f}"
         )
 
-    # ── 2. 기존 스윙 포지션 로드 + 만기일 1회 계산 (매 틱 DB 쿼리 방지)
+    # ── 2. 기존 스윙 포지션 로드 + 구버전 포지션 만기일 보정 (1회 DB 쿼리)
     positions: dict[str, Position] = _load_positions()
-    expiry_dates: dict[str, str] = {
-        t: _calc_expiry(p)
-        for t, p in positions.items()
-        if p.max_hold_days > 1  # 데이 포지션은 DAYTRADE_CLOSE로 처리하므로 제외
-    }
+    for p in positions.values():
+        if not p.expiry_date and p.max_hold_days > 0:
+            p.expiry_date = _calc_expiry(p)
     if positions:
         log.info(f"[스윙 포지션] 기존 {len(positions)}종목 로드")
 
@@ -427,11 +440,15 @@ def run():
                     ):
                         log.error(f"  잔량 취소 실패 ({t}) → 포지션 수량 불일치 주의")
                 pos = _make_position(
-                    info["cand"], info["entry_price"], actual_qty, today
+                    info["cand"],
+                    info["entry_price"],
+                    actual_qty,
+                    today,
+                    info["cand"].get("expiry_date") or "",
                 )
                 positions[t] = pos
-                if pos.max_hold_days > 1:
-                    expiry_dates[t] = _calc_expiry(pos)
+                if pos.max_hold_days > 0 and not pos.expiry_date:
+                    pos.expiry_date = _calc_expiry(pos)
                 filled.append(t)
                 log.info(
                     f"  ✅ 체결: {t} {pos.name}  매수가={info['entry_price']:,.0f}"
@@ -471,11 +488,11 @@ def run():
         # 전 포지션 현재가 병렬 조회 (만기·데이 청산·SL/TP 공용 — API 호출 1회로 통합)
         cur_prices = _api._fetch_prices(list(positions.keys()))
 
-        # 만기 청산 (스윙 보유일 초과) — expiry_dates는 세션 시작 시 1회 계산
+        # 만기 청산 (스윙 보유일 초과)
         expired = [
             t
-            for t in positions
-            if expiry_dates.get(t) and dtutils.today() > expiry_dates[t]
+            for t, p in positions.items()
+            if p.expiry_date and dtutils.today() > p.expiry_date
         ]
         if expired:
             for t in expired:
@@ -495,11 +512,10 @@ def run():
                         ) * pos.qty - cur * pos.qty * SELL_COST_RATE
                     session_closed[t] = pos
                     del positions[t]
-                    expiry_dates.pop(t, None)
 
-        # 데이 트레이딩 강제 청산 (max_hold_days==1) — expired 처리 후 재구성
+        # 데이 트레이딩 강제 청산 (max_hold_days==0) — expired 처리 후 재구성
         if now >= DAYTRADE_CLOSE:
-            day_tickers = [t for t, p in positions.items() if p.max_hold_days == 1]
+            day_tickers = [t for t, p in positions.items() if p.max_hold_days == 0]
             if day_tickers:
                 log.info(f"[데이청산 진행 중] 잔여 {len(day_tickers)}종목")
                 for t in day_tickers:
@@ -534,7 +550,6 @@ def run():
         for t in closed:
             session_closed[t] = positions[t]
             del positions[t]
-            expiry_dates.pop(t, None)
 
         # 포지션 현황 로그 (1분마다)
         cur_min = now[2:4]
@@ -570,14 +585,14 @@ def run():
 
     # ── 9. 종료 처리 (스윙만 파일에 남김)
     _save_positions(positions, swing_only=True)
-    swing_remaining = {t: p for t, p in positions.items() if p.max_hold_days > 1}
+    swing_remaining = {t: p for t, p in positions.items() if p.max_hold_days > 0}
     log.info(
         f"[세션 종료]  스윙 잔여={len(swing_remaining)}종목"
         + (f"  → {POSITIONS_FILE}" if swing_remaining else "")
     )
     for t, p in swing_remaining.items():
         log.info(
-            f"  {t} {p.name}  qty={p.qty}  SL={p.sl:,.0f}  TP2={p.tp2:,.0f}  만기={p.entry_date}+{p.max_hold_days}일"
+            f"  {t} {p.name}  qty={p.qty}  SL={p.sl:,.0f}  TP2={p.tp2:,.0f}  만기={p.expiry_date}"
         )
 
 
@@ -594,8 +609,7 @@ class _Api:
         self.env_dv = env_dv
         self.trenv = ka.getTREnv()
         if not hasattr(self.trenv, "my_acct"):
-            log.error("인증 실패 — 토큰을 확인하고 다시 실행하세요.")
-            return
+            raise RuntimeError("인증 실패 — 토큰을 확인하고 다시 실행하세요.")
         log.info(f"계좌: {self.trenv.my_acct}-{self.trenv.my_prod}")
 
     def _get_price(self, ticker: str) -> float | None:
@@ -615,7 +629,7 @@ class _Api:
             return {}
         result: dict[str, float] = {}
         with ThreadPoolExecutor(max_workers=min(len(tickers), _API_CONCURRENCY)) as ex:
-            futs = {ex.submit(self._get_price, self.env_dv, t): t for t in tickers}
+            futs = {ex.submit(self._get_price, t): t for t in tickers}
             try:
                 for fut in as_completed(futs, timeout=POLL_SEC):
                     t = futs[fut]
@@ -746,11 +760,11 @@ class _Api:
 # 진입점
 # ─────────────────────────────────────────
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    # logging.basicConfig(
+    #     level=logging.INFO,
+    #     format="%(asctime)s %(levelname)s %(message)s",
+    #     datefmt="%H:%M:%S",
+    # )
 
     kis_env = os.environ.get("KIS_ENV", "demo")
     if kis_env == "real":

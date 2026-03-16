@@ -10,9 +10,9 @@ BASE = {
     "INVEST_MIN_SCORE": 9,
     "ATR_SL_MULT": 2.0,
     "ATR_TP_MULT": 2.0,
-    "MAX_HOLD_DAYS": 1,
-    "MAX_HOLD_DAYS_MIX": 1,
-    "MAX_HOLD_DAYS_MOM": 1,
+    "MAX_HOLD_DAYS": 0,
+    "MAX_HOLD_DAYS_MIX": 0,
+    "MAX_HOLD_DAYS_MOM": 0,
 }
 
 if __name__ == "__main__":

@@ -55,9 +55,10 @@ import numpy as np
 import pandas as pd
 from blsh.database import query, ModelManager
 
-from blsh.wye.domestic import collector, reporter
+from blsh.wye.domestic import reporter
 from blsh.wye.domestic import _factor as fac
 from blsh.database.models import TradeCandidates
+from blsh.common import dtutils
 
 log = logging.getLogger(__name__)
 
@@ -331,7 +332,7 @@ def scan_dataframe(
 
     return {
         "base_date": base_date,
-        "target_date": None,  # main()에서 채움
+        "entry_date": None,  # main()에서 채움
         "ticker": ticker,
         "name": name,
         "market": market,
@@ -669,9 +670,9 @@ def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
 
-    # ── target_date 채우기
+    # ── entry_date 채우기
     for r in results:
-        r["target_date"] = target_date
+        r["entry_date"] = target_date
 
     # ── 2단계: DB 수급 보강
     results = enrich_with_db(results, base_date)
@@ -700,7 +701,7 @@ def save_candidates(candidates, target_date, base_date):
         [
             "base_date",
             "ticker",
-            "target_date",
+            "entry_date",
             "name",
             "market",
             "buy_score",
@@ -710,8 +711,7 @@ def save_candidates(candidates, target_date, base_date):
             "take_profit",
             "atr",
         ]
-    ]
-    df["atr_sl_mult"] = fac.ATR_SL_MULT
+    ].copy()
     df["atr_sl_mult"] = fac.ATR_SL_MULT
     df["atr_tp_mult"] = fac.ATR_TP_MULT
     conditions = [
@@ -721,10 +721,23 @@ def save_candidates(candidates, target_date, base_date):
     ]
     days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
     df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
-    df["expiry_date"] = query.get_max_hold_dates(df["target_date"], df["max_hold_days"])
-    print(df)
+
+    # expiry_date: (target_date, max_hold_days) 조합별 캐싱 (최대 3가지)
+    expiry_cache: dict[tuple, str | None] = {}
+
+    def _get_expiry(target_date, max_hold_days):
+        key = (target_date, int(max_hold_days))
+        if key not in expiry_cache:
+            expiry_cache[key] = dtutils.add_biz_days(
+                str(target_date), int(max_hold_days)
+            )
+        return expiry_cache[key]
+
+    df["expiry_date"] = df.apply(
+        lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
+    )
     modelManager = ModelManager(TradeCandidates)
-    modelManager.delete(base_date=base_date, target_date=target_date)
+    modelManager.delete(base_date=base_date, entry_date=target_date)
     modelManager.create(df)
 
 

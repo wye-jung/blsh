@@ -215,7 +215,6 @@ class TradeCandidates(Base):
     )
 
     # 일반 정보
-    target_date = Column(String(8), comment="매수 목표일 (base_date 다음 영업일)")
     name = Column(String(100), comment="한글종목약명 (isu_base_info.isu_abbrv)")
     market = Column(String(20), comment="시장구분 (KOSPI/KOSDAQ)")
 
@@ -228,7 +227,7 @@ class TradeCandidates(Base):
     mode = Column(
         String(10), comment="신호 성격: MOM(모멘텀) / REV(추세전환) / MIX(혼합) / WEAK"
     )
-
+    entry_date = Column(String(8), comment="매수 목표일 (base_date 다음 영업일)")
     # 가격 및 전략 지표
     entry_price = Column(
         Numeric, comment="매수 상단가 = 종가 + 0.5×ATR (이 가격 이하 매수)"

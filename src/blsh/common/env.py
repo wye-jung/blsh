@@ -2,6 +2,9 @@ from typing import Final
 import os
 from dotenv import load_dotenv
 
+load_dotenv()
+KIS_ENV: Final = os.getenv("KIS_ENV")
+
 _USER_HOME: Final = os.path.expanduser("~")
 TEMP_DIR: Final = os.path.join(_USER_HOME, ".temp")
 CONFIG_DIR: Final = os.path.join(_USER_HOME, ".blsh/config")
@@ -26,3 +29,6 @@ KRX_API_URL: Final = "https://data-dbg.krx.co.kr/svc/apis"
 
 KRX_LOGIN_ID: Final = os.getenv("KRX_LOGIN_ID")
 KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
+
+if __name__ == "__main__":
+    print(KIS_ENV)

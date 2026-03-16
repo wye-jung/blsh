@@ -6,9 +6,9 @@
 INVEST_MIN_SCORE	12	11
 ATR_SL_MULT	2.5	2.0
 ATR_TP_MULT	2.0	2.0
-MAX_HOLD_DAYS (REV)	1	7
-MAX_HOLD_DAYS_MIX	1	4
-MAX_HOLD_DAYS_MOM	1	2
+MAX_HOLD_DAYS (REV)	0	6
+MAX_HOLD_DAYS_MIX	0	3
+MAX_HOLD_DAYS_MOM	0	1
 총 수익률	+45.53%	+42.51%
 승률	92.0%	72.41%
 거래 수	1,153건	2,172건
@@ -55,18 +55,18 @@ _DAY = {
     "INVEST_MIN_SCORE": 12,  # 데이트레이딩 최적화 결과 (1년 백테스트)
     "ATR_SL_MULT": 2.5,
     "ATR_TP_MULT": 2.0,
-    "MAX_HOLD_DAYS": 1,
-    "MAX_HOLD_DAYS_MIX": 1,
-    "MAX_HOLD_DAYS_MOM": 1,
+    "MAX_HOLD_DAYS": 0,
+    "MAX_HOLD_DAYS_MIX": 0,
+    "MAX_HOLD_DAYS_MOM": 0,
 }
 
 _SWING = {
     "INVEST_MIN_SCORE": 11,  # 스윙 트레이딩 최적화 결과 (1년 백테스트)
     "ATR_SL_MULT": 2.0,
     "ATR_TP_MULT": 2.0,
-    "MAX_HOLD_DAYS": 7,
-    "MAX_HOLD_DAYS_MIX": 4,
-    "MAX_HOLD_DAYS_MOM": 2,
+    "MAX_HOLD_DAYS": 6,
+    "MAX_HOLD_DAYS_MIX": 3,
+    "MAX_HOLD_DAYS_MOM": 1,
 }
 
 # ─────────────────────────────────────────

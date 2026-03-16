@@ -35,6 +35,8 @@ def collect(fromdate=None):
     if fromdate:
         _collect(fromdate, today)
 
+    _collect_holiday()
+
 
 def _collect(fromdate=dtutils.today(), todate=dtutils.today()):
     log.info(f"_collect from {fromdate} to {todate}")
@@ -46,8 +48,6 @@ def _collect(fromdate=dtutils.today(), todate=dtutils.today()):
         _collect_etx_data(date)
 
     _collect_base_info()
-    _collect_holiday(fromdate)
-    _collect_holiday(todate)
 
 
 # 지수 데이터 수집
@@ -91,17 +91,15 @@ def _collect_base_info():
 
 
 # 휴장일 from KIS
-def _collect_holiday(base_date: str):
-    if not dtutils.is_valid_date(base_date):
-        log.warning(f"{base_date} 는 유효하지 않은 날짜 문자열입니다.")
-        return
-
-    if not query.get_krx_holiday(base_date):
+def _collect_holiday():
+    today = dtutils.today()
+    if not query.get_krx_holiday(today):
         from blsh.kis import kis_auth as ka
         from blsh.kis.domestic_stock import domestic_stock_functions as ds
         import pandas as pd
 
         ka.auth()
+        base_date = query.get_krx_holiday_max_dt()["d"]
         log.info(f"krx_holiday 미보유 ({base_date} 이후) → KIS API 조회")
         log.info(f"chk_holiday로 {base_date} 기준 약 100일치 데이터 반환")
         df = ds.chk_holiday(bass_dt=base_date)
@@ -123,6 +121,4 @@ def _recreate(df, model, **filters):
 
 
 if __name__ == "__main__":
-    # collect()
-
-    _collect_holiday("20261131")
+    collect()

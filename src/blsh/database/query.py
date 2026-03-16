@@ -3,11 +3,10 @@ import time
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
 from blsh.database import engine, select_one, select_first, select_all, execute_batch
-from blsh.common import timeutils
 
 log = logging.getLogger(__name__)
 
-_min_krx_holidays_date = select_one("select min(bass_dt) as d from krx_holidays")["d"]
+_min_krx_holiday_date = select_one("select min(bass_dt) as d from krx_holiday")["d"]
 
 _ALLOWED_TABLES = {
     "isu_ksp_ohlcv",
@@ -42,7 +41,7 @@ def get_latest_biz_date(base_date: str = time.strftime("%Y%m%d")) -> str:
 
 def find_next_biz_date(base_date) -> str | None:
     """다음 영업일"""
-    if base_date < _min_krx_holidays_date:
+    if base_date < _min_krx_holiday_date:
         row = select_first(
             """
             SELECT min(trd_dd) AS d FROM idx_stk_ohlcv
@@ -68,7 +67,7 @@ def get_biz_dates(fromdate, todate):
         """
         SELECT distinct trd_dd as d 
         FROM idx_stk_ohlcv 
-        WHERE trd_dd >= :fd AND  trd+dd <= :td 
+        WHERE trd_dd >= :fd AND  trd_dd <= :td 
         UNION
         SELECT bass_dt AS d 
         FROM krx_holiday
@@ -88,6 +87,14 @@ def get_krx_holiday(base_date):
         WHERE bass_dt = :bd 
         """,
         bd=base_date,
+    )
+
+
+def get_krx_holiday_max_dt():
+    return select_one(
+        """
+        SELECT max(bass_dt) as d FROM krx_holiday
+        """,
     )
 
 
@@ -131,14 +138,14 @@ def get_netbid_trdvol(table, tickers, base_date):
     return result
 
 
-def get_candidates(target_date):
+def get_candidates(entry_date):
     return select_all(
         """
         SELECT *
         FROM trade_candidates
-        WHERE target_date = :td
+        WHERE entry_date = :td
         """,
-        td=target_date,
+        td=entry_date,
     )
 
 
@@ -215,7 +222,7 @@ def get_max_hold_dates(target_date, max_hold_days):
         """
         SELECT DISTINCT bass_dt as d
         FROM krx_holiday
-        WHERE bass_dt >= :start
+        WHERE bass_dt > :start
         AND opnd_yn='Y'
         ORDER BY bass_dt
         LIMIT :n
