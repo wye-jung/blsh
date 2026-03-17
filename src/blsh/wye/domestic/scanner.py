@@ -57,6 +57,7 @@ from blsh.database import query, ModelManager
 
 from blsh.wye.domestic import reporter
 from blsh.wye.domestic import _factor as fac
+from blsh.wye.domestic._tick import floor_tick as _floor_tick, ceil_tick as _ceil_tick
 from blsh.database.models import TradeCandidates
 from blsh.common import dtutils
 
@@ -109,7 +110,7 @@ def calc_obv(c, v):
 # ─────────────────────────────────────────
 # 매수 신호 평가
 # ─────────────────────────────────────────
-def evaluate_buy(close, high, low, volume):
+def evaluate_buy(close, high, low, volume, opn=None):
     min_len = fac.MACD_LONG + fac.MACD_SIGNAL + 5
     if len(close) < min_len:
         return 0, [], {}
@@ -125,6 +126,7 @@ def evaluate_buy(close, high, low, volume):
     c0, c1 = close.iloc[-1], close.iloc[-2]
     h0, h1 = high.iloc[-1], high.iloc[-2]
     l0, l1 = low.iloc[-1], low.iloc[-2]
+    o0 = opn.iloc[-1] if opn is not None else c1  # 당일 시가 (없으면 전일 종가로 대체)
     m0, m1 = macd.iloc[-1], macd.iloc[-2]
     s0, s1 = sig.iloc[-1], sig.iloc[-2]
     r0, r1 = rsi.iloc[-1], rsi.iloc[-2]
@@ -215,11 +217,11 @@ def evaluate_buy(close, high, low, volume):
         flags.append("PB")
 
     # 12. 망치형 캔들 (+1)                                       → HMR
-    body = abs(c0 - c1)
+    body = abs(c0 - o0)          # 당일 시가-종가 몸통
     candle_range = h0 - l0
     if candle_range > 0:
-        lower_wick = min(c0, c1) - l0
-        upper_wick = h0 - max(c0, c1)
+        lower_wick = min(c0, o0) - l0   # 시가 기준 하단 꼬리
+        upper_wick = h0 - max(c0, o0)   # 시가 기준 상단 꼬리
         if (
             lower_wick > candle_range * 0.5
             and upper_wick < candle_range * 0.1
@@ -229,18 +231,18 @@ def evaluate_buy(close, high, low, volume):
             flags.append("HMR")
 
     # 13. 장대 양봉 (+2)                                         → LB
-    body_size = c0 - c1
+    body_size = c0 - o0          # 당일 시가-종가 (양봉 크기)
     if body_size > atr0 * 1.5:
         score += 2
         flags.append("LB")
 
     # 14. 모닝스타 (3일 반전 패턴) (+2)                         → MS
-    if len(close) >= 3:
+    if opn is not None and len(close) >= 3:
         c_2, c_1, c_0 = close.iloc[-3], close.iloc[-2], close.iloc[-1]
-        o_2 = close.shift(1).iloc[-3]
-        body_d1 = o_2 - c_2
-        body_d3 = c_0 - close.shift(1).iloc[-1]
-        body_d2 = abs(c_1 - close.shift(1).iloc[-2])
+        o_2, o_1, o_0 = opn.iloc[-3], opn.iloc[-2], opn.iloc[-1]
+        body_d1 = o_2 - c_2        # D-3: 음봉 크기 (시가 > 종가)
+        body_d2 = abs(c_1 - o_1)   # D-2: 도지/소봉 크기
+        body_d3 = c_0 - o_0        # D-1: 양봉 크기 (종가 > 시가)
         if (
             body_d1 > atr0 * 0.7
             and body_d2 < atr0 * 0.3
@@ -271,10 +273,10 @@ def evaluate_buy(close, high, low, volume):
     else:
         mode = "WEAK"
 
-    # ── 매수가 / 손절 / 익절
-    entry_price = round(c0 + 0.5 * atr0, 2)
-    stop_loss = round(c0 - fac.ATR_SL_MULT * atr0, 2)
-    take_profit = round(c0 + fac.ATR_TP_MULT * atr0, 2)
+    # ── 매수가 / 손절 / 익절 (호가 단위 보정)
+    entry_price = _ceil_tick(c0 + 0.5 * atr0)
+    stop_loss = _floor_tick(c0 - fac.ATR_SL_MULT * atr0)
+    take_profit = _ceil_tick(c0 + fac.ATR_TP_MULT * atr0)
 
     indicators = {
         "mode": mode,
@@ -300,7 +302,7 @@ def evaluate_buy(close, high, low, volume):
 # 공통: DataFrame → 신호 평가
 # ─────────────────────────────────────────
 def scan_dataframe(
-    ticker, name, market, df, base_date, close_col, high_col, low_col, vol_col=None
+    ticker, name, market, df, base_date, close_col, high_col, low_col, vol_col=None, open_col=None
 ):
     if df is None:
         return None
@@ -317,13 +319,16 @@ def scan_dataframe(
     high = df[high_col].dropna()
     low = df[low_col].dropna()
     vol = df[vol_col].dropna() if vol_col and vol_col in df.columns else None
+    opn = df[open_col].dropna() if open_col and open_col in df.columns else None
 
     idx = close.index.intersection(high.index).intersection(low.index)
     close, high, low = close[idx], high[idx], low[idx]
     if vol is not None:
         vol = vol[idx]
+    if opn is not None:
+        opn = opn[idx]
 
-    score, flags, ind = evaluate_buy(close, high, low, vol)
+    score, flags, ind = evaluate_buy(close, high, low, vol, opn)
     if score < fac.MIN_SCORE:
         return None
 
@@ -358,6 +363,7 @@ def scan_market(
     high_col="tdd_hgprc",
     low_col="tdd_lwprc",
     vol_col="acc_trdvol",
+    open_col="tdd_opnprc",
 ):
     log.info(f"[{market}] {table} 스캔 시작  (기준일: {base_date})")
 
@@ -378,6 +384,7 @@ def scan_market(
                 ).strftime("%Y%m%d"),
                 "min_val": fac.TRDVAL_MIN,
             },
+            open_col=open_col,
         )
     )
 
@@ -394,6 +401,7 @@ def scan_market(
             high_col,
             low_col,
             vol_col,
+            open_col,
         )
         if row is not None:
             results.append(row)
@@ -428,7 +436,8 @@ def fetch_investor_daily(ticker, base_date, n_days=5):
     from blsh.kis.domestic_stock import domestic_stock_functions as ds
 
     try:
-        ka.auth()
+        if not ka.getTREnv():
+            ka.auth()
         result = ds.investor_trade_by_stock_daily(
             fid_cond_mrkt_div_code="J",
             fid_input_iscd=ticker,
@@ -606,24 +615,31 @@ def enrich_with_db(results: list, base_date: str) -> list:
     return results
 
 
-def check_index_above_ma(idx_nm, base_date, ma_days=20):
+def check_index_above_ma(idx_nm, base_date, ma_days=20, drop_limit=fac.INDEX_DROP_LIMIT):
     """
-    idx_stk_ohlcv에서 base_date 기준 지수가 MA 위에 있는지 확인.
-    True = 정상 (매수 환경), False = 하락장 (스캔 스킵)
+    idx_stk_ohlcv에서 base_date 기준 지수 환경 체크.
+    MA 대비 괴리율이 -drop_limit 이하일 때만 False(스캔 스킵) 반환.
+    단순 MA 이하가 아닌 의미 있는 하락장에서만 스킵하여 횡보 구간 오스킵 방지.
     """
     try:
         df = pd.DataFrame(query.get_index_clsprc(idx_nm, base_date, ma_days))
         if len(df) < ma_days:
             return True
         prices = df["clsprc_idx"].astype(float).iloc[::-1]
+        cur = float(prices.iloc[-1])
         ma = prices.mean()
-        above = float(prices.iloc[-1]) >= ma
-        status = "위 ✅" if above else "아래 ⚠️"
+        gap_pct = (cur - ma) / ma  # 양수 = MA 위, 음수 = MA 아래
+        skip = gap_pct < -drop_limit
+        if skip:
+            status = f"스킵 🚫 (MA 대비 {gap_pct:.1%})"
+        elif gap_pct < 0:
+            status = f"허용 ⚠️  (MA 대비 {gap_pct:.1%}, 임계 -{drop_limit:.0%} 미만)"
+        else:
+            status = f"위 ✅ (MA 대비 {gap_pct:+.1%})"
         log.info(
-            f"[지수 환경] {idx_nm}  현재가={prices.iloc[-1]:.2f}  "
-            f"{ma_days}MA={ma:.2f}  → {status}"
+            f"[지수 환경] {idx_nm}  현재가={cur:.2f}  {ma_days}MA={ma:.2f}  → {status}"
         )
-        return above
+        return not skip
     except Exception as e:
         log.warning(f"지수 환경 체크 실패 ({idx_nm}): {e}")
         return True

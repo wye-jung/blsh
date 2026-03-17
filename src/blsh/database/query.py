@@ -6,7 +6,17 @@ from blsh.database import engine, select_one, select_first, select_all, execute_
 
 log = logging.getLogger(__name__)
 
-_min_krx_holiday_date = select_one("select min(bass_dt) as d from krx_holiday")["d"]
+_min_krx_holiday_date = None
+
+
+def _get_min_krx_holiday_date():
+    global _min_krx_holiday_date
+    if _min_krx_holiday_date is None:
+        _min_krx_holiday_date = select_one("select min(bass_dt) as d from krx_holiday")[
+            "d"
+        ]
+    return _min_krx_holiday_date
+
 
 _ALLOWED_TABLES = {
     "isu_ksp_ohlcv",
@@ -41,7 +51,7 @@ def get_latest_biz_date(base_date: str = time.strftime("%Y%m%d")) -> str:
 
 def find_next_biz_date(base_date) -> str | None:
     """다음 영업일"""
-    if base_date < _min_krx_holiday_date:
+    if base_date < _get_min_krx_holiday_date():
         row = select_first(
             """
             SELECT min(trd_dd) AS d FROM idx_stk_ohlcv
@@ -162,13 +172,14 @@ def get_index_clsprc(idx_nm, base_date, ma_days=20):
     )
 
 
-def get_ohlcv(table, close_col, high_col, low_col, vol_col, params: dict):
+def get_ohlcv(table, close_col, high_col, low_col, vol_col, params: dict, open_col=None):
     _validate_table(table)
+    open_select = f", o.{open_col}" if open_col else ""
     return select_all(
         f"""
                 SELECT o.isu_srt_cd, o.trd_dd,
                     o.{close_col}, o.{high_col}, o.{low_col},
-                    o.{vol_col},  o.acc_trdval
+                    o.{vol_col},  o.acc_trdval{open_select}
                 FROM {table} o
                 WHERE o.trd_dd >= :start
                 AND o.trd_dd <= :base_date

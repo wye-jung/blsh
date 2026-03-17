@@ -53,7 +53,7 @@ config_root = CONFIG_DIR
 
 def get_token_file_path(svr):
     path = os.path.join(
-        config_root, f"KIS{svr}{datetime.today().strftime('%Y%m%d')}"
+        config_root, f"KIS{datetime.today().strftime('%Y%m%d')}{svr}"
     )  # 토큰 로컬저장시 파일명 년월일
     # 접근토큰 관리하는 파일 존재여부 체크, 없으면 생성
     if not os.path.exists(path):
@@ -173,7 +173,7 @@ def isPaperTrading():  # 모의투자 매매
 def changeTREnv(token_key, svr="prod", product=_cfg["my_prod"]):
     cfg = dict()
 
-    global _isPaper
+    global _isPaper, _smartSleep
     if svr == "prod":  # 실전투자
         ak1 = "my_app"  # 실전투자용 앱키
         ak2 = "my_sec"  # 실전투자용 앱시크리트

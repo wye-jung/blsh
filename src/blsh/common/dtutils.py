@@ -26,7 +26,7 @@ def strftime(time, fmt=DEFAULT_DATE_FMT):
 
 
 def nextday(date_str, fmt=DEFAULT_DATE_FMT):
-    add_days(date_str, 1)
+    return add_days(date_str, 1)
 
 
 def add_days(date_str, days: int, fmt=DEFAULT_DATE_FMT):
@@ -35,11 +35,12 @@ def add_days(date_str, days: int, fmt=DEFAULT_DATE_FMT):
 
 
 def add_biz_days(date_str, days: int, fmt=DEFAULT_DATE_FMT):
-    dt = add_days(date_str, days, fmt)
-    if query.get_krx_holiday(dt) is None:
-        raise RuntimeError(f"krx_holiday에 {dt}가 없습니다.")
     if days == 0:
         return date_str
-    else:
-        rows = query.get_max_hold_dates(date_str, days)
-        return rows[-1]["d"] if rows else None
+
+    check_dt = add_days(date_str, days * 2, fmt)
+    if query.get_krx_holiday(check_dt) is None:
+        raise RuntimeError(f"krx_holiday에 {check_dt}까지 데이터가 없습니다.")
+
+    rows = query.get_max_hold_dates(date_str, days)
+    return rows[-1]["d"] if rows else None
