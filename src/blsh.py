@@ -1,12 +1,7 @@
 import logging
-from blsh.wye.domestic import collector, scanner, trader, simulator
+from blsh.wye.domestic import collector, scanner, trader
 
-logging.basicConfig(
-    level=logging.INFO,
-    # format="%(asctime)s %(filename)s:%(lineno)d [%(levelname)s] %(message)s",
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    # datefmt="%Y-%m-%d %H:%M:%S",
-)
+
 log = logging.getLogger(__name__)
 
 
@@ -20,7 +15,5 @@ if __name__ == "__main__":
     log.info(
         f"투자 대상: 총 {len(candidates)}건  선정 기준일={base_date}  매수 목표일={target_date}"
     )
-
-    # 투자 시뮬레이션
-    # simulator.simulate(candidates, target_date)
+    # 자동매매 실행
     trader.run()
