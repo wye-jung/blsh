@@ -47,6 +47,7 @@
 ─────────────────────────────────────────────────────
 """
 
+import asyncio
 import time
 import logging
 from datetime import datetime, timedelta
@@ -217,11 +218,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
         flags.append("PB")
 
     # 12. 망치형 캔들 (+1)                                       → HMR
-    body = abs(c0 - o0)          # 당일 시가-종가 몸통
+    body = abs(c0 - o0)  # 당일 시가-종가 몸통
     candle_range = h0 - l0
     if candle_range > 0:
-        lower_wick = min(c0, o0) - l0   # 시가 기준 하단 꼬리
-        upper_wick = h0 - max(c0, o0)   # 시가 기준 상단 꼬리
+        lower_wick = min(c0, o0) - l0  # 시가 기준 하단 꼬리
+        upper_wick = h0 - max(c0, o0)  # 시가 기준 상단 꼬리
         if (
             lower_wick > candle_range * 0.5
             and upper_wick < candle_range * 0.1
@@ -231,7 +232,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
             flags.append("HMR")
 
     # 13. 장대 양봉 (+2)                                         → LB
-    body_size = c0 - o0          # 당일 시가-종가 (양봉 크기)
+    body_size = c0 - o0  # 당일 시가-종가 (양봉 크기)
     if body_size > atr0 * 1.5:
         score += 2
         flags.append("LB")
@@ -240,9 +241,9 @@ def evaluate_buy(close, high, low, volume, opn=None):
     if opn is not None and len(close) >= 3:
         c_2, c_1, c_0 = close.iloc[-3], close.iloc[-2], close.iloc[-1]
         o_2, o_1, o_0 = opn.iloc[-3], opn.iloc[-2], opn.iloc[-1]
-        body_d1 = o_2 - c_2        # D-3: 음봉 크기 (시가 > 종가)
-        body_d2 = abs(c_1 - o_1)   # D-2: 도지/소봉 크기
-        body_d3 = c_0 - o_0        # D-1: 양봉 크기 (종가 > 시가)
+        body_d1 = o_2 - c_2  # D-3: 음봉 크기 (시가 > 종가)
+        body_d2 = abs(c_1 - o_1)  # D-2: 도지/소봉 크기
+        body_d3 = c_0 - o_0  # D-1: 양봉 크기 (종가 > 시가)
         if (
             body_d1 > atr0 * 0.7
             and body_d2 < atr0 * 0.3
@@ -302,7 +303,16 @@ def evaluate_buy(close, high, low, volume, opn=None):
 # 공통: DataFrame → 신호 평가
 # ─────────────────────────────────────────
 def scan_dataframe(
-    ticker, name, market, df, base_date, close_col, high_col, low_col, vol_col=None, open_col=None
+    ticker,
+    name,
+    market,
+    df,
+    base_date,
+    close_col,
+    high_col,
+    low_col,
+    vol_col=None,
+    open_col=None,
 ):
     if df is None:
         return None
@@ -615,7 +625,9 @@ def enrich_with_db(results: list, base_date: str) -> list:
     return results
 
 
-def check_index_above_ma(idx_nm, base_date, ma_days=20, drop_limit=fac.INDEX_DROP_LIMIT):
+def check_index_above_ma(
+    idx_nm, base_date, ma_days=20, drop_limit=fac.INDEX_DROP_LIMIT
+):
     """
     idx_stk_ohlcv에서 base_date 기준 지수 환경 체크.
     MA 대비 괴리율이 -drop_limit 이하일 때만 False(스캔 스킵) 반환.
@@ -660,13 +672,10 @@ def get_next_biz_date(base_date: str) -> str:
 # ─────────────────────────────────────────
 # 스캔 및 대상 선별
 # ─────────────────────────────────────────
-def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
-
-    # ── 기준 거래일 (분석 대상일)
-    base_date = query.get_latest_biz_date(base_date)
-    # ── 다음 영업일 (매수 목표일)
-    target_date = get_next_biz_date(base_date)
-    log.info(f"기준 거래일: {base_date}, 매수 목표일: {target_date}")
+def scan(base_date=dtutils.today(), report: bool = False) -> tuple:
+    if not query.has_ohlcv_data(base_date):
+        log.warning(f"{base_date} - ohlcv 데이터가 없습니다")
+        return pd.DataFrame()
 
     start = (
         datetime.strptime(base_date, "%Y%m%d") - timedelta(days=fac.LOOKBACK_DAYS)
@@ -686,38 +695,38 @@ def scan(base_date=time.strftime("%Y%m%d")) -> tuple:
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
 
-    # ── entry_date 채우기
-    for r in results:
-        r["entry_date"] = target_date
-
     # ── 2단계: DB 수급 보강
     results = enrich_with_db(results, base_date)
 
     df = pd.DataFrame(results)
-    reporter.print_general_summary(df)
 
-    # ── 3단계: 투자 대상 선별
     for col in ("foreign_netbuy", "inst_netbuy", "indi_netbuy"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
+    if report:
+        reporter.print_general_summary(df)
+
+    return df
+
+
+async def find_candidates(base_date=dtutils.today(), report: bool = False):
+    df = scan(base_date, report)
     cand_mask = (
         (df["buy_score"] >= fac.INVEST_MIN_SCORE)
         & (df["mode"].isin(["MIX", "MOM", "REV"]))
         & (~df["buy_flags"].str.contains("P_OV", na=False))
     )
-    candidates = df[cand_mask].copy()
-    save_candidates(candidates, target_date, base_date)
-    reporter.print_invest_report(candidates, target_date, base_date)
-
-    return (candidates, target_date, base_date)
+    return df[cand_mask].copy()
 
 
-def save_candidates(candidates, target_date, base_date):
+async def save_candidates(base_date=dtutils.today(), report=False) -> tuple:
+    # ── 기준 거래일 (분석 대상일)
+    base_date = query.get_latest_biz_date(base_date)
+    candidates = await find_candidates(base_date, True)
     df = candidates[
         [
             "base_date",
             "ticker",
-            "entry_date",
             "name",
             "market",
             "buy_score",
@@ -728,6 +737,7 @@ def save_candidates(candidates, target_date, base_date):
             "atr",
         ]
     ].copy()
+
     df["atr_sl_mult"] = fac.ATR_SL_MULT
     df["atr_tp_mult"] = fac.ATR_TP_MULT
     conditions = [
@@ -737,6 +747,10 @@ def save_candidates(candidates, target_date, base_date):
     ]
     days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
     df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
+
+    # 다음 영업일 (매수 목표일)
+    entry_date = get_next_biz_date(base_date)
+    df["entry_date"] = entry_date
 
     # expiry_date: (target_date, max_hold_days) 조합별 캐싱 (최대 3가지)
     expiry_cache: dict[tuple, str | None] = {}
@@ -753,9 +767,9 @@ def save_candidates(candidates, target_date, base_date):
         lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
     )
     modelManager = ModelManager(TradeCandidates)
-    modelManager.delete(base_date=base_date, entry_date=target_date)
+    modelManager.delete(base_date=base_date, entry_date=entry_date)
     modelManager.create(df)
 
 
 if __name__ == "__main__":
-    scan()
+    print(asyncio.run(find_candidates(report=False)))

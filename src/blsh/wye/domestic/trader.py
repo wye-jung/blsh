@@ -29,7 +29,7 @@
         - 1차 익절(TP1 = buy+ATR×1.0): 50% 매도, SL → 매수가(본전 보장)
         - 2차 익절(TP2 = buy+ATR×ATR_TP_MULT): 잔여 전량 매도
         - 트레일링 SL: 주가 상승 시 SL을 (현재가 - ATR×ATR_SL_MULT) 로 상향
-    2. 10:00 비동기 데이터 수집 및 투자 종목 선별. callback으로 선별 종목 지정가 매수. 
+    2. 10:00 비동기 데이터 수집 및 투자 종목 선별. callback으로 선별 종목 지정가 매수.
         기 보유종목은 매수 제외. 매수 성공시 보유종목 다시 조회.
     3. 10:10 미체결 주문 취소
     4. 15:20 비동기 데이터 수집 및 투자 종목 선별
@@ -52,7 +52,6 @@ import os
 import time
 
 from dataclasses import asdict, dataclass
-from datetime import date
 from pathlib import Path
 
 from blsh.wye.domestic import _factor as fac
@@ -78,7 +77,6 @@ POSITIONS_FILE = Path.home() / ".blsh" / "config" / "trader_positions.json"
 
 POLL_SEC = 30  # 현재가 체크 주기 (초)
 GAP_DOWN_LIMIT = 0.03  # 갭하락 하한: entry 대비 3% 이상 하락 시 스킵
-
 
 
 # ─────────────────────────────────────────
@@ -158,7 +156,7 @@ def _load_positions() -> dict[str, Position]:
         return {}
     try:
         data = json.loads(POSITIONS_FILE.read_text())
-        today = date.today().strftime("%Y%m%d")
+        today = dtutils.today()
         valid: dict[str, Position] = {}
         for t, v in data.items():
             v.setdefault("realized_pnl", 0.0)  # 구버전 파일 호환
@@ -377,7 +375,7 @@ def run():
             gap_down_floor = entry * (1 - GAP_DOWN_LIMIT)
             if cur < gap_down_floor:
                 log.info(
-                    f"  ⚠️  갭하락 스킵: {t}  현재={cur:,.0f} < entry×{1-GAP_DOWN_LIMIT:.0%}={gap_down_floor:,.0f}"
+                    f"  ⚠️  갭하락 스킵: {t}  현재={cur:,.0f} < entry×{1 - GAP_DOWN_LIMIT:.0%}={gap_down_floor:,.0f}"
                 )
                 continue
             valid_cands.append((c, entry))
@@ -581,12 +579,6 @@ def run():
 # 진입점
 # ─────────────────────────────────────────
 if __name__ == "__main__":
-    # logging.basicConfig(
-    #     level=logging.INFO,
-    #     format="%(asctime)s %(levelname)s %(message)s",
-    #     datefmt="%H:%M:%S",
-    # )
-
     kis_env = os.environ.get("KIS_ENV", "demo")
     if kis_env == "real":
         confirm = input(

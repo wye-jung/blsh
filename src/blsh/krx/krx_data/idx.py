@@ -1,10 +1,7 @@
 import time
 from typing import Final
 import numpy as np
-from pykrx.website.krx.market.core import (
-    전체지수시세,
-    PER_PBR_배당수익률_전지수,
-)
+from pykrx.website.krx.market.core import 전체지수시세
 from blsh.krx.krx_data._base import Base
 
 # idx_clss:  지수 구분
@@ -53,28 +50,9 @@ class Idx(Base):
         df.insert(0, "trd_dd", trd_dd)
         return df
 
-    def get_fundamental(self, trd_dd=None, idx_clss=None):
-        trd_dd = trd_dd if trd_dd else self.trd_dd
-        idx_clss = idx_clss if idx_clss else self.idx_clss
-        cols = {
-            "IDX_NM": str,
-            "WT_PER": np.float64,
-            "WT_STKPRC_NETASST_RTO": np.float64,
-            "DIV_YD": np.float64,
-        }
-        df = PER_PBR_배당수익률_전지수().fetch(trd_dd, idx_clss)
-        if (df[list(cols.keys())[1:]] == "-").all(axis=None):
-            df = df.iloc[0:0]
-
-        df = self.adjust_df(df, cols)
-        df.insert(0, "idx_clss", idx_clss)
-        df.insert(0, "trd_dd", trd_dd)
-        return df
-
 
 if __name__ == "__main__":
     from blsh.krx.krx_auth import login_krx
 
     login_krx()
     print(Idx(nearest=True).get_fundamental().head())
-    # print(PER_PBR_배당수익률_전지수().fetch("20260306", "01").head())

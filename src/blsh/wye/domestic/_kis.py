@@ -145,6 +145,30 @@ class _Api:
             log.error(f"  매수 오류 ({ticker}): {e}")
         return None
 
+    def _buy_market(self, ticker: str, qty: int) -> str | None:
+        """시장가 매수. 성공 시 주문번호 반환."""
+        try:
+            _rate_limiter.wait()
+            with _api_sem:
+                df = ds.order_cash(
+                    env_dv=self.env_dv,
+                    ord_dv="buy",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    pdno=ticker,
+                    ord_dvsn="01",
+                    ord_qty=str(qty),
+                    ord_unpr="0",
+                    excg_id_dvsn_cd="KRX",
+                )
+            if df is not None and not df.empty:
+                odno = str(df.iloc[0].get("odno", ""))
+                log.info(f"  📥 시장가매수주문: {ticker}  수량={qty}  no={odno}")
+                return odno
+        except Exception as e:
+            log.error(f"  시장가 매수 오류 ({ticker}): {e}")
+        return None
+
     def _sell(self, ticker: str, qty: int, reason: str = "") -> bool:
         """시장가 매도. 성공 시 True."""
         try:

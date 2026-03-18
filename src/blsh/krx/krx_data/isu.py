@@ -165,15 +165,11 @@ class Isu(Base):
         df.insert(0, "trd_dd", date)
         return df
 
-    def get_daily_info(self, trd_dd=None, mktid=None):
+    def get_purchases_info(self, trd_dd=None, mktid=None):
         """
         외국인, 기관, 개인 순매수 및 외국인 한도소진율
         """
         trd_dd = trd_dd if trd_dd else self.trd_dd
-        df0 = self.get_fundamental(trd_dd=trd_dd, mktid=mktid)[
-            ["isu_srt_cd", "per", "pbr", "dvd_yld"]
-        ].set_index("isu_srt_cd")
-        time.sleep(0.1)
 
         # 기관합계
         df1 = (
@@ -204,13 +200,7 @@ class Isu(Base):
             .rename(columns={"netbid_trdvol": "indi_netbid_trdvol"})
         )
 
-        # # 외국인 한도 소진율
-        # df3 = self.get_exhaustion_rates_of_foreign_investment(date=trd_dd, mktid=mktid)[
-        #     ["isu_srt_cd", "forn_lmt_exhst_rt"]
-        # ].set_index("isu_srt_cd")
-        # .rename(columns={"forn_lmt_exhst_rt": "frgn_exhst_rt"})
-
-        df = pd.concat([df0, df1, df2, df3], axis=1).reset_index()
+        df = pd.concat([df1, df2, df3], axis=1).reset_index()
         df.insert(0, "trd_dd", trd_dd)
         df["fetched_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         return df

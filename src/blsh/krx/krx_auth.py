@@ -42,7 +42,10 @@ def login_krx():
     for attempt in range(2):
         _session.cookies.clear()
 
-        headers = {"User-Agent": _UA}
+        headers = {
+            "User-Agent": _UA,
+            "X-Requested-With": "XMLHttpRequest",
+        }
         # 초기 JSESSIONID 발급
         _session.get(_LOGIN_PAGE, headers=headers, timeout=15)
 

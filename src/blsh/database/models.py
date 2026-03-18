@@ -18,6 +18,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class IdxStkOhlcv(Base):
+    __tablename__ = "idx_stk_ohlcv"
+    __table_args__ = {"comment": "주가지수 일별시세정보"}
+    trd_dd = Column(String(8), primary_key=True, comment="기준일자")
+    idx_clss = Column(String(50), primary_key=True, comment="계열구분")
+    idx_nm = Column(String(100), primary_key=True, comment="지수명")
+    clsprc_idx = Column(Float, comment="종가")
+    cmpprevdd_idx = Column(Float, comment="대비")
+    fluc_rt = Column(Float, comment="등락률")
+    opnprc_idx = Column(Float, comment="시가")
+    hgprc_idx = Column(Float, comment="고가")
+    lwprc_idx = Column(Float, comment="저가")
+    acc_trdvol = Column(BigInteger, comment="거래량")
+    acc_trdval = Column(BigInteger, comment="거래대금")
+    mktcap = Column(BigInteger, comment="상장시가총액")
+    fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
+
+
 class IsuKspOhlcv(Base):
     __tablename__ = "isu_ksp_ohlcv"
     __table_args__ = {"comment": "코스피 일별매매정보"}
@@ -54,21 +72,43 @@ class IsuKsdOhlcv(Base):
     fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
 
 
-class IdxStkOhlcv(Base):
-    __tablename__ = "idx_stk_ohlcv"
-    __table_args__ = {"comment": "주가지수 일별시세정보"}
+class IsuKspInfo(Base):
+    __tablename__ = "isu_ksp_info"
+    __table_args__ = {"comment": "코스피 일별정보"}
     trd_dd = Column(String(8), primary_key=True, comment="기준일자")
-    idx_clss = Column(String(50), primary_key=True, comment="계열구분")
-    idx_nm = Column(String(100), primary_key=True, comment="지수명")
-    clsprc_idx = Column(Float, comment="종가")
-    cmpprevdd_idx = Column(Float, comment="대비")
-    fluc_rt = Column(Float, comment="등락률")
-    opnprc_idx = Column(Float, comment="시가")
-    hgprc_idx = Column(Float, comment="고가")
-    lwprc_idx = Column(Float, comment="저가")
-    acc_trdvol = Column(BigInteger, comment="거래량")
-    acc_trdval = Column(BigInteger, comment="거래대금")
-    mktcap = Column(BigInteger, comment="상장시가총액")
+    isu_srt_cd = Column(String(8), primary_key=True, comment="종목코드")
+    inst_netbid_trdvol = Column(Float, comment="기관 순매수")
+    frgn_netbid_trdvol = Column(Float, comment="외국인 순매수")
+    indi_netbid_trdvol = Column(Float, comment="개인 순매수")
+    fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
+
+
+class IsuKsdInfo(Base):
+    __tablename__ = "isu_ksd_info"
+    __table_args__ = {"comment": "코스닥 일별정보"}
+    trd_dd = Column(String(8), primary_key=True, comment="기준일자")
+    isu_srt_cd = Column(String(8), primary_key=True, comment="종목코드")
+    inst_netbid_trdvol = Column(Float, comment="기관 순매수")
+    frgn_netbid_trdvol = Column(Float, comment="외국인 순매수")
+    indi_netbid_trdvol = Column(Float, comment="개인 순매수")
+    fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
+
+
+class IsuBaseInfo(Base):
+    __tablename__ = "isu_base_info"
+    __table_args__ = {"comment": "종목기본정보"}
+    isu_cd = Column(String(20), primary_key=True, comment="표준코드")
+    isu_srt_cd = Column(String(8), index=True, comment="단축코드")
+    isu_nm = Column(String, comment="한글종목명")
+    isu_abbrv = Column(String, comment="한글종목약명")
+    isu_eng_nm = Column(String, comment="영문종목명")
+    list_dd = Column(String, comment="상장일")
+    mkt_tp_nm = Column(String, comment="시장구분")
+    secugrp_nm = Column(String, comment="증권구분")
+    sect_tp_nm = Column(String, comment="소속부")
+    kind_stkcert_tp_nm = Column(String, comment="주식종류")
+    parval = Column(BigInteger, comment="액면가")
+    list_shrs = Column(BigInteger, comment="상장주식수")
     fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
 
 
@@ -92,64 +132,6 @@ class EtfOhlcv(Base):
     obj_stkprc_idx = Column(Float, comment="기초지수_종가")
     cmpprevdd_idx = Column(Float, comment="기초지수_대비")
     fluc_rt_idx = Column(Float, comment="기초지수_등락률")
-    fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
-
-
-class IsuKspInfo(Base):
-    __tablename__ = "isu_ksp_info"
-    __table_args__ = {"comment": "코스피 일별정보"}
-    trd_dd = Column(String(8), primary_key=True, comment="기준일자")
-    isu_srt_cd = Column(String(8), primary_key=True, comment="종목코드")
-    per = Column(Float, comment="PER")
-    pbr = Column(Float, comment="PBR")
-    dvd_yld = Column(Float, comment="배당수익율")
-    inst_netbid_trdvol = Column(Float, comment="기관 순매수")
-    frgn_netbid_trdvol = Column(Float, comment="외국인 순매수")
-    indi_netbid_trdvol = Column(Float, comment="개인 순매수")
-    fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
-
-
-class IsuKsdInfo(Base):
-    __tablename__ = "isu_ksd_info"
-    __table_args__ = {"comment": "코스닥 일별정보"}
-    trd_dd = Column(String(8), primary_key=True, comment="기준일자")
-    isu_srt_cd = Column(String(8), primary_key=True, comment="종목코드")
-    per = Column(Float, comment="PER")
-    pbr = Column(Float, comment="PBR")
-    dvd_yld = Column(Float, comment="배당수익율")
-    inst_netbid_trdvol = Column(Float, comment="기관 순매수")
-    frgn_netbid_trdvol = Column(Float, comment="외국인 순매수")
-    indi_netbid_trdvol = Column(Float, comment="개인 순매수")
-    fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
-
-
-class IdxStkInfo(Base):
-    __tablename__ = "idx_stk_info"
-    __table_args__ = {"comment": "주가지수 PER/PBR/배당수익률"}
-    trd_dd = Column(String(8), primary_key=True, comment="기준일자")
-    idx_clss = Column(String(50), primary_key=True, comment="계열구분")
-    idx_nm = Column(String(100), primary_key=True, comment="지수명")
-    wt_per = Column(Float, comment="PER")
-    wt_stkprc_netasst_rto = Column(Float, comment="PBR")
-    div_yd = Column(Float, comment="배당수익율")
-    fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
-
-
-class IsuBaseInfo(Base):
-    __tablename__ = "isu_base_info"
-    __table_args__ = {"comment": "종목기본정보"}
-    isu_cd = Column(String(20), primary_key=True, comment="표준코드")
-    isu_srt_cd = Column(String(8), index=True, comment="단축코드")
-    isu_nm = Column(String, comment="한글종목명")
-    isu_abbrv = Column(String, comment="한글종목약명")
-    isu_eng_nm = Column(String, comment="영문종목명")
-    list_dd = Column(String, comment="상장일")
-    mkt_tp_nm = Column(String, comment="시장구분")
-    secugrp_nm = Column(String, comment="증권구분")
-    sect_tp_nm = Column(String, comment="소속부")
-    kind_stkcert_tp_nm = Column(String, comment="주식종류")
-    parval = Column(BigInteger, comment="액면가")
-    list_shrs = Column(BigInteger, comment="상장주식수")
     fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
 
 

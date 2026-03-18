@@ -1,4 +1,5 @@
 import time
+import asyncio
 from blsh.database import ModelManager, query
 from blsh.common import dtutils
 from blsh.database.models import (
@@ -9,7 +10,6 @@ from blsh.database.models import (
     EtfOhlcv,
     IsuKspInfo,
     IsuKsdInfo,
-    IdxStkInfo,
     IsuBaseInfo,
     EtfBaseInfo,
 )
@@ -18,6 +18,13 @@ from blsh.krx.krx_data import Idx, Isu, Etx
 import logging
 
 log = logging.getLogger(__name__)
+
+
+async def collect_ohlcv():
+    login_krx()
+    today = dtutils.today()
+    _collect_idx_data(today)
+    _collect_isu_data(today)
 
 
 def collect(fromdate=None):
@@ -31,6 +38,8 @@ def collect(fromdate=None):
             fromdate = today
         elif date_str < today:
             fromdate = dtutils.nextday(date_str)
+        else:
+            fromdate = today
 
     if fromdate:
         _collect(fromdate, today)
@@ -60,22 +69,17 @@ def _collect_idx_data(date):
             trd_dd=idx.trd_dd,
             idx_clss=idx_clss,
         )
-        _recreate(
-            idx.get_fundamental(idx_clss=idx_clss),
-            IdxStkInfo,
-            trd_dd=idx.trd_dd,
-            idx_clss=idx_clss,
-        )
+        time.sleep(0.1)
 
 
 # 종목 데이터 수집
 def _collect_isu_data(date):
     isu = Isu(date)
     _recreate(isu.get_ohlcv(mktid=Isu.KOSPI), IsuKspOhlcv, trd_dd=isu.trd_dd)
-    _recreate(isu.get_daily_info(mktid=Isu.KOSPI), IsuKspInfo, trd_dd=isu.trd_dd)
+    _recreate(isu.get_purchases_info(mktid=Isu.KOSPI), IsuKspInfo, trd_dd=isu.trd_dd)
 
     _recreate(isu.get_ohlcv(mktid=Isu.KOSDAQ), IsuKsdOhlcv, trd_dd=isu.trd_dd)
-    _recreate(isu.get_daily_info(mktid=Isu.KOSDAQ), IsuKsdInfo, trd_dd=isu.trd_dd)
+    _recreate(isu.get_purchases_info(mktid=Isu.KOSDAQ), IsuKsdInfo, trd_dd=isu.trd_dd)
 
 
 # etf 데이터 수집
@@ -121,4 +125,4 @@ def _recreate(df, model, **filters):
 
 
 if __name__ == "__main__":
-    collect()
+    asyncio.run(acollect())

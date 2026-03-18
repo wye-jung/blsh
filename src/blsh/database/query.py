@@ -33,6 +33,15 @@ def _validate_table(table: str) -> None:
         raise ValueError(f"허용되지 않은 테이블명: {table}")
 
 
+def has_ohlcv_data(base_date) -> bool:
+    return (
+        select_first(
+            "select trd_dd from idx_stk_ohlcv where trd_dd = :bd", bd=base_date
+        )
+        is not None
+    )
+
+
 def get_max_ohlcv_date():
     return select_one("select max(trd_dd) As d from idx_stk_ohlcv")["d"]
 
@@ -172,7 +181,9 @@ def get_index_clsprc(idx_nm, base_date, ma_days=20):
     )
 
 
-def get_ohlcv(table, close_col, high_col, low_col, vol_col, params: dict, open_col=None):
+def get_ohlcv(
+    table, close_col, high_col, low_col, vol_col, params: dict, open_col=None
+):
     _validate_table(table)
     open_select = f", o.{open_col}" if open_col else ""
     return select_all(
