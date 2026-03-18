@@ -22,6 +22,24 @@
        - 스윙(max_hold_days>0): 보유일 초과 시 또는 다음 영업일 재실행 시 청산
          포지션은 ~/.blsh/config/trader_positions.json 에 영속 저장
 
+수정 전략:
+    1. 09:00 포지션 읽어와서 보유종목 모니터링.
+        장 중 30초 간격 전 종목 현재가 병렬 조회 → ATR 기반 SL/TP 처리
+        - 손절: 현재가 ≤ dynamic_sl → 전량 시장가 매도
+        - 1차 익절(TP1 = buy+ATR×1.0): 50% 매도, SL → 매수가(본전 보장)
+        - 2차 익절(TP2 = buy+ATR×ATR_TP_MULT): 잔여 전량 매도
+        - 트레일링 SL: 주가 상승 시 SL을 (현재가 - ATR×ATR_SL_MULT) 로 상향
+    2. 10:00 비동기 데이터 수집 및 투자 종목 선별. callback으로 선별 종목 지정가 매수. 
+        기 보유종목은 매수 제외. 매수 성공시 보유종목 다시 조회.
+    3. 10:10 미체결 주문 취소
+    4. 15:20 비동기 데이터 수집 및 투자 종목 선별
+    5. 15:20 비동기 청산
+        청산 조건
+        - 오늘이 청산일인 종목. 청산하지 못하면 다음 영업일 재실행 시 청산.
+          포지션은 ~/.blsh/config/trader_positions.json 에 영속 저장
+    6. 4와 5의 CALLBACK으로 잔고의 1/2 사용하여 선별 종목 시장가 매수.
+    비고 : 매수, 매도 이벤트시 비동기로 DB 저장. 수익율은 나중에 계산.
+
 데이/스윙 모드: 종목 모드별 _factor.py MAX_HOLD_DAYS 기준으로 자동 분류
     MOM → MAX_HOLD_DAYS_MOM, MIX → MAX_HOLD_DAYS_MIX, REV → MAX_HOLD_DAYS
     max_hold_days == 0 이면 데이 트레이딩
