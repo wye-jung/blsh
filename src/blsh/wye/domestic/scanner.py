@@ -1,5 +1,5 @@
 """
-매수 신호 스캐너 v11
+매수 신호 스캐너 v12
 ─────────────────────────────────────────────────────
 대상: KOSPI(isu_ksp_ohlcv) / KOSDAQ(isu_ksd_ohlcv)
 
@@ -7,7 +7,7 @@
   - 최근 20일 평균 거래대금(acc_trdval) 10억 이상
   - 지수 환경 체크: KOSPI/KOSDAQ 20MA 아래이면 해당 시장 스킵
 
-[1단계] DB 기반 OHLCV 지표 스캔                              flag   성격
+[1단계] DB 기반 OHLCV 지표 스캔                              flag   성격    점수
   ┌─────────────────────────────────────────┬──────┬────────┬──────┐
   │ MACD 골든크로스                          │  +2  │ MGC    │  모멘텀│
   │ MACD 예상 골든크로스                     │  +1  │ MPGC   │  중립  │
@@ -25,6 +25,12 @@
   │ 모닝스타 (3일 반전 패턴)                 │  +2  │ MS     │  전환  │
   │ OBV 상승 추세 (3일 연속)                 │  +1  │ OBV    │  모멘텀│
   └─────────────────────────────────────────┴──────┴────────┴──────┘
+
+  점수 산출 (분리 트랙):
+    - 모멘텀 점수(mom), 전환 점수(rev), 중립 점수(neu) 별도 집계
+    - MOM/REV: 해당 트랙 점수 + neu
+    - MIX: max(mom, rev) + neu  (약한 쪽 증거는 flag에만 보존, 점수 불포함)
+    - WEAK: mom + rev + neu (둘 다 약하므로 합산)
 
   → mode 컬럼: MOM(모멘텀) / REV(추세전환) / MIX(혼합) / WEAK
 
@@ -60,6 +66,13 @@ from blsh.database.models import TradeCandidates
 from blsh.common import dtutils
 
 log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────
+# 신호 분류 맵 (flag → 성격)
+# ─────────────────────────────────────────
+_REVERSAL_FLAGS = {"ROV", "RBO", "BBL", "HMR", "MS"}
+_MOMENTUM_FLAGS = {"MGC", "MAA", "W52", "PB", "LB", "VS", "OBV"}
+# NEUTRAL: MPGC, BBM, SGC (위 두 집합에 속하지 않는 모든 flag)
 
 
 # ─────────────────────────────────────────
@@ -124,7 +137,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
     c0, c1 = close.iloc[-1], close.iloc[-2]
     h0, h1 = high.iloc[-1], high.iloc[-2]
     l0, l1 = low.iloc[-1], low.iloc[-2]
-    o0 = opn.iloc[-1] if opn is not None else c1  # 당일 시가 (없으면 전일 종가로 대체)
+    o0 = opn.iloc[-1] if opn is not None else c1
     m0, m1 = macd.iloc[-1], macd.iloc[-2]
     s0, s1 = sig.iloc[-1], sig.iloc[-2]
     r0, r1 = rsi.iloc[-1], rsi.iloc[-2]
@@ -138,14 +151,13 @@ def evaluate_buy(close, high, low, volume, opn=None):
     ma20 = mas[20]
     ma60 = mas[60]
 
-    score = 0
-    flags = []
+    # 분리 트랙 점수 집계: (flag, points) 쌍으로 수집 후 분류
+    signals: list[tuple[str, int]] = []
 
-    # 1. MACD 골든크로스 (+2)                                    → MGC
+    # 1. MACD 골든크로스 (+2) → MGC (모멘텀)
     if m0 > s0 and m1 < s1:
-        score += 2
-        flags.append("MGC")
-    # 2. MACD 예상 골든크로스 (+1)                               → MPGC
+        signals.append(("MGC", 2))
+    # 2. MACD 예상 골든크로스 (+1) → MPGC (중립)
     elif (
         m0 < s0
         and len(hist) >= 3
@@ -153,116 +165,105 @@ def evaluate_buy(close, high, low, volume, opn=None):
         and abs(s0) > 0
         and (s0 - m0) / abs(s0) <= fac.GAP_THRESHOLD
     ):
-        score += 1
-        flags.append("MPGC")
+        signals.append(("MPGC", 1))
 
-    # 3. RSI 30 상향 돌파 (+2)                                   → RBO
+    # 3. RSI 30 상향 돌파 (+2) → RBO (전환)
     if r0 > fac.RSI_OVERSOLD and r1 <= fac.RSI_OVERSOLD:
-        score += 2
-        flags.append("RBO")
-    # 4. RSI 과매도 (+1)                                         → ROV
+        signals.append(("RBO", 2))
+    # 4. RSI 과매도 (+1) → ROV (전환)
     elif r0 < fac.RSI_OVERSOLD:
-        score += 1
-        flags.append("ROV")
+        signals.append(("ROV", 1))
 
-    # 5. 볼린저 하단 반등 (+1)                                   → BBL
+    # 5. 볼린저 하단 반등 (+1) → BBL (전환)
     if l1 < bbl1 and c0 > bbl0:
-        score += 1
-        flags.append("BBL")
+        signals.append(("BBL", 1))
 
-    # 6. 볼린저 중간선 상향 돌파 (+1)                            → BBM
+    # 6. 볼린저 중간선 상향 돌파 (+1) → BBM (중립)
     if c0 > bbm0 and c1 <= bbm1:
-        score += 1
-        flags.append("BBM")
+        signals.append(("BBM", 1))
 
-    # 7. 거래량 급증 + 양봉 (2배) (+1)                           → VS
+    # 7. 거래량 급증 + 양봉 (+1) → VS (모멘텀)
     if volume is not None and len(volume) >= 20:
         vol_avg = volume.iloc[-20:-1].mean()
         if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
-            score += 1
-            flags.append("VS")
+            signals.append(("VS", 1))
 
-    # 8. 이동평균 정배열 전환 (5>20>60) (+1)                     → MAA
+    # 8. 이동평균 정배열 전환 (+1) → MAA (모멘텀)
     if ma5.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1] and not (
         ma5.iloc[-2] > ma20.iloc[-2] > ma60.iloc[-2]
     ):
-        score += 1
-        flags.append("MAA")
+        signals.append(("MAA", 1))
 
-    # 9. 스토캐스틱 과매도 교차 (+1)                             → SGC
+    # 9. 스토캐스틱 과매도 교차 (+1) → SGC (중립)
     if sk0 > sd0 and sk1 < sd1 and sk0 < 50:
-        score += 1
-        flags.append("SGC")
+        signals.append(("SGC", 1))
 
-    # 10. 52주 신고가 돌파 (+2) - 최근 20일 최대 거래량 돌파 시만  → W52
-    # TODO: 거래량 조건을 "20일 평균의 N배"로 완화 검토 (현재 20일 최대 돌파는 매우 엄격)
+    # 10. 52주 신고가 돌파 (+2) → W52 (모멘텀)
+    # TODO: 거래량 조건을 "20일 평균의 N배"로 완화 검토
     if len(close) >= 252 and volume is not None and len(volume) >= 21:
         w52_high = high.iloc[-252:-1].max()
         vol_20_max = volume.iloc[-21:-1].max()
         if h0 > w52_high and volume.iloc[-1] > vol_20_max:
-            score += 2
-            flags.append("W52")
+            signals.append(("W52", 2))
 
-    # 11. 눌림목 패턴 (+2)                                       → PB
-    # 20MA 상승 중 + 전일 종가 또는 저가가 5MA 아래(꼬리 눌림 포함)
-    # + 오늘 종가 5MA 위 복귀 + 20MA 위 유지
+    # 11. 눌림목 패턴 (+2) → PB (모멘텀)
     if (
         ma20.iloc[-1] > ma20.iloc[-5]
         and (c1 < ma5.iloc[-2] or l1 < ma5.iloc[-2])
         and c0 > ma5.iloc[-1]
         and c0 > ma20.iloc[-1]
     ):
-        score += 2
-        flags.append("PB")
+        signals.append(("PB", 2))
 
-    # 12. 망치형 캔들 (+1)                                       → HMR
-    body = abs(c0 - o0)  # 당일 시가-종가 몸통
+    # 12. 망치형 캔들 (+1) → HMR (전환)
+    body = abs(c0 - o0)
     candle_range = h0 - l0
     if candle_range > 0:
-        lower_wick = min(c0, o0) - l0  # 시가 기준 하단 꼬리
-        upper_wick = h0 - max(c0, o0)  # 시가 기준 상단 꼬리
+        lower_wick = min(c0, o0) - l0
+        upper_wick = h0 - max(c0, o0)
         if (
             lower_wick > candle_range * 0.5
             and upper_wick < candle_range * 0.1
             and body < candle_range * 0.3
         ):
-            score += 1
-            flags.append("HMR")
+            signals.append(("HMR", 1))
 
-    # 13. 장대 양봉 (+2)                                         → LB
-    body_size = c0 - o0  # 당일 시가-종가 (양봉 크기)
+    # 13. 장대 양봉 (+2) → LB (모멘텀)
+    body_size = c0 - o0
     if body_size > atr0 * 1.5:
-        score += 2
-        flags.append("LB")
+        signals.append(("LB", 2))
 
-    # 14. 모닝스타 (3일 반전 패턴) (+2)                         → MS
+    # 14. 모닝스타 (+2) → MS (전환)
     if opn is not None and len(close) >= 3:
         c_2, c_1, c_0 = close.iloc[-3], close.iloc[-2], close.iloc[-1]
         o_2, o_1, o_0 = opn.iloc[-3], opn.iloc[-2], opn.iloc[-1]
-        body_d1 = o_2 - c_2  # D-3: 음봉 크기 (시가 > 종가)
-        body_d2 = abs(c_1 - o_1)  # D-2: 도지/소봉 크기
-        body_d3 = c_0 - o_0  # D-1: 양봉 크기 (종가 > 시가)
+        body_d1 = o_2 - c_2
+        body_d2 = abs(c_1 - o_1)
+        body_d3 = c_0 - o_0
         if (
             body_d1 > atr0 * 0.7
             and body_d2 < atr0 * 0.3
             and body_d3 > atr0 * 0.7
             and c_0 > (o_2 + c_2) / 2
         ):
-            score += 2
-            flags.append("MS")
+            signals.append(("MS", 2))
 
-    # 15. OBV 상승 추세 (3일 연속) (+1)                         → OBV
+    # 15. OBV 상승 추세 (+1) → OBV (모멘텀)
     if obv is not None and len(obv) >= 3:
         if obv.iloc[-3] < obv.iloc[-2] < obv.iloc[-1]:
-            score += 1
-            flags.append("OBV")
+            signals.append(("OBV", 1))
 
-    # ── 신호 성격 분류 (MOM/REV/MIX/WEAK)
-    REVERSAL_FLAGS = {"ROV", "RBO", "BBL", "HMR", "MS"}
-    MOMENTUM_FLAGS = {"MGC", "MAA", "W52", "PB", "LB", "VS", "OBV"}
+    # ── 분리 트랙 점수 집계
+    flags = [f for f, _ in signals]
     flag_set = set(flags)
-    rev_cnt = len(flag_set & REVERSAL_FLAGS)
-    mom_cnt = len(flag_set & MOMENTUM_FLAGS)
+    mom_score = sum(pts for f, pts in signals if f in _MOMENTUM_FLAGS)
+    rev_score = sum(pts for f, pts in signals if f in _REVERSAL_FLAGS)
+    neu_score = sum(pts for f, pts in signals if f not in _MOMENTUM_FLAGS | _REVERSAL_FLAGS)
+
+    rev_cnt = len(flag_set & _REVERSAL_FLAGS)
+    mom_cnt = len(flag_set & _MOMENTUM_FLAGS)
+
+    # ── mode 분류
     if mom_cnt >= 2 and mom_cnt > rev_cnt:
         mode = "MOM"
     elif rev_cnt >= 2 and rev_cnt > mom_cnt:
@@ -271,6 +272,17 @@ def evaluate_buy(close, high, low, volume, opn=None):
         mode = "MIX"
     else:
         mode = "WEAK"
+
+    # ── 최종 점수: MIX일 때 약한 쪽 제거
+    if mode == "MOM":
+        score = mom_score + neu_score
+    elif mode == "REV":
+        score = rev_score + neu_score
+    elif mode == "MIX":
+        score = max(mom_score, rev_score) + neu_score
+    else:
+        # WEAK: 둘 다 약하므로 전부 합산 (기존과 동일)
+        score = mom_score + rev_score + neu_score
 
     # ── 매수가 / 손절 / 익절 (호가 단위 보정)
     entry_price = _ceil_tick(c0 + 0.5 * atr0)
@@ -316,8 +328,6 @@ def scan_dataframe(
         return None
 
     df = df.sort_index().apply(pd.to_numeric, errors="coerce")
-
-    # base_date 이하 데이터만 사용 (과거 날짜 지정 시 미래 데이터 차단)
     df = df[df.index <= base_date]
 
     if len(df) < fac.LOOKBACK_DAYS // 3:
@@ -345,7 +355,7 @@ def scan_dataframe(
 
     return {
         "base_date": base_date,
-        "entry_date": None,  # find_candidates()에서 채움
+        "entry_date": None,
         "ticker": ticker,
         "name": name,
         "market": market,
@@ -375,7 +385,6 @@ def scan_market(
 ):
     log.info(f"[{market}] {table} 스캔 시작  (기준일: {base_date})")
 
-    # 0단계: 최근 TRDVAL_DAYS일 평균 거래대금 TRDVAL_MIN 이상 종목만 로드
     df_all = pd.DataFrame(
         query.get_ohlcv(
             table,
@@ -419,12 +428,7 @@ def scan_market(
 # [2단계] DB 수급 보강 + KIS API fallback
 # ─────────────────────────────────────────
 def fetch_investor_daily(ticker, base_date, n_days=5):
-    """
-    blsh.kis - 종목별 투자자매매동향(일별)
-    base_date 기준 최근 n_days 거래일의 외국인/기관 순매수량 반환.
-
-    반환: (frgn_list, orgn_list) - 오래된→최신 순, 각 n_days개
-    """
+    """종목별 투자자매매동향(일별). 반환: (frgn_list, orgn_list) 오래된→최신."""
     from blsh.kis import kis_auth as ka
     from blsh.kis.domestic_stock import domestic_stock_functions as ds
 
@@ -445,14 +449,12 @@ def fetch_investor_daily(ticker, base_date, n_days=5):
         if result is None:
             return [], []
 
-        # DataFrame인 경우
         if hasattr(result, "iloc"):
             df = result.head(n_days).iloc[::-1].reset_index(drop=True)
             frgn = df["frgn_ntby_qty"].astype(float).astype(int).tolist()
             orgn = df["orgn_ntby_qty"].astype(float).astype(int).tolist()
             return frgn, orgn
 
-        # (df1, df2) 튜플로 반환되는 경우
         if isinstance(result, tuple) and len(result) >= 2:
             df = result[1].head(n_days).iloc[::-1].reset_index(drop=True)
             frgn = df["frgn_ntby_qty"].astype(float).astype(int).tolist()
@@ -478,7 +480,6 @@ def classify_supply(qty_list):
     history = qty_list[:-1]
     if today <= 0:
         return None, 0
-    # [FIX] TRN 판정: 직전 N-1일 전부 순매도/0이어야 진정한 전환
     if all(q <= 0 for q in history):
         return "TRN", 3
     consec = 1
@@ -493,11 +494,7 @@ def classify_supply(qty_list):
 
 
 def enrich_with_db(results: list, base_date: str) -> list:
-    """
-    [2단계] isu_ksp_info / isu_ksd_info 에서 base_date 기준
-    최근 5거래일 수급 판별 후 점수 보강.
-    DB 미보유 종목은 KIS API fallback.
-    """
+    """[2단계] 수급 판별 후 점수 보강. DB 미보유 종목은 KIS API fallback."""
     candidates = [
         r
         for r in results
@@ -514,7 +511,6 @@ def enrich_with_db(results: list, base_date: str) -> list:
     def fetch_supply_from_db(table, tickers):
         if not tickers:
             return {}
-
         try:
             df = pd.DataFrame(query.get_netbid_trdvol(table, tickers, base_date))
         except Exception as e:
@@ -537,7 +533,6 @@ def enrich_with_db(results: list, base_date: str) -> list:
         **fetch_supply_from_db("isu_ksd_info", kosdaq_tickers),
     }
 
-    # KIS API fallback
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}
     if missing:
@@ -610,11 +605,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
 def check_index_above_ma(
     idx_nm, base_date, ma_days=20, drop_limit=fac.INDEX_DROP_LIMIT
 ):
-    """
-    idx_stk_ohlcv에서 base_date 기준 지수 환경 체크.
-    MA 대비 괴리율이 -drop_limit 이하일 때만 False(스캔 스킵) 반환.
-    단순 MA 이하가 아닌 의미 있는 하락장에서만 스킵하여 횡보 구간 오스킵 방지.
-    """
+    """지수 환경 체크. MA 대비 -drop_limit 이하일 때만 스캔 스킵."""
     try:
         df = pd.DataFrame(query.get_index_clsprc(idx_nm, base_date, ma_days))
         if len(df) < ma_days:
@@ -622,7 +613,7 @@ def check_index_above_ma(
         prices = df["clsprc_idx"].astype(float).iloc[::-1]
         cur = float(prices.iloc[-1])
         ma = prices.mean()
-        gap_pct = (cur - ma) / ma  # 양수 = MA 위, 음수 = MA 아래
+        gap_pct = (cur - ma) / ma
         skip = gap_pct < -drop_limit
         if skip:
             status = f"스킵 🚫 (MA 대비 {gap_pct:.1%})"
@@ -650,7 +641,6 @@ def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
     start = dtutils.add_days(base_date, fac.LOOKBACK_DAYS * -1)
     name_map = query.get_ticker_name_map()
 
-    # ── 1단계: OHLCV 기술지표 스캔 (0단계 필터 포함)
     results = []
 
     if check_index_above_ma("코스피", base_date, fac.INDEX_MA_DAYS):
@@ -663,7 +653,6 @@ def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
 
-    # ── 2단계: DB 수급 보강
     results = enrich_with_db(results, base_date)
 
     df = pd.DataFrame(results)
@@ -719,19 +708,15 @@ def find_candidates(base_date=dtutils.today(), report: bool = False) -> pd.DataF
     days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
     df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
 
-    # 목표 매수일: 현재 매수가능시간이면 오늘, 아니면 다음 영업일
     ctime = dtutils.ctime()
     if base_date == dtutils.today() and ctime < "151500":
         entry_date = base_date
-        # 13시 이후 매수면 보유일 하루 연장
         if ctime > "130000":
             df["max_hold_days"] = df["max_hold_days"] + 1
     else:
         entry_date = query.find_next_biz_date(base_date)
-    # [FIX] entry_date를 모든 경로에서 컬럼에 설정
     df["entry_date"] = entry_date
 
-    # expiry_date: (entry_date, max_hold_days) 조합별 캐싱 (최대 3가지)
     expiry_cache: dict[tuple, str | None] = {}
 
     def _get_expiry(ed, mhd):

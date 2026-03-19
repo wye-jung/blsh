@@ -83,8 +83,15 @@ class _Api:
                 log.warning(f"현재가 조회 타임아웃 ({self.poll_sec}s): {timed_out}")
         return result
 
-    def _get_balance(self) -> tuple[dict[str, int], float]:
-        """보유 종목 수량 + 현금 잔고를 API 1회 호출로 반환."""
+    def _get_balance(self) -> tuple[dict[str, int], dict[str, float], float]:
+        """보유 종목 수량 + 평균 매입단가 + 현금 잔고를 API 1회 호출로 반환.
+
+        Returns:
+            (holdings, avg_prices, cash)
+            - holdings: {ticker: qty}
+            - avg_prices: {ticker: pchs_avg_pric} 평균 매입단가
+            - cash: 예수금 총액
+        """
         try:
             _rate_limiter.wait()
             with _api_sem:
@@ -99,25 +106,22 @@ class _Api:
                     fncg_amt_auto_rdpt_yn="N",
                     prcs_dvsn="01",
                 )
-            holdings = (
-                dict(
-                    zip(
-                        df1["pdno"].astype(str),
-                        df1["hldg_qty"].astype(float).astype(int),
-                    )
-                )
-                if df1 is not None and not df1.empty
-                else {}
-            )
+            if df1 is not None and not df1.empty:
+                tickers = df1["pdno"].astype(str)
+                holdings = dict(zip(tickers, df1["hldg_qty"].astype(float).astype(int)))
+                avg_prices = dict(zip(tickers, df1["pchs_avg_pric"].astype(float)))
+            else:
+                holdings = {}
+                avg_prices = {}
             cash = (
                 float(df2.iloc[0].get("dnca_tot_amt", 0))
                 if df2 is not None and not df2.empty
                 else 0.0
             )
-            return holdings, cash
+            return holdings, avg_prices, cash
         except Exception as e:
             log.warning(f"잔고 조회 실패: {e}")
-        return {}, 0.0
+        return {}, {}, 0.0
 
     def _buy(self, ticker: str, qty: int, entry_price: float) -> str | None:
         """지정가 매수. 성공 시 주문번호 반환."""
