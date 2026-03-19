@@ -47,10 +47,8 @@
 ─────────────────────────────────────────────────────
 """
 
-import asyncio
 import time
 import logging
-from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -388,10 +386,7 @@ def scan_market(
             {
                 "start": start,
                 "base_date": base_date,
-                "filter_start": (
-                    datetime.strptime(base_date, "%Y%m%d")
-                    - timedelta(days=fac.TRDVAL_DAYS * 2)
-                ).strftime("%Y%m%d"),
+                "filter_start": dtutils.add_days(base_date, fac.TRDVAL_DAYS * -2),
                 "min_val": fac.TRDVAL_MIN,
             },
             open_col=open_col,
@@ -657,18 +652,6 @@ def check_index_above_ma(
         return True
 
 
-def get_next_biz_date(base_date: str) -> str:
-    """
-    base_date 다음 영업일 반환.
-    """
-    result = query.find_next_biz_date(base_date)
-    if result:
-        log.info(f"다음 영업일: {result}  [krx_holiday 테이블]")
-        return result
-
-    raise RuntimeError(f"다음 영업일 조회 실패: base_date={base_date}")
-
-
 # ─────────────────────────────────────────
 # 스캔 및 대상 선별
 # ─────────────────────────────────────────
@@ -677,9 +660,7 @@ def scan(base_date=dtutils.today(), report: bool = False) -> tuple:
         log.warning(f"{base_date} - ohlcv 데이터가 없습니다")
         return pd.DataFrame()
 
-    start = (
-        datetime.strptime(base_date, "%Y%m%d") - timedelta(days=fac.LOOKBACK_DAYS)
-    ).strftime("%Y%m%d")
+    start = dtutils.add_biz_days(base_date, fac.LOOKBACK_DAYS * -1)
     name_map = query.get_ticker_name_map()
 
     # ── 1단계: OHLCV 기술지표 스캔 (0단계 필터 포함)
@@ -709,21 +690,14 @@ def scan(base_date=dtutils.today(), report: bool = False) -> tuple:
     return df
 
 
-async def find_candidates(base_date=dtutils.today(), report: bool = False):
-    df = scan(base_date, report)
+def find_candidates(base_date=dtutils.today(), report: bool = False):
+    sdf = scan(base_date, report)
     cand_mask = (
-        (df["buy_score"] >= fac.INVEST_MIN_SCORE)
-        & (df["mode"].isin(["MIX", "MOM", "REV"]))
-        & (~df["buy_flags"].str.contains("P_OV", na=False))
+        (sdf["buy_score"] >= fac.INVEST_MIN_SCORE)
+        & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
+        & (~sdf["buy_flags"].str.contains("P_OV", na=False))
     )
-    return df[cand_mask].copy()
-
-
-async def save_candidates(base_date=dtutils.today(), report=False) -> tuple:
-    # ── 기준 거래일 (분석 대상일)
-    base_date = query.get_latest_biz_date(base_date)
-    candidates = await find_candidates(base_date, True)
-    df = candidates[
+    df = sdf[cand_mask][
         [
             "base_date",
             "ticker",
@@ -737,39 +711,73 @@ async def save_candidates(base_date=dtutils.today(), report=False) -> tuple:
             "atr",
         ]
     ].copy()
+    if not sdf.empty:
+        df["atr_sl_mult"] = fac.ATR_SL_MULT
+        df["atr_tp_mult"] = fac.ATR_TP_MULT
+        conditions = [
+            df["mode"] == "MIX",
+            df["mode"] == "MOM",
+            df["mode"] == "REV",
+        ]
+        days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
+        df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
 
-    df["atr_sl_mult"] = fac.ATR_SL_MULT
-    df["atr_tp_mult"] = fac.ATR_TP_MULT
-    conditions = [
-        df["mode"] == "MIX",
-        df["mode"] == "MOM",
-        df["mode"] == "REV",
-    ]
-    days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
-    df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
+        # 목표 매수일: 현재 매수가능시간이면 오늘, 아니면 다음 영업일
+        ctime = dtutils.ctime()
+        if base_date == dtutils.today() and ctime < "151500":
+            entry_date = base_date
+            # 13시 이후 매수면 보유일 하루 연장
+            if ctime > "130000":
+                df["max_hold_days"] = df["max_hold_days"] + 1
+        else:
+            entry_date = query.find_next_biz_date(base_date)
+            df["entry_date"] = entry_date
 
-    # 다음 영업일 (매수 목표일)
-    entry_date = get_next_biz_date(base_date)
-    df["entry_date"] = entry_date
+        # expiry_date: (entry_date, max_hold_days) 조합별 캐싱 (최대 3가지)
+        expiry_cache: dict[tuple, str | None] = {}
 
-    # expiry_date: (target_date, max_hold_days) 조합별 캐싱 (최대 3가지)
-    expiry_cache: dict[tuple, str | None] = {}
+        def _get_expiry(entry_date, max_hold_days):
+            key = (entry_date, int(max_hold_days))
+            if key not in expiry_cache:
+                expiry_cache[key] = dtutils.add_biz_days(
+                    str(entry_date), int(max_hold_days)
+                )
+            return expiry_cache[key]
 
-    def _get_expiry(target_date, max_hold_days):
-        key = (target_date, int(max_hold_days))
-        if key not in expiry_cache:
-            expiry_cache[key] = dtutils.add_biz_days(
-                str(target_date), int(max_hold_days)
-            )
-        return expiry_cache[key]
+        df["expiry_date"] = df.apply(
+            lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
+        )
+    return df
 
-    df["expiry_date"] = df.apply(
-        lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
-    )
-    modelManager = ModelManager(TradeCandidates)
-    modelManager.delete(base_date=base_date, entry_date=entry_date)
-    modelManager.create(df)
+
+def make_po() -> tuple:
+    candidates = find_candidates(report=False)
+    if not candidates.empty:
+        po_json = candidates.to_json(orient="records", force_ascii=False)
+        PO_FILE = Path.home() / ".blsh" / "data" / "po" / f"po_{dtutils.now()}.json"
+        PO_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if po_json:
+            try:
+                PO_FILE.write_text(
+                    json.dumps(
+                        {t: asdict(p) for t, p in to_save.items()},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                tmp.replace(PO_FILE)
+            except Exception as e:
+                log.error(f"포지션 저장 실패: {e}")
+                tmp.unlink(missing_ok=True)
+        elif PO_FILE.exists():
+            PO_FILE.unlink()
+
+# def save_candidates(base_date=dtutils.today(), report=False) -> tuple:
+#     candidates = find_candidates(base_date, True)
+#     modelManager = ModelManager(TradeCandidates)
+#     modelManager.delete(base_date=base_date, entry_date=entry_date)
+#     modelManager.create(candidates)
 
 
 if __name__ == "__main__":
-    print(asyncio.run(find_candidates(report=False)))
+    print(find_candidates(report=False))

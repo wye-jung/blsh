@@ -2,7 +2,7 @@
 자동 매매 트레이더 v2
 ─────────────────────────────────────────────────────
 실행:
-    uv run python -m blsh.wye.domestic.trader2
+    uv run python -m blsh.wye.domestic.trader3
 
 환경변수:
     KIS_ENV=demo   모의투자 (기본)
@@ -15,16 +15,20 @@
         - 1차 익절(TP1 = buy+ATR×1.0): 50% 매도, SL → 매수가(본전 보장)
         - 2차 익절(TP2 = buy+ATR×ATR_TP_MULT): 잔여 전량 매도
         - 트레일링 SL: 주가 상승 시 SL을 (현재가 - ATR×ATR_SL_MULT) 로 상향
-    2. 10:00 데이터 수집 및 투자 종목 선별. 선별 종목 지정가 매수.
+    2. 모니터링 중 ~/.blsh/data/po 폴더에 po_*.json 파일(po_after_liquidate.json 제외)이 존재하면 읽어들여 지정가 매수.
+        매도가 지연되지 않게 쓰레드 처리 고려.
+        after_liquidate가 "Y" 인 종목은 15:20 청산 이후 매수
         기 보유종목은 매수 제외.
-    3. 10:10 미체결 주문 취소
-    4. 15:20 데이터 수집 및 투자 종목 선별
-    5. 15:20 청산
+        10분 후 미체결 주문 취소.
+        읽어들여 처리한 json파일은 ~/.blsh/data/po/done 폴더로 이동.
+    3. 15:20 청산
         청산 조건
         - 오늘이 청산일인 종목. 청산하지 못하면 다음 영업일 재실행 시 청산.
-          포지션은 ~/.blsh/config/trader_positions.json 에 영속 저장
-    6. 4와 5 완료 후 잔고의 1/2 사용하여 선별 종목 시장가 매수.
-    비고 : 매수, 매도 성공시 DB 저장.
+          포지션은 ~/.blsh/data/positions.json 에 영속 저장
+    4. 청산 직후 ~/.blsh/data/po 폴더에 po_after_liquidate.json 제외이 존재하면 읽어들여 지정가 매수.
+        기 보유종목은 매수 제외.
+        잔고의 1/2 만 사용.
+    비고 : 매수, 매도 성공시 ~/.blsh/data/history/history_오늘날짜.json 저장.
 
 데이/스윙 모드: 종목 모드별 _factor.py MAX_HOLD_DAYS 기준으로 자동 분류
     MOM → MAX_HOLD_DAYS_MOM, MIX → MAX_HOLD_DAYS_MIX, REV → MAX_HOLD_DAYS
@@ -55,9 +59,9 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────
 # 설정
 # ─────────────────────────────────────────
-MORNING_CASH_USAGE = 0.9    # 10:00 지정가 매수 시 가용 현금 비율
-AFTERNOON_CASH_RATIO = 0.5  # 15:20 시장가 매수 시 잔고 비율 (1/2)
-MIN_ALLOC = 10_000           # 종목당 최소 배분액
+CASH_USAGE = 0.9            # 가용 현금 비율
+AFTERLIQ_CASH_RATIO = 0.5   # 청산 후 매수에 사용할 잔고 비율 (1/2)
+MIN_ALLOC = 10_000          # 종목당 최소 배분액
 
 SCAN_MORNING = "100000"     # 10:00 오전 스캔+매수 시작
 CANCEL_MORNING = "101000"   # 10:10 미체결 취소
@@ -69,7 +73,7 @@ SELL_COST_RATE = 0.002      # 증권거래세 + 수수료 합산
 POLL_SEC = 30
 GAP_DOWN_LIMIT = 0.03       # 갭하락 하한: entry 대비 3% 이상 하락 시 스킵
 
-POSITIONS_FILE = Path.home() / ".blsh" / "config" / "trader_positions.json"
+POSITIONS_FILE = Path.home() / ".blsh" / "data" / "positions.json"
 
 
 # ─────────────────────────────────────────
@@ -135,13 +139,6 @@ def _make_position(
     )
 
 
-def _calc_expiry(entry_date: str, max_hold_days: int) -> str:
-    try:
-        return dtutils.add_biz_days(entry_date, max_hold_days) or ""
-    except Exception:
-        return ""
-
-
 # ─────────────────────────────────────────
 # 포지션 영속화
 # ─────────────────────────────────────────
@@ -203,71 +200,6 @@ def _snapshot_and_save(
     with lock:
         snapshot = {t: Position(**asdict(p)) for t, p in positions.items()}
     _save_positions(snapshot, swing_only=swing_only)
-
-
-# ─────────────────────────────────────────
-# trade_history DB
-# ─────────────────────────────────────────
-def _init_trade_history():
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text("""
-                    CREATE TABLE IF NOT EXISTS trade_history (
-                        id         SERIAL PRIMARY KEY,
-                        side       VARCHAR(4)   NOT NULL,
-                        ticker     VARCHAR(20)  NOT NULL,
-                        name       VARCHAR(100),
-                        qty        INTEGER      NOT NULL,
-                        price      NUMERIC,
-                        reason     TEXT,
-                        traded_at  TIMESTAMP    DEFAULT NOW()
-                    )
-                """)
-            )
-    except Exception as e:
-        log.warning(f"trade_history 테이블 초기화 실패: {e}")
-
-
-def _save_trade(
-    side: str, ticker: str, name: str, qty: int, price: float, reason: str = ""
-):
-    """매수/매도 이벤트를 trade_history 테이블에 비동기 저장."""
-    def _do():
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "INSERT INTO trade_history (side, ticker, name, qty, price, reason)"
-                        " VALUES (:side, :ticker, :name, :qty, :price, :reason)"
-                    ),
-                    {
-                        "side": side, "ticker": ticker, "name": name,
-                        "qty": qty, "price": price, "reason": reason,
-                    },
-                )
-        except Exception as e:
-            log.warning(f"trade_history 저장 실패 ({ticker}): {e}")
-
-    threading.Thread(target=_do, daemon=True).start()
-
-
-# ─────────────────────────────────────────
-# 스캔 (동기, 스레드에서 직접 호출)
-# ─────────────────────────────────────────
-async def _scan_async(today: str):
-    """OHLCV 수집과 후보 종목 스캔을 단일 이벤트 루프에서 순차 실행."""
-    await collector.collect_ohlcv()
-    return await scanner.find_candidates(today)
-
-
-def _do_scan(today: str) -> list[dict]:
-    """OHLCV 수집 → 후보 종목 스캔 → list[dict] 반환."""
-    df = asyncio.run(_scan_async(today))
-    if df is None or df.empty:
-        return []
-    return df.to_dict("records")
-
 
 # ─────────────────────────────────────────
 # SL/TP 처리 (lock 외부에서 호출)
@@ -334,21 +266,15 @@ def _process_position(_api: _Api, pos: Position, current: float) -> bool:
 
 
 # ─────────────────────────────────────────
-# 오전 스캔+매수 (백그라운드 스레드, 10:00~10:10)
+# 매수 (백그라운드 스레드)
 # ─────────────────────────────────────────
-def _morning_task(
+def _po_task(
     positions: dict[str, Position],
     lock: threading.Lock,
     _api: _Api,
-    today: str,
+    po
 ):
-    log.info("[10:00] 오전 스캔 시작")
-    try:
-        candidates = _do_scan(today)
-    except Exception as e:
-        log.error(f"오전 스캔 실패: {e}")
-        return
-    log.info(f"[10:00] 스캔 완료: {len(candidates)}종목")
+    candidates = po.candidates
 
     with lock:
         held = set(positions.keys())
@@ -357,7 +283,7 @@ def _morning_task(
 
     new_cands = [c for c in candidates if c["ticker"] not in held]
     if not new_cands:
-        log.info("[10:00] 신규 매수 대상 없음")
+        log.info(f"{po.no} 신규 매수 대상 없음")
         return
 
     prices = _api._fetch_prices([c["ticker"] for c in new_cands])
@@ -380,7 +306,7 @@ def _morning_task(
     if not valid_cands:
         return
 
-    avail = cash * MORNING_CASH_USAGE
+    avail = cash * CASH_USAGE
     alloc = avail / len(valid_cands)
     if alloc < MIN_ALLOC:
         log.warning(f"[10:00] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 스킵")
@@ -418,8 +344,9 @@ def _morning_task(
                     today,
                     info["cand"].get("expiry_date") or "",
                 )
-                if pos.max_hold_days > 0 and not pos.expiry_date:
-                    pos.expiry_date = _calc_expiry(pos.entry_date, pos.max_hold_days)
+                // expiry_date 가 사전에 계산되지 않았으면 당일 청산
+                if not pos.expiry_date:
+                    pos.expiry_date = dtutils.today()
                 with lock:
                     positions[t] = pos
                 _save_trade("buy", t, pos.name, actual_qty, info["entry_price"], "지정가체결")

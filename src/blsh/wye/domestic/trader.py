@@ -308,9 +308,9 @@ def run():
         return
 
     # ── 1. 스캔 (08:50 이후)
-    if dtutils.now() < "085000":
+    if dtutils.ctime() < "085000":
         log.info("[대기] 08:50까지 대기 중…")
-        while dtutils.now() < "085000":
+        while dtutils.ctime() < "085000":
             time.sleep(10)
 
     try:
@@ -337,9 +337,9 @@ def run():
         log.info(f"[스윙 포지션] 기존 {len(positions)}종목 로드")
 
     # ── 3. 장 시작 대기
-    if dtutils.now() < "090000":
+    if dtutils.ctime() < "090000":
         log.info("[대기] 09:00 장 시작 대기…")
-        while dtutils.now() < "090000":
+        while dtutils.ctime() < "090000":
             time.sleep(5)
 
     # ── 4. 잔고·보유 종목 확인
@@ -403,7 +403,7 @@ def run():
 
     # ── 6. 체결 확인 (09:10까지) — inquire_balance로 실제 보유 여부 확인
     log.info(f"[체결대기] {FILL_WAIT_UNTIL[:2]}:{FILL_WAIT_UNTIL[2:4]}까지 대기")
-    while dtutils.now() < FILL_WAIT_UNTIL and pending:
+    while dtutils.ctime() < FILL_WAIT_UNTIL and pending:
         holdings, _ = _api._get_balance()
         filled = []
         for t, info in pending.items():
@@ -454,7 +454,7 @@ def run():
     last_status_min = ""
     session_closed: dict[str, Position] = {}  # 세션 내 청산된 포지션 누적 (손익 집계용)
     while True:
-        now = dtutils.now()
+        now = dtutils.ctime()
 
         if now >= MARKET_CLOSE:
             log.info("[종료] 장 마감")
@@ -547,7 +547,7 @@ def run():
         _save_positions(positions, swing_only=False)
         deadline = time.monotonic() + POLL_SEC
         while time.monotonic() < deadline:
-            if dtutils.now() >= MARKET_CLOSE:
+            if dtutils.ctime() >= MARKET_CLOSE:
                 break
             time.sleep(1)
 
