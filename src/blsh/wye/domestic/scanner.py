@@ -47,7 +47,6 @@
 ─────────────────────────────────────────────────────
 """
 
-import time
 import logging
 
 import numpy as np
@@ -196,6 +195,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
         flags.append("SGC")
 
     # 10. 52주 신고가 돌파 (+2) - 최근 20일 최대 거래량 돌파 시만  → W52
+    # TODO: 거래량 조건을 "20일 평균의 N배"로 완화 검토 (현재 20일 최대 돌파는 매우 엄격)
     if len(close) >= 252 and volume is not None and len(volume) >= 21:
         w52_high = high.iloc[-252:-1].max()
         vol_20_max = volume.iloc[-21:-1].max()
@@ -345,7 +345,7 @@ def scan_dataframe(
 
     return {
         "base_date": base_date,
-        "entry_date": None,  # main()에서 채움
+        "entry_date": None,  # find_candidates()에서 채움
         "ticker": ticker,
         "name": name,
         "market": market,
@@ -423,18 +423,6 @@ def fetch_investor_daily(ticker, base_date, n_days=5):
     blsh.kis - 종목별 투자자매매동향(일별)
     base_date 기준 최근 n_days 거래일의 외국인/기관 순매수량 반환.
 
-    ds.investor_trade_by_stock_daily 파라미터:
-      fid_cond_mrkt_div_code : J(KRX)
-      fid_input_iscd         : 종목코드 6자리
-      fid_input_date_1       : 기준일자 (YYYYMMDD)
-      fid_org_adj_prc        : 공란
-      fid_etc_cls_code       : 공란
-      max_depth              : 1 (1페이지 = 최근 20~30일치, n_days 이상 충분)
-
-    반환값 (output2 DataFrame):
-      frgn_ntby_qty : 외국인 순매수량 (최신순)
-      orgn_ntby_qty : 기관 순매수량 (최신순)
-
     반환: (frgn_list, orgn_list) - 오래된→최신 순, 각 n_days개
     """
     from blsh.kis import kis_auth as ka
@@ -454,18 +442,17 @@ def fetch_investor_daily(ticker, base_date, n_days=5):
             max_depth=1,
         )
 
-        # output2: DataFrame (최신순 정렬) 또는 None
         if result is None:
             return [], []
 
         # DataFrame인 경우
         if hasattr(result, "iloc"):
-            df = result.head(n_days).iloc[::-1].reset_index(drop=True)  # 오래된→최신
+            df = result.head(n_days).iloc[::-1].reset_index(drop=True)
             frgn = df["frgn_ntby_qty"].astype(float).astype(int).tolist()
             orgn = df["orgn_ntby_qty"].astype(float).astype(int).tolist()
             return frgn, orgn
 
-        # output2가 (df1, df2) 튜플로 반환되는 경우
+        # (df1, df2) 튜플로 반환되는 경우
         if isinstance(result, tuple) and len(result) >= 2:
             df = result[1].head(n_days).iloc[::-1].reset_index(drop=True)
             frgn = df["frgn_ntby_qty"].astype(float).astype(int).tolist()
@@ -480,7 +467,7 @@ def fetch_investor_daily(ticker, base_date, n_days=5):
 def classify_supply(qty_list):
     """
     수급 흐름 분류 → (flag_suffix, score)
-      TRN (+3): 직전 N-1일 순매도 → 오늘 순매수
+      TRN (+3): 직전 N-1일 전부 순매도/0 → 오늘 순매수 (진정한 전환)
       C3  (+2): 3일 이상 연속 순매수
       1   (+1): 오늘만 순매수
       None ( 0): 해당 없음
@@ -491,8 +478,8 @@ def classify_supply(qty_list):
     history = qty_list[:-1]
     if today <= 0:
         return None, 0
-    prev = history[-1] if history else 0
-    if prev <= 0:
+    # [FIX] TRN 판정: 직전 N-1일 전부 순매도/0이어야 진정한 전환
+    if all(q <= 0 for q in history):
         return "TRN", 3
     consec = 1
     for q in reversed(history):
@@ -655,12 +642,12 @@ def check_index_above_ma(
 # ─────────────────────────────────────────
 # 스캔 및 대상 선별
 # ─────────────────────────────────────────
-def scan(base_date=dtutils.today(), report: bool = False) -> tuple:
+def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
     if not query.has_ohlcv_data(base_date):
         log.warning(f"{base_date} - ohlcv 데이터가 없습니다")
         return pd.DataFrame()
 
-    start = dtutils.add_biz_days(base_date, fac.LOOKBACK_DAYS * -1)
+    start = dtutils.add_days(base_date, fac.LOOKBACK_DAYS * -1)
     name_map = query.get_ticker_name_map()
 
     # ── 1단계: OHLCV 기술지표 스캔 (0단계 필터 포함)
@@ -681,8 +668,9 @@ def scan(base_date=dtutils.today(), report: bool = False) -> tuple:
 
     df = pd.DataFrame(results)
 
-    for col in ("foreign_netbuy", "inst_netbuy", "indi_netbuy"):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    if not df.empty:
+        for col in ("foreign_netbuy", "inst_netbuy", "indi_netbuy"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if report:
         reporter.print_general_summary(df)
@@ -690,14 +678,24 @@ def scan(base_date=dtutils.today(), report: bool = False) -> tuple:
     return df
 
 
-def find_candidates(base_date=dtutils.today(), report: bool = False):
+def find_candidates(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
     sdf = scan(base_date, report)
+    if sdf.empty:
+        return sdf
+
     cand_mask = (
         (sdf["buy_score"] >= fac.INVEST_MIN_SCORE)
         & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
     )
-    df = sdf[cand_mask][
+    df = sdf[cand_mask].copy()
+    if report:
+        reporter.print_invest_report(df)
+
+    if df.empty:
+        return df
+
+    df = df[
         [
             "base_date",
             "ticker",
@@ -710,74 +708,52 @@ def find_candidates(base_date=dtutils.today(), report: bool = False):
             "take_profit",
             "atr",
         ]
-    ].copy()
-    if not sdf.empty:
-        df["atr_sl_mult"] = fac.ATR_SL_MULT
-        df["atr_tp_mult"] = fac.ATR_TP_MULT
-        conditions = [
-            df["mode"] == "MIX",
-            df["mode"] == "MOM",
-            df["mode"] == "REV",
-        ]
-        days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
-        df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
+    ]
+    df["atr_sl_mult"] = fac.ATR_SL_MULT
+    df["atr_tp_mult"] = fac.ATR_TP_MULT
+    conditions = [
+        df["mode"] == "MIX",
+        df["mode"] == "MOM",
+        df["mode"] == "REV",
+    ]
+    days = [fac.MAX_HOLD_DAYS_MIX, fac.MAX_HOLD_DAYS_MOM, fac.MAX_HOLD_DAYS]
+    df["max_hold_days"] = np.select(conditions, days, default=fac.MAX_HOLD_DAYS)
 
-        # 목표 매수일: 현재 매수가능시간이면 오늘, 아니면 다음 영업일
-        ctime = dtutils.ctime()
-        if base_date == dtutils.today() and ctime < "151500":
-            entry_date = base_date
-            # 13시 이후 매수면 보유일 하루 연장
-            if ctime > "130000":
-                df["max_hold_days"] = df["max_hold_days"] + 1
-        else:
-            entry_date = query.find_next_biz_date(base_date)
-            df["entry_date"] = entry_date
+    # 목표 매수일: 현재 매수가능시간이면 오늘, 아니면 다음 영업일
+    ctime = dtutils.ctime()
+    if base_date == dtutils.today() and ctime < "151500":
+        entry_date = base_date
+        # 13시 이후 매수면 보유일 하루 연장
+        if ctime > "130000":
+            df["max_hold_days"] = df["max_hold_days"] + 1
+    else:
+        entry_date = query.find_next_biz_date(base_date)
+    # [FIX] entry_date를 모든 경로에서 컬럼에 설정
+    df["entry_date"] = entry_date
 
-        # expiry_date: (entry_date, max_hold_days) 조합별 캐싱 (최대 3가지)
-        expiry_cache: dict[tuple, str | None] = {}
+    # expiry_date: (entry_date, max_hold_days) 조합별 캐싱 (최대 3가지)
+    expiry_cache: dict[tuple, str | None] = {}
 
-        def _get_expiry(entry_date, max_hold_days):
-            key = (entry_date, int(max_hold_days))
-            if key not in expiry_cache:
-                expiry_cache[key] = dtutils.add_biz_days(
-                    str(entry_date), int(max_hold_days)
-                )
-            return expiry_cache[key]
+    def _get_expiry(ed, mhd):
+        key = (ed, int(mhd))
+        if key not in expiry_cache:
+            expiry_cache[key] = dtutils.add_biz_days(str(ed), int(mhd))
+        return expiry_cache[key]
 
-        df["expiry_date"] = df.apply(
-            lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
-        )
+    df["expiry_date"] = df.apply(
+        lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
+    )
     return df
 
 
-def make_po() -> tuple:
-    candidates = find_candidates(report=False)
-    if not candidates.empty:
-        po_json = candidates.to_json(orient="records", force_ascii=False)
-        PO_FILE = Path.home() / ".blsh" / "data" / "po" / f"po_{dtutils.now()}.json"
-        PO_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if po_json:
-            try:
-                PO_FILE.write_text(
-                    json.dumps(
-                        {t: asdict(p) for t, p in to_save.items()},
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                )
-                tmp.replace(PO_FILE)
-            except Exception as e:
-                log.error(f"포지션 저장 실패: {e}")
-                tmp.unlink(missing_ok=True)
-        elif PO_FILE.exists():
-            PO_FILE.unlink()
-
-# def save_candidates(base_date=dtutils.today(), report=False) -> tuple:
-#     candidates = find_candidates(base_date, True)
-#     modelManager = ModelManager(TradeCandidates)
-#     modelManager.delete(base_date=base_date, entry_date=entry_date)
-#     modelManager.create(candidates)
+def save_candidates(base_date=dtutils.today(), report=True) -> None:
+    df = find_candidates(base_date, True)
+    if not df.empty:
+        entry_date = df.iloc[0]["entry_date"]
+        modelManager = ModelManager(TradeCandidates)
+        modelManager.delete(base_date=base_date, entry_date=entry_date)
+        modelManager.create(df)
 
 
 if __name__ == "__main__":
-    print(find_candidates(report=False))
+    save_candidates()

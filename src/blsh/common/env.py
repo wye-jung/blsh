@@ -1,18 +1,18 @@
 from typing import Final
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
-KIS_ENV: Final = os.getenv("KIS_ENV")
-
 _USER_HOME: Final = os.path.expanduser("~")
-TEMP_DIR: Final = os.path.join(_USER_HOME, ".temp")
 CONFIG_DIR: Final = os.path.join(_USER_HOME, ".blsh/config")
-POSITION_DIR: Final = os.path.join(_USER_HOME, ".blsh/data")
-PO_DIR: Final = os.path.join(_USER_HOME, ".blsh/data/po")
-HISTORY_DIR: Final = os.path.join(_USER_HOME, ".blsh/data/history")
-LOG_DIR: Final = os.path.join(_USER_HOME, ".blsh/log")
+TEMP_DIR: Final = os.path.join(_USER_HOME, ".temp")
 KIS_DEVLP_YAML = os.path.join(CONFIG_DIR, "kis_devlp.yaml")
+
+DATA_DIR = Path.home() / ".blsh" / "data"
+POSITIONS_FILE = DATA_DIR / "positions.json"
+PO_DIR = DATA_DIR / "po"
+PO_DONE_DIR = PO_DIR / "done"
+HISTORIES_DIR = DATA_DIR / "histories"
 
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
 
@@ -34,5 +34,8 @@ KRX_API_URL: Final = "https://data-dbg.krx.co.kr/svc/apis"
 KRX_LOGIN_ID: Final = os.getenv("KRX_LOGIN_ID")
 KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
 
+load_dotenv()
+KIS_ENV: Final = os.getenv("KIS_ENV")
+
 if __name__ == "__main__":
-    print(KIS_ENV)
+    print(DB_URL)

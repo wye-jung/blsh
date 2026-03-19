@@ -7,7 +7,6 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Numeric,
-    Text,
     DateTime,
     func,
 )
@@ -225,6 +224,24 @@ class TradeCandidates(Base):
     max_hold_days = Column(SmallInteger, comment="최대 보유 영업일수")
     expiry_date = Column(String(8), comment="청산일(매수일 + 최대 보유 영업일수)")
     created_at = Column(DateTime, server_default=func.now(), comment="레코드 생성일시")
+
+
+class TradeHistory(Base):
+    """매매 이력"""
+
+    __tablename__ = "trade_history"
+    __table_args__ = {"comment": "매매 이력 (매수/매도 체결 기록)"}
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    side = Column(String(4), nullable=False, comment="buy / sell")
+    ticker = Column(String(20), nullable=False, index=True, comment="종목코드")
+    name = Column(String(100), comment="종목명")
+    qty = Column(Integer, comment="체결 수량")
+    price = Column(Numeric, comment="체결가 (매수: 지정가, 매도: 0=시장가)")
+    reason = Column(String(200), comment="사유 (손절/1차익절/만기청산 등)")
+    traded_at = Column(
+        DateTime, server_default=func.now(), index=True, comment="체결 시각"
+    )
 
 
 def create_tables():

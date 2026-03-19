@@ -253,5 +253,45 @@ def get_max_hold_dates(target_date, max_hold_days):
     )
 
 
+# ─────────────────────────────────────────
+# 매매 이력
+# ─────────────────────────────────────────
+def save_trade_history(
+    side: str, ticker: str, name: str, qty: int, price: float, reason: str = ""
+):
+    """매매 이력 1건 INSERT. ~1-5ms (동기, 스레드 불필요)."""
+    with Session(engine) as session:
+        session.execute(
+            text(
+                """
+                INSERT INTO trade_history (side, ticker, name, qty, price, reason)
+                VALUES (:side, :ticker, :name, :qty, :price, :reason)
+                """
+            ),
+            {
+                "side": side,
+                "ticker": ticker,
+                "name": name,
+                "qty": qty,
+                "price": price,
+                "reason": reason,
+            },
+        )
+        session.commit()
+
+
+def get_trade_history(date_str: str | None = None):
+    """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘)."""
+    date_str = date_str or time.strftime("%Y%m%d")
+    return select_all(
+        """
+        SELECT * FROM trade_history
+        WHERE traded_at::date = to_date(:d, 'YYYYMMDD')
+        ORDER BY traded_at
+        """,
+        d=date_str,
+    )
+
+
 if __name__ == "__main__":
     print(get_max_hold_dates("20260312", 5))

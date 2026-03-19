@@ -12,8 +12,10 @@ def ctime(fmt: str = DEFAULT_TIME_FMT) -> str:
 def today(fmt: str = DEFAULT_DATE_FMT) -> str:
     return date.today().strftime(fmt)
 
-def now(fmt:str=DEFAULT_TIME_FMT+DEFAULT_DATE_FMT) -> str
+
+def now(fmt: str = DEFAULT_DATE_FMT + DEFAULT_TIME_FMT) -> str:
     return datetime.now().strftime(fmt)
+
 
 def is_valid_date(date_str, date_format=DEFAULT_DATE_FMT):
     try:

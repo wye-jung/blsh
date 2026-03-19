@@ -40,14 +40,14 @@ def print_general_summary(df):
     print(summary.to_string(index=False))
 
 
-def print_invest_report(df, target_date, base_date):
-    _print_header(
-        f"★ 투자 대상 선별 리포트  |  목표 거래일: {target_date}  |  기준 거래일: {base_date} | 총 {len(df)}종목"
-    )
+def print_invest_report(df):
+    _print_header("★ 투자 대상 선별 리포트")
 
     if df.empty:
         log.info("─── 투자 대상 없음 ───")
         return
+    else:
+        log.info(f"entry_date: {df.iloc[0]['entry_date']}  |  총 {len(df)}종목")
 
     candidates = df.copy()
     candidates["_mode_rank"] = candidates["mode"].map({"MIX": 0, "MOM": 1}).fillna(2)

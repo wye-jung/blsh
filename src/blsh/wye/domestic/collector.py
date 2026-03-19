@@ -20,7 +20,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-async def collect_ohlcv():
+def collect_ohlcv():
     login_krx()
     today = dtutils.today()
     _collect_idx_data(today)
@@ -125,4 +125,4 @@ def _recreate(df, model, **filters):
 
 
 if __name__ == "__main__":
-    asyncio.run(acollect())
+    collect()

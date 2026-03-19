@@ -8,9 +8,10 @@ dist/
 build/
 
 # Environment
+.blsh/
 .venv/
 .env
-.config
+kis-open-trading-api
 
 
 # IDE
