@@ -1,6 +1,6 @@
 import requests
 from pykrx.website.comm import webio
-from blsh.common.env import KRX_LOGIN_ID, KRX_LOGIN_PW
+from wye.blsh.common.env import KRX_LOGIN_ID, KRX_LOGIN_PW
 
 # 1. 공유 세션 생성 및 pykrx에 주입
 _session = requests.Session()

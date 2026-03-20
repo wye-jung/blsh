@@ -1,8 +1,8 @@
 # test_kis_connection.py
 # KIS Open API 연결 테스트 및 기본 정보 확인 스크립트
 try:
-    from blsh.kis.kis_auth import auth, getTREnv, getEnv, read_token
-    import blsh.kis.kis_auth as kis_auth
+    from wye.blsh import auth, getTREnv, getEnv, read_token
+    import wye.blsh.kis.kis_auth as kis_auth
 
     # 설정 파일 확인
     print("설정 파일 확인 중...")

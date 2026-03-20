@@ -29,7 +29,7 @@ from Crypto.Cipher import AES
 # pip install pycryptodome
 from Crypto.Util.Padding import unpad
 
-from blsh.common.env import CONFIG_DIR, KIS_DEVLP_YAML
+from wye.blsh.common.env import CONFIG_DIR, KIS_DEVLP_YAML
 
 
 def clearConsole():

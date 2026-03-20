@@ -1,6 +1,6 @@
 """데이 트레이딩 파라미터 최적화 (MAX_HOLD_DAYS = MAX_HOLD_DAYS_MIX = MAX_HOLD_DAYS_MOM)"""
 import logging
-from blsh.wye.domestic.optimize import build_scan_cache, run_backtest_cached
+from wye.blsh import build_scan_cache, run_backtest_cached
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 

@@ -1,11 +1,9 @@
 import sys
 import logging
 
-import pandas as pd
-
 sys.path.extend(["..", "."])
-import blsh.kis.kis_auth as ka
-from blsh.kis.domestic_stock import domestic_stock_functions_ws as f
+import wye.blsh.kis.kis_auth as ka
+from wye.blsh.kis.domestic_stock import domestic_stock_functions_ws as f
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")

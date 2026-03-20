@@ -1,7 +1,7 @@
 import pandas as pd
 from sqlalchemy import create_engine, delete as sa_delete, select, text
 from sqlalchemy.orm import Session
-from blsh.common.env import DB_URL
+from wye.blsh.common.env import DB_URL
 
 engine = create_engine(DB_URL)
 

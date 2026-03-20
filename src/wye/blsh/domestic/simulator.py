@@ -4,28 +4,26 @@
 
 import logging
 import pandas as pd
-from blsh.database import query
-from blsh.wye.domestic import reporter, _factor as fac
+from wye.blsh.database import query
+from wye.blsh.domestic import _factor, _report
 
 log = logging.getLogger(__name__)
 
 
-def simulate(candidates, target_date) -> tuple:
+def simulate(candidates) -> tuple:
     """
     수익률 시뮬레이트
     """
-    if candidates.empty:
-        log.info("[시뮬레이트] target_date 없음 (미래 날짜) → 스킵")
-        return
+    entry_date = candidates.iloc[0]["entry_date"]
 
-    log.info(f"[시뮬레이트] 목표일={target_date}  최대 {fac.MAX_HOLD_DAYS}거래일 추적")
+    log.info(f"[시뮬레이트] 목표일={entry_date}  최대 {_factor.MAX_HOLD_DAYS}거래일 추적")
 
     tickers = candidates["ticker"].tolist()
 
-    # ── target_date 이후 최대 MAX_HOLD_DAYS 거래일 날짜 목록 조회
-    date_rows = pd.DataFrame(query.get_max_hold_dates(target_date, fac.MAX_HOLD_DAYS))
+    # ── entry_date 이후 최대 MAX_HOLD_DAYS 거래일 날짜 목록 조회
+    date_rows = pd.DataFrame(query.get_max_hold_dates(entry_date, _factor.MAX_HOLD_DAYS))
     if date_rows.empty:
-        log.info(f"[수익률 리포트] {target_date} 이후 OHLCV 데이터 없음 → 스킵")
+        log.info(f"[수익률 리포트] {entry_date} 이후 OHLCV 데이터 없음 → 스킵")
         return
 
     hold_dates = date_rows["d"].tolist()
@@ -56,7 +54,7 @@ def simulate(candidates, target_date) -> tuple:
 
     rows_ok = []  # 매수 진입 성공
     rows_gap = []  # 갭 상승, 매수 불가
-    rows_miss = []  # target_date 데이터 자체 없음
+    rows_miss = []  # entry_date 데이터 자체 없음
 
     for _, sig in candidates.iterrows():
         t = sig["ticker"]
@@ -65,13 +63,13 @@ def simulate(candidates, target_date) -> tuple:
         tp = float(sig["take_profit"])
         days = ohlcv_idx.get(t, {})
 
-        # target_date 데이터 없음
+        # entry_date 데이터 없음
         t1_ohv = days.get(hold_dates[0])
         if t1_ohv is None:
             rows_miss.append(sig.to_dict())
             continue
 
-        # 갭 상승 체크: target_date 시가 > entry_price
+        # 갭 상승 체크: entry_date 시가 > entry_price
         if t1_ohv["open"] > entry:
             rows_gap.append(
                 {**sig.to_dict(), "t_open": t1_ohv["open"], "entry_date": hold_dates[0]}
@@ -87,11 +85,11 @@ def simulate(candidates, target_date) -> tuple:
         # 모드별 최대 보유 기간: MOM=2일, MIX=3일, REV=5일
         mode = sig.get("mode", "")
         if mode == "MOM":
-            max_days = fac.MAX_HOLD_DAYS_MOM
+            max_days = _factor.MAX_HOLD_DAYS_MOM
         elif mode == "MIX":
-            max_days = fac.MAX_HOLD_DAYS_MIX
+            max_days = _factor.MAX_HOLD_DAYS_MIX
         else:
-            max_days = fac.MAX_HOLD_DAYS
+            max_days = _factor.MAX_HOLD_DAYS
         sig_hold_dates = hold_dates[:max_days]
 
         # 날짜 순서대로 손익절 확인
@@ -143,8 +141,8 @@ def simulate(candidates, target_date) -> tuple:
         )
 
     # 시뮬레이션 리포트
-    reporter.print_simul_report(
-        target_date,
+    _report.print_simul_report(
+        entry_date,
         actual_days,
         candidates,
         rows_ok,
@@ -153,3 +151,8 @@ def simulate(candidates, target_date) -> tuple:
     )
 
     return rows_ok, rows_gap, rows_miss
+
+if __name__ == "__main__":
+    from wye.blsh.domestic import scanner
+    simulate(scanner.find_candidates("20260317"))
+    # issue_po()

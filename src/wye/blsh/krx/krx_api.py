@@ -2,7 +2,7 @@ import httpx
 import asyncio
 import time
 import pandas as pd
-from blsh.common.env import KRX_API_KEY, KRX_API_URL
+from wye.blsh.common.env import KRX_API_KEY, KRX_API_URL
 
 
 class Api:

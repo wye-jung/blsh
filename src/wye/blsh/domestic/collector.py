@@ -1,9 +1,8 @@
 import time
-import asyncio
 from pykrx.website import krx
-from blsh.database import ModelManager, query
-from blsh.common import dtutils
-from blsh.database.models import (
+from wye.blsh.database import ModelManager, query
+from wye.blsh.common import dtutils
+from wye.blsh.database.models import (
     IsuKspOhlcv,
     IsuKsdOhlcv,
     IdxStkOhlcv,
@@ -13,8 +12,8 @@ from blsh.database.models import (
     IsuBaseInfo,
     EtfBaseInfo,
 )
-from blsh.krx.krx_auth import login_krx
-from blsh.krx.krx_data import Idx, Isu, Etx
+from wye.blsh.krx.krx_auth import login_krx
+from wye.blsh.krx.krx_data import Idx, Isu, Etx
 import logging
 
 log = logging.getLogger(__name__)
@@ -22,32 +21,34 @@ log = logging.getLogger(__name__)
 
 def collect_latest_ohlcv():
     login_krx()
-    
-    date = krx.get_nearest_business_day_in_a_week(date, True)
-    _collect_idx_data(date)
-    _collect_isu_data(date)
+    latest_biz_date = krx.get_nearest_business_day_in_a_week()
+    print(f"latest biz date: {latest_biz_date}")
+    _collect_idx_data(latest_biz_date)
+    _collect_isu_data(latest_biz_date)
 
 
-def collect(fromdate=None):
+def collect(fromdate=None, override:bool=False):
     login_krx()
-
-    today = dtutils.today()
+    latest_biz_date = krx.get_nearest_business_day_in_a_week()
     if fromdate is None:
-        date_str = query.get_max_ohlcv_date()
-        if date_str is None:
-            fromdate = today
-        elif date_str < today:
-            fromdate = dtutils.nextday(date_str)
+        max_ohlcv_date = query.get_max_ohlcv_date()
+        if max_ohlcv_date is None:
+            fromdate = latest_biz_date
+        elif max_ohlcv_date < latest_biz_date:
+            fromdate = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
         else:
-            fromdate = today
+            if not override:
+                print("All data collected already.")
+                return
+            fromdate = latest_biz_date
 
     if fromdate:
-        _collect(fromdate, today)
+        _collect(fromdate, latest_biz_date)
 
     _collect_holiday()
 
 
-def _collect(fromdate=dtutils.today(), todate=dtutils.today()):
+def _collect(fromdate, todate):
     log.info(f"_collect from {fromdate} to {todate}")
     for d in query.get_biz_dates(fromdate=fromdate, todate=todate):
         date = d["d"]
@@ -98,8 +99,8 @@ def _collect_base_info():
 def _collect_holiday():
     today = dtutils.today()
     if not query.get_krx_holiday(today):
-        from blsh.kis import kis_auth as ka
-        from blsh.kis.domestic_stock import domestic_stock_functions as ds
+        from wye.blsh.kis import kis_auth as ka
+        from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
         import pandas as pd
 
         ka.auth()
@@ -126,3 +127,4 @@ def _recreate(df, model, **filters):
 
 if __name__ == "__main__":
     collect()
+    # collect_latest_ohlcv()

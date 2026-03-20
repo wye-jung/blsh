@@ -4,7 +4,7 @@ from pykrx.website.krx.etx.core import (
     ETF_전종목기본종목,
     전종목시세_ETF,
 )
-from blsh.krx.krx_data._base import Base
+from wye.blsh.krx.krx_data._base import Base
 
 
 class Etx(Base):
@@ -81,7 +81,7 @@ class Etx(Base):
 
 
 if __name__ == "__main__":
-    from blsh.krx.krx_auth import login_krx
+    from wye.blsh.krx.krx_auth import login_krx
 
     login_krx()
     print(Etx(nearest=True).get_etf_ohlcv().head())

@@ -8,8 +8,8 @@ from pykrx.website.krx.market.core import (
     전종목시세,
     외국인보유량_전종목,
 )
-from blsh.krx.krx_data.market.core_ext import 전종목기본정보
-from blsh.krx.krx_data._base import Base
+from wye.blsh.krx.krx_data.market.core_ext import 전종목기본정보
+from wye.blsh.krx.krx_data._base import Base
 
 
 class Isu(Base):
@@ -207,7 +207,7 @@ class Isu(Base):
 
 
 if __name__ == "__main__":
-    from blsh.krx.krx_auth import login_krx
+    from wye.blsh.krx.krx_auth import login_krx
 
     login_krx()
     print(Isu("20260312").get_daily_info().head())

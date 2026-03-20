@@ -3,7 +3,7 @@ import ssl
 import urllib.request
 import zipfile
 import pandas as pd
-from blsh.common.env import TEMP_DIR
+from wye.blsh.common.env import TEMP_DIR
 
 
 def _extract(zip_url, base_dir=TEMP_DIR):

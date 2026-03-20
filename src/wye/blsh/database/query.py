@@ -2,7 +2,7 @@ import logging
 import time
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
-from blsh.database import engine, select_one, select_first, select_all, execute_batch
+from wye.blsh.database import engine, select_one, select_first, select_all, execute_batch
 
 log = logging.getLogger(__name__)
 

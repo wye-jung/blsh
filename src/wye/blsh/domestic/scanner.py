@@ -55,11 +55,12 @@
 import logging
 import numpy as np
 import pandas as pd
-from blsh.database import query, ModelManager
+from wye.blsh.database import query, ModelManager
 
-from blsh.wye.domestic import _factor, _tick, _report, _po
-from blsh.database.models import TradeCandidates
-from blsh.common import dtutils
+from wye.blsh.domestic import _report, _tick, _po
+from wye.blsh.domestic import _factor
+from wye.blsh.database.models import TradeCandidates
+from wye.blsh.common import dtutils
 
 log = logging.getLogger(__name__)
 
@@ -155,11 +156,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("MGC", 2))
     # 2. MACD 예상 골든크로스 (+1) → MPGC (중립)
     elif (
-        m0 < s0
-        and len(hist) >= 3
-        and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
-        and abs(s0) > 0
-        and (s0 - m0) / abs(s0) <= _factor.GAP_THRESHOLD
+            m0 < s0
+            and len(hist) >= 3
+            and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
+            and abs(s0) > 0
+            and (s0 - m0) / abs(s0) <= _factor.GAP_THRESHOLD
     ):
         signals.append(("MPGC", 1))
 
@@ -425,8 +426,8 @@ def scan_market(
 # ─────────────────────────────────────────
 def fetch_investor_daily(ticker, base_date, n_days=5):
     """종목별 투자자매매동향(일별). 반환: (frgn_list, orgn_list) 오래된→최신."""
-    from blsh.kis import kis_auth as ka
-    from blsh.kis.domestic_stock import domestic_stock_functions as ds
+    from wye.blsh.kis import kis_auth as ka
+    from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
 
     try:
         if not ka.getTREnv():
@@ -635,7 +636,7 @@ def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
         return pd.DataFrame()
 
     start = dtutils.add_days(base_date, _factor.LOOKBACK_DAYS * -1)
-    name_map = query.get_tick_name_map()
+    name_map = query.get_ticker_name_map()
 
     results = []
 
@@ -740,5 +741,5 @@ def issue_po():
 
 
 if __name__ == "__main__":
-    # save_candidates()
-    issue_po()
+    save_candidates()
+    # issue_po()

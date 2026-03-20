@@ -1,7 +1,7 @@
 """스윙 트레이딩 파라미터 최적화"""
 import logging
-from blsh.wye.domestic.optimize import build_scan_cache, run_backtest_cached
-from blsh.wye.domestic import _factor as fac
+from wye.blsh import build_scan_cache, run_backtest_cached
+from wye.blsh.domestic import _factor as fac
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 

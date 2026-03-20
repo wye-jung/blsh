@@ -1,8 +1,9 @@
 """파라미터 최적화 스크립트"""
 
 import logging
-from blsh.database import select_all
-from blsh.wye.domestic import scanner, simulator, _factor as fac
+from wye.blsh.database import select_all
+from wye.blsh.domestic import scanner
+from wye.blsh.domestic import simulator, _factor as fac
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 

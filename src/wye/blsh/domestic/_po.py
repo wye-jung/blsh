@@ -2,9 +2,8 @@ import json
 import logging
 import shutil
 import time
-from typing import Union
 from pathlib import Path
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import dataclass
 from wye.blsh.common import dtutils, fileutils
 from wye.blsh.common.env import DATA_DIR
 from wye.blsh.domestic import _factor
@@ -13,7 +12,6 @@ log = logging.getLogger(__name__)
 
 PO_DIR = DATA_DIR / "po"
 PO_DONE_DIR = PO_DIR / "done"
-POSITIONS_FILE = DATA_DIR / "positions.json"
 
 def make_po_file(df):
     if not df.empty:
@@ -34,8 +32,11 @@ def make_po_file(df):
             ]
         ].to_dict(orient="records")
         ctime = dtutils.ctime()
-        po_file_name = f"po_{dtutils.now()}.json" if ctime < "150000" else f"po_{dtutils.today()}_final.json"
+        po_file_name = f"po_{dtutils.now()}.json" if ctime < "150000" else get_final_po_name()
         fileutils.create_file(PO_DIR / po_file_name, po_list)
+
+def get_final_po_name():
+    return f"po_{dtutils.today()}_final.json"
 
 def parse_po_file(path: Path) -> list[dict]:
     try:
@@ -49,20 +50,19 @@ def parse_po_file(path: Path) -> list[dict]:
     return []
 
 
-def collect_po_orders(exclude_after_liquidate: bool = True) -> dict[str, dict]:
+def collect_po_orders(exclude_final: bool = True) -> dict[str, dict]:
     """PO_DIR에서 po_*.json 읽기 → ticker별 최신 주문. 처리 후 done으로 이동.
 
     [FIX] 파싱 실패 파일은 이동하지 않음 (다음 틱에서 재시도).
-    po.py의 비원자적 쓰기 중 읽기 시 partial JSON 대응.
     """
     if not PO_DIR.exists():
         return {}
-
+    today = dtutils.today()
     files = sorted(
         [
             f
-            for f in PO_DIR.glob("po_*.json")
-            if not (exclude_after_liquidate and f.name == f"po_{dtutils.today()}_final.json")
+            for f in PO_DIR.glob(f"po_{today}*.json")
+            if not (exclude_final and f.name.endswith("final.json"))
         ],
         key=lambda f: f.stat().st_mtime,
     )

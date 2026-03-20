@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from blsh.database import query
+from wye.blsh.database import query
 
 DEFAULT_DATE_FMT = "%Y%m%d"
 DEFAULT_TIME_FMT = "%H%M%S"

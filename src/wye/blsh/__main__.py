@@ -1,6 +1,7 @@
 import logging
 import sys
-from blsh.wye.domestic import collector, scanner, trader_v2 as trader
+from wye.blsh.domestic import scanner, collector
+from wye.blsh.domestic import trader_v2 as trader
 
 log = logging.getLogger(__name__)
 

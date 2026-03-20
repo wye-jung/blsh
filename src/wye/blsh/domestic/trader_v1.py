@@ -54,11 +54,10 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from blsh.wye.domestic import _factor as fac
-from blsh.wye.domestic._kis import _Api
-from blsh.database import query
-from blsh.common import dtutils
-from blsh.wye.domestic._tick import floor_tick as _floor_tick, ceil_tick as _ceil_tick
+from wye.blsh.domestic import _factor as fac
+from wye.blsh.database import query
+from wye.blsh.common import dtutils
+from wye.blsh.domestic import _tick, _kis
 
 log = logging.getLogger(__name__)
 
@@ -118,9 +117,9 @@ def _make_position(
         c["max_hold_days"] if c.get("max_hold_days") is not None else fac.MAX_HOLD_DAYS
     )
 
-    sl = _floor_tick(buy_price - atr_sl_mult * atr)
-    tp1 = _ceil_tick(buy_price + TP1_MULT * atr)
-    tp2 = _ceil_tick(buy_price + atr_tp_mult * atr)
+    sl = _tick.floor_tick(buy_price - atr_sl_mult * atr)
+    tp1 = _tick.ceil_tick(buy_price + TP1_MULT * atr)
+    tp2 = _tick.ceil_tick(buy_price + atr_tp_mult * atr)
 
     qty_t1 = max(1, qty // 2)
     if qty < 2:
@@ -208,7 +207,7 @@ def _save_positions(positions: dict[str, Position], swing_only: bool = False):
 # ─────────────────────────────────────────
 def _sell_or_log(_api, ticker: str, qty: int, reason: str) -> bool:
     """매도 시도. 실패 시 CRITICAL 로그 후 False 반환 (다음 틱에서 재시도)."""
-    if _api._sell(ticker, qty, reason):
+    if _api.sell(ticker, qty, reason):
         return True
     log.critical(f"  🚨 매도 실패: {ticker} [{reason}] → 다음 틱 재시도")
     return False
@@ -222,7 +221,7 @@ def _process_position(_api, pos: Position, current: float) -> bool:
     ret_pct = (current - pos.buy_price) / pos.buy_price * 100
 
     # ── 트레일링 SL 업데이트 (주가 상승 시에만 상향, 현재가 아래 유지)
-    trail_sl = _floor_tick(current - pos.atr_sl_mult * pos.atr)
+    trail_sl = _tick.floor_tick(current - pos.atr_sl_mult * pos.atr)
     if trail_sl > pos.sl and trail_sl < current:
         log.info(
             f"  🔺 트레일링 SL: {pos.ticker}  {pos.sl:,.0f} → {trail_sl:,.0f}"
@@ -300,9 +299,8 @@ def run():
         return
 
     # ── 환경변수로 실전/모의 결정
-    kis_env = os.environ.get("KIS_ENV", "demo").lower()
     try:
-        _api = _Api(kis_env, POLL_SEC)
+        _api = _kis.API(os.environ.get("KIS_ENV", "demo").lower(), POLL_SEC)
     except RuntimeError as e:
         log.error(str(e))
         return
@@ -343,7 +341,7 @@ def run():
             time.sleep(5)
 
     # ── 4. 잔고·보유 종목 확인
-    holdings_init, cash = _api._get_balance()
+    holdings_init, avg_prices, cash = _api.get_balance()
     held = set(holdings_init.keys())
     log.info(f"[잔고] 현금={cash:,.0f}원  보유={len(held)}종목")
 
@@ -360,7 +358,7 @@ def run():
 
     if new_cands:
         # Pass 1: 현재가 조회 → 갭 체크로 실제 매수 가능 종목 확정
-        prices = _api._fetch_prices([c["ticker"] for c in new_cands])
+        prices = _api.fetch_prices([c["ticker"] for c in new_cands])
         valid_cands: list[tuple[dict, float]] = []
         for c in new_cands:
             t = c["ticker"]
@@ -392,7 +390,7 @@ def run():
                 for c, entry in valid_cands:
                     t = c["ticker"]
                     qty = max(1, int(alloc // entry))
-                    odno = _api._buy(t, qty, entry)
+                    odno = _api.buy(t, qty, entry)
                     if odno:
                         pending[t] = {
                             "cand": c,
@@ -404,7 +402,7 @@ def run():
     # ── 6. 체결 확인 (09:10까지) — inquire_balance로 실제 보유 여부 확인
     log.info(f"[체결대기] {FILL_WAIT_UNTIL[:2]}:{FILL_WAIT_UNTIL[2:4]}까지 대기")
     while dtutils.ctime() < FILL_WAIT_UNTIL and pending:
-        holdings, _ = _api._get_balance()
+        holdings, _ = _api.get_balance()
         filled = []
         for t, info in pending.items():
             actual_qty = holdings.get(t, 0)
@@ -414,7 +412,7 @@ def run():
                     log.warning(
                         f"  부분 체결: {t}  주문={info['qty']}  체결={actual_qty} → 잔량 취소"
                     )
-                    if not _api._cancel_order(
+                    if not _api.cancel_order(
                         t, info["odno"], info["qty"] - actual_qty
                     ):
                         log.error(f"  잔량 취소 실패 ({t}) → 포지션 수량 불일치 주의")
@@ -441,7 +439,7 @@ def run():
 
     # 미체결 취소
     for t, info in list(pending.items()):
-        _api._cancel_order(t, info["odno"], info["qty"])
+        _api.cancel_order(t, info["odno"], info["qty"])
 
     if not positions:
         log.info("[모니터링] 포지션 없음 → 종료")
@@ -465,7 +463,7 @@ def run():
             break
 
         # 전 포지션 현재가 병렬 조회 (만기·데이 청산·SL/TP 공용 — API 호출 1회로 통합)
-        cur_prices = _api._fetch_prices(list(positions.keys()))
+        cur_prices = _api.fetch_prices(list(positions.keys()))
 
         # 만기 청산 (스윙 보유일 초과)
         expired = [
@@ -484,7 +482,7 @@ def run():
                     if cur
                     else "보유만기 (가격조회실패)"
                 )
-                if _api._sell(t, pos.qty, reason=reason):
+                if _api.sell(t, pos.qty, reason=reason):
                     if cur:
                         pos.realized_pnl += (
                             cur - pos.buy_price
@@ -503,7 +501,7 @@ def run():
                     pos = positions[t]
                     cur = cur_prices.get(t, pos.buy_price)
                     ret = (cur - pos.buy_price) / pos.buy_price * 100
-                    if _api._sell(t, pos.qty, reason=f"데이마감 {ret:+.2f}%"):
+                    if _api.sell(t, pos.qty, reason=f"데이마감 {ret:+.2f}%"):
                         # 잔여 수량(pos.qty)에 대한 손익만 계산 (1차 익절분은 _process_position에서 반영됨)
                         pos.realized_pnl += (
                             cur - pos.buy_price

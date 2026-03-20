@@ -10,7 +10,7 @@ from sqlalchemy import (
     DateTime,
     func,
 )
-from blsh.database import engine
+from wye.blsh.database import engine
 
 
 class Base(DeclarativeBase):

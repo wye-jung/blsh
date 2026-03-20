@@ -2,7 +2,7 @@ import time
 from typing import Final
 import numpy as np
 from pykrx.website.krx.market.core import 전체지수시세
-from blsh.krx.krx_data._base import Base
+from wye.blsh.krx.krx_data._base import Base
 
 # idx_clss:  지수 구분
 # 01(KRX), 02(KOSPI), 03(KOSDAQ), 04(테마)
@@ -52,7 +52,7 @@ class Idx(Base):
 
 
 if __name__ == "__main__":
-    from blsh.krx.krx_auth import login_krx
+    from wye.blsh.krx.krx_auth import login_krx
 
     login_krx()
     print(Idx(nearest=True).get_fundamental().head())

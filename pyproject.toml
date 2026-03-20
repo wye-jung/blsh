@@ -39,8 +39,5 @@ dependencies = [
     "websockets==15.0.1",
 ]
 
-[project.scripts]
-scanner = "blsh.wye.domestic.scanner:main"
-
 [tool.uv]
 package=true
