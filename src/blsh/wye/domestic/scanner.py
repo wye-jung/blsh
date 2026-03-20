@@ -52,14 +52,12 @@
 출력: stock_signals 테이블 저장
 ─────────────────────────────────────────────────────
 """
-
 import logging
-
 import numpy as np
 import pandas as pd
 from blsh.database import query, ModelManager
 
-from blsh.wye.domestic import _factor, _tick, _report
+from blsh.wye.domestic import _factor, _tick, _report, _po
 from blsh.database.models import TradeCandidates
 from blsh.common import dtutils
 
@@ -737,6 +735,10 @@ def save_candidates(base_date=dtutils.today(), report=True) -> None:
         modelManager.delete(base_date=base_date, entry_date=entry_date)
         modelManager.create(df)
 
+def issue_po():
+    _po.make_po_file(find_candidates(report=False))
+
 
 if __name__ == "__main__":
-    save_candidates()
+    # save_candidates()
+    issue_po()

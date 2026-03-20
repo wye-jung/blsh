@@ -19,7 +19,7 @@
         잔고의 90%사용
         json파일은 별도의 프로세스가 생성.
         json파일이 여러개이고 ticker 가 중복되면 나중에 만들어진 json 파일의 ticker 매수 정보로 매수.
-        po_오늘_final.json 은 15:20 청산 이후 매수
+        po_오늘_final.json 은 청산 이후 매수
         기 보유종목은 매수 제외.
         10분 후 미체결 주문 취소.
         읽어들여 처리한 json파일은 ~/.blsh/data/po/done 폴더로 이동.

@@ -1,6 +1,10 @@
+import logging
+
 from dataclasses import asdict, dataclass
 from blsh.common import fileutils
 from blsh.wye.domestic._tick import floor_tick as _floor_tick, ceil_tick as _ceil_tick
+
+log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────
 # 데이터 클래스

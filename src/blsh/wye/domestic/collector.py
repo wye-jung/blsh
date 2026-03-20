@@ -1,5 +1,6 @@
 import time
 import asyncio
+from pykrx.website import krx
 from blsh.database import ModelManager, query
 from blsh.common import dtutils
 from blsh.database.models import (
@@ -20,11 +21,11 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def collect_ohlcv():
+def collect_latest_ohlcv():
     login_krx()
-    today = dtutils.today()
-    _collect_idx_data(today)
-    _collect_isu_data(today)
+    date = krx.get_nearest_business_day_in_a_week(date, True)
+    _collect_idx_data(date)
+    _collect_isu_data(date)
 
 
 def collect(fromdate=None):

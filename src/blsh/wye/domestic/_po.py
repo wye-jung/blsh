@@ -1,14 +1,15 @@
+import logging
 import sys
 from blsh.common.env import DATA_DIR
 from blsh.common import dtutils, fileutils
 from blsh.wye.domestic import collector, scanner
 
+log = logging.getLogger(__name__)
+
 PO_DIR = DATA_DIR / "po"
 PO_DONE_DIR = PO_DIR / "done"
 
-def make_po_file(day_final:bool=False):
-    collector.collect_ohlcv()
-    candidates = scanner.find_candidates(report=False)
+def make_po_file(candidates):
     if not candidates.empty:
         po_list = candidates[
             [
@@ -26,9 +27,9 @@ def make_po_file(day_final:bool=False):
                 "max_hold_days",
             ]
         ].to_dict(orient="records")
-        appendix = f"{dtutils.today()}_final" if day_final else dtutils.now() 
-        po_file = PO_DIR / f"po_{appendix}.json"
-        fileutils.create_file(po_file, po_list)
+        ctime = dtutils.ctime()
+        fname = f"po_{dtutils.now()}.json" if ctime < "150000" else f"po_{dtutils.today()}_final.json"
+        fileutils.create_file(PO_DIR / fname, po_list)
 
 def parse_po_file(path: Path) -> list[dict]:
     try:
@@ -89,5 +90,3 @@ def move_po_file(path: Path):
     except Exception as e:
         log.warning(f"po 파일 이동 실패 ({path.name}): {e}")
 
-if __name__ == "__main__":
-    make_po_file()
