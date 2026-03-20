@@ -10,9 +10,6 @@ KIS_DEVLP_YAML = os.path.join(CONFIG_DIR, "kis_devlp.yaml")
 
 DATA_DIR = Path.home() / ".blsh" / "data"
 POSITIONS_FILE = DATA_DIR / "positions.json"
-PO_DIR = DATA_DIR / "po"
-PO_DONE_DIR = PO_DIR / "done"
-HISTORIES_DIR = DATA_DIR / "histories"
 
 load_dotenv(os.path.join(CONFIG_DIR, ".env"))
 

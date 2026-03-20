@@ -59,7 +59,7 @@ import numpy as np
 import pandas as pd
 from blsh.database import query, ModelManager
 
-from blsh.wye.domestic import reporter
+from blsh.wye.domestic import _report as rep
 from blsh.wye.domestic import _factor as fac
 from blsh.wye.domestic._tick import floor_tick as _floor_tick, ceil_tick as _ceil_tick
 from blsh.database.models import TradeCandidates
@@ -662,7 +662,7 @@ def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if report:
-        reporter.print_general_summary(df)
+        rep.print_general_summary(df)
 
     return df
 
@@ -679,7 +679,7 @@ def find_candidates(base_date=dtutils.today(), report: bool = False) -> pd.DataF
     )
     df = sdf[cand_mask].copy()
     if report:
-        reporter.print_invest_report(df)
+        rep.print_invest_report(df)
 
     if df.empty:
         return df
