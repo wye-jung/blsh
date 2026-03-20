@@ -25,7 +25,7 @@ class Position:
     qty_t1: int = 0
     realized_pnl: float = 0.0
 
-def _make_position(
+def make_position(
     c: dict, buy_price: float, qty: int, entry_date: str, expiry_date: str = ""
 ) -> Position:
     """po.json dict → Position 생성."""
@@ -83,7 +83,7 @@ def _make_position(
 # ─────────────────────────────────────────
 # 포지션 영속화
 # ─────────────────────────────────────────
-def _load_positions() -> dict[str, Position]:
+def load_positions() -> dict[str, Position]:
     if not POSITIONS_FILE.exists():
         return {}
     try:
@@ -120,7 +120,7 @@ def _load_positions() -> dict[str, Position]:
         return {}
 
 
-def _save_positions(positions: dict[str, Position], swing_only: bool = False):
+def save_positions(positions: dict[str, Position], swing_only: bool = False):
     to_save = (
         {t: p for t, p in positions.items() if p.max_hold_days > 0}
         if swing_only

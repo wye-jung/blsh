@@ -6,7 +6,7 @@ from blsh.wye.domestic import collector, scanner
 PO_DIR = DATA_DIR / "po"
 PO_DONE_DIR = PO_DIR / "done"
 
-def _make_po_file(day_final:bool=False):
+def make_po_file(day_final:bool=False):
     collector.collect_ohlcv()
     candidates = scanner.find_candidates(report=False)
     if not candidates.empty:
@@ -30,7 +30,7 @@ def _make_po_file(day_final:bool=False):
         po_file = PO_DIR / f"po_{appendix}.json"
         fileutils.create_file(po_file, po_list)
 
-def _parse_po_file(path: Path) -> list[dict]:
+def parse_po_file(path: Path) -> list[dict]:
     try:
         raw = json.loads(path.read_text())
         if isinstance(raw, dict):
@@ -42,7 +42,7 @@ def _parse_po_file(path: Path) -> list[dict]:
     return []
 
 
-def _collect_po_orders(exclude_after_liquidate: bool = True) -> dict[str, dict]:
+def collect_po_orders(exclude_after_liquidate: bool = True) -> dict[str, dict]:
     """PO_DIR에서 po_*.json 읽기 → ticker별 최신 주문. 처리 후 done으로 이동.
 
     [FIX] 파싱 실패 파일은 이동하지 않음 (다음 틱에서 재시도).
@@ -55,7 +55,7 @@ def _collect_po_orders(exclude_after_liquidate: bool = True) -> dict[str, dict]:
         [
             f
             for f in PO_DIR.glob("po_*.json")
-            if not (exclude_after_liquidate and f.name == PO_AFTER_LIQUIDATE)
+            if not (exclude_after_liquidate and f.name == f"po_{dtutils.today()}_final.json")
         ],
         key=lambda f: f.stat().st_mtime,
     )
@@ -79,7 +79,7 @@ def _collect_po_orders(exclude_after_liquidate: bool = True) -> dict[str, dict]:
     return result
 
 
-def _move_po_file_to_done(path: Path):
+def move_po_file(path: Path):
     PO_DONE_DIR.mkdir(parents=True, exist_ok=True)
     dest = PO_DONE_DIR / path.name
     if dest.exists():
@@ -90,4 +90,4 @@ def _move_po_file_to_done(path: Path):
         log.warning(f"po 파일 이동 실패 ({path.name}): {e}")
 
 if __name__ == "__main__":
-    _make_po_file()
+    make_po_file()
