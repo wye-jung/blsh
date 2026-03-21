@@ -12,6 +12,7 @@ from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
 
 log = logging.getLogger(__name__)
 _API_CONCURRENCY = 2
+_api_sem = threading.Semaphore(_API_CONCURRENCY)  # 동시 API 호출 수 제한
 
 
 class _RateLimiter:
@@ -31,16 +32,17 @@ class _RateLimiter:
             self.last_call = time.monotonic()
 
 
-_rate_limiter = _RateLimiter(calls_per_sec=2)  # 0.5s 간격 (모의투자 안전 기준)
-_api_sem = threading.Semaphore(_API_CONCURRENCY)  # 동시 API 호출 수 제한
-
-
 class API:
     def __init__(self, env_dv="demo", poll_sec=30):
         if env_dv == "real":
             log.warning("🚨 실전투자 모드  (KIS_ENV=real)")
+            cps = 4
         else:
             log.info("모의투자 모드  (KIS_ENV=demo)")
+            cps = 2  # 0.5s 간격 (모의투자 안전 기준)
+
+        self.rate_limiter = _RateLimiter(calls_per_sec=cps)
+
         ka.auth("prod" if env_dv == "real" else "vps")
         self.env_dv = env_dv
         self.trenv = ka.getTREnv()
@@ -51,7 +53,7 @@ class API:
 
     def get_price(self, ticker: str) -> float | None:
         try:
-            _rate_limiter.wait()
+            self.rate_limiter.wait()
             with _api_sem:
                 df = ds.inquire_price(self.env_dv, "J", ticker)
             if df is not None and not df.empty:
@@ -92,7 +94,7 @@ class API:
             - cash: 예수금 총액
         """
         try:
-            _rate_limiter.wait()
+            self.rate_limiter.wait()
             with _api_sem:
                 df1, df2 = ds.inquire_balance(
                     env_dv=self.env_dv,
@@ -123,9 +125,9 @@ class API:
         return {}, {}, 0.0
 
     def buy(self, ticker: str, qty: int, entry_price: float) -> str | None:
-        """지정가 매수. 성공 시 주문번호 반환."""
+        """지정가 매수 (SOR: KRX/NXT 중 유리한 쪽으로 자동 라우팅). 성공 시 주문번호 반환."""
         try:
-            _rate_limiter.wait()
+            self.rate_limiter.wait()
             with _api_sem:
                 df = ds.order_cash(
                     env_dv=self.env_dv,
@@ -136,7 +138,7 @@ class API:
                     ord_dvsn="00",
                     ord_qty=str(qty),
                     ord_unpr=str(int(entry_price)),
-                    excg_id_dvsn_cd="KRX",
+                    excg_id_dvsn_cd="SOR",
                 )
             if df is not None and not df.empty:
                 odno = str(df.iloc[0].get("odno", ""))
@@ -149,9 +151,10 @@ class API:
         return None
 
     def buy_market(self, ticker: str, qty: int) -> str | None:
-        """시장가 매수. 성공 시 주문번호 반환."""
+        """시장가 매수. 성공 시 주문번호 반환.
+        NXT는 일반 시장가 불가이므로 KRX로 고정."""
         try:
-            _rate_limiter.wait()
+            self.rate_limiter.wait()
             with _api_sem:
                 df = ds.order_cash(
                     env_dv=self.env_dv,
@@ -175,7 +178,7 @@ class API:
     def sell(self, ticker: str, qty: int, reason: str = "") -> bool:
         """시장가 매도. 성공 시 True."""
         try:
-            _rate_limiter.wait()
+            self.rate_limiter.wait()
             with _api_sem:
                 df = ds.order_cash(
                     env_dv=self.env_dv,
@@ -199,7 +202,7 @@ class API:
     def cancel_order(self, ticker: str, odno: str, qty: int) -> bool:
         """주문 취소. 성공 시 True."""
         try:
-            _rate_limiter.wait()
+            self.rate_limiter.wait()
             with _api_sem:
                 ds.order_rvsecncl(
                     env_dv=self.env_dv,

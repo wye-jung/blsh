@@ -736,8 +736,9 @@ def save_candidates(base_date=dtutils.today(), report=True) -> None:
         modelManager.delete(base_date=base_date, entry_date=entry_date)
         modelManager.create(df)
 
-def issue_po():
-    _po.make_po_file(find_candidates(report=False))
+def issue_po(po_type=None):
+    """PO 파일 발행. po_type: 'pre'/'final'/None(자동)"""
+    _po.make_po_file(find_candidates(report=False), po_type=po_type)
 
 
 if __name__ == "__main__":

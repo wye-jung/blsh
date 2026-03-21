@@ -13,27 +13,58 @@ log = logging.getLogger(__name__)
 PO_DIR = DATA_DIR / "po"
 PO_DONE_DIR = PO_DIR / "done"
 
-def make_po_file(df):
-    if not df.empty:
-        po_list = df[
-            [
-                "ticker",
-                "entry_date",
-                "entry_price",
-                "stop_loss",
-                "take_profit",
-                "atr",
-                "atr_sl_mult",
-                "atr_tp_mult",
-                "expiry_date",
-                "name",
-                "mode",
-                "max_hold_days",
-            ]
-        ].to_dict(orient="records")
+def make_po_file(df, po_type=None):
+    """PO 파일 생성.
+
+    Args:
+        po_type: "pre" (전일 스캔 → 다음 영업일용),
+                 "final" (오후 스캔 → 당일 청산 후 매수),
+                 None (자동 판단: >=15:30 pre, >=14:00 final, 나머지 regular)
+    """
+    if df.empty:
+        return
+
+    po_list = df[
+        [
+            "ticker",
+            "entry_date",
+            "entry_price",
+            "stop_loss",
+            "take_profit",
+            "atr",
+            "atr_sl_mult",
+            "atr_tp_mult",
+            "expiry_date",
+            "name",
+            "mode",
+            "max_hold_days",
+        ]
+    ].to_dict(orient="records")
+
+    if po_type is None:
         ctime = dtutils.ctime()
-        po_file_name = f"po_{dtutils.now()}.json" if ctime < "150000" else get_final_po_name()
-        fileutils.create_file(PO_DIR / po_file_name, po_list)
+        if ctime >= "153000":
+            po_type = "pre"
+        elif ctime >= "140000":
+            po_type = "final"
+        else:
+            po_type = "regular"
+
+    if po_type == "pre":
+        entry_date = str(df.iloc[0]["entry_date"])
+        po_file_name = f"po_{entry_date}_pre.json"
+    elif po_type == "final":
+        po_file_name = get_final_po_name()
+    else:
+        po_file_name = f"po_{dtutils.now()}.json"
+
+    fileutils.create_file(PO_DIR / po_file_name, po_list)
+    log.info(f"[po] {po_file_name} 생성 ({len(po_list)}종목, type={po_type})")
+
+
+def get_pre_po_name():
+    return f"po_{dtutils.today()}_pre.json"
+
 
 def get_final_po_name():
     return f"po_{dtutils.today()}_final.json"
@@ -50,7 +81,7 @@ def parse_po_file(path: Path) -> list[dict]:
     return []
 
 
-def collect_po_orders(exclude_final: bool = True) -> dict[str, dict]:
+def collect_po_orders(exclude_final: bool = True, exclude_pre: bool = True) -> dict[str, dict]:
     """PO_DIR에서 po_*.json 읽기 → ticker별 최신 주문. 처리 후 done으로 이동.
 
     [FIX] 파싱 실패 파일은 이동하지 않음 (다음 틱에서 재시도).
@@ -63,6 +94,7 @@ def collect_po_orders(exclude_final: bool = True) -> dict[str, dict]:
             f
             for f in PO_DIR.glob(f"po_{today}*.json")
             if not (exclude_final and f.name.endswith("final.json"))
+            and not (exclude_pre and f.name.endswith("pre.json"))
         ],
         key=lambda f: f.stat().st_mtime,
     )

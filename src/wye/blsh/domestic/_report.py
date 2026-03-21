@@ -165,9 +165,9 @@ def print_simul_report(
 
     if rows_ok:
         df_ok = pd.DataFrame(rows_ok).sort_values("ret_pct", ascending=False)
-        wins = df_ok[df_ok["result_type"] == "익절"]
+        wins = df_ok[df_ok["result_type"].str.startswith("익절")]
         cuts = df_ok[df_ok["result_type"] == "손절"]
-        holds = df_ok[~df_ok["result_type"].isin(["익절", "손절"])]
+        holds = df_ok[~(df_ok["result_type"].str.startswith("익절") | (df_ok["result_type"] == "손절"))]
 
         log.info(
             f"  ▶ 매수 성공 {len(df_ok)}종목  "

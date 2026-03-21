@@ -1,32 +1,56 @@
 """
 백테스트
+
+변경 이력:
+  - entry_date OHLCV 포함 (매수일 누락 수정)
+  - buy_price 기준 SL/TP 재계산 (scanner 종가 기준 → 실제 매수가 기준)
+  - TP1 분할매도 + 트레일링 SL 반영 (실제 trader_v2 로직 일치)
+  - DAY 모드(max_hold_days=0) 지원: entry_date 당일 매수→청산
 """
 
 import logging
 import pandas as pd
 from wye.blsh.database import query
-from wye.blsh.domestic import _factor, _report
+from wye.blsh.domestic import _factor, _report, _tick
 
 log = logging.getLogger(__name__)
 
+# 트레이더와 동일한 상수
+TP1_MULT = 1.0
+SELL_COST_RATE = 0.002
 
-def simulate(candidates) -> tuple:
+
+def simulate(candidates) -> tuple | None:
     """
-    수익률 시뮬레이트
+    수익률 시뮬레이트.
+    Returns: (rows_ok, rows_gap, rows_miss) 또는 데이터 없으면 None
     """
+    if candidates.empty:
+        log.info("[시뮬레이트] 후보 종목 없음")
+        return None
+
     entry_date = candidates.iloc[0]["entry_date"]
+    max_hold = _factor.MAX_HOLD_DAYS
 
-    log.info(f"[시뮬레이트] 목표일={entry_date}  최대 {_factor.MAX_HOLD_DAYS}거래일 추적")
+    log.info(f"[시뮬레이트] 목표일={entry_date}  최대 {max_hold}거래일 추적")
 
     tickers = candidates["ticker"].tolist()
 
-    # ── entry_date 이후 최대 MAX_HOLD_DAYS 거래일 날짜 목록 조회
-    date_rows = pd.DataFrame(query.get_max_hold_dates(entry_date, _factor.MAX_HOLD_DAYS))
-    if date_rows.empty:
-        log.info(f"[수익률 리포트] {entry_date} 이후 OHLCV 데이터 없음 → 스킵")
-        return
+    # ── entry_date 포함 + 이후 MAX_HOLD_DAYS 거래일 날짜 목록 조회
+    # [FIX] entry_date 자체를 포함해야 당일 매수 시뮬레이션 가능
+    date_rows_after = pd.DataFrame(
+        query.get_max_hold_dates(entry_date, max(max_hold, 1))
+    )
+    # entry_date 자체 + 이후 날짜
+    hold_dates = [entry_date] + (
+        date_rows_after["d"].tolist() if not date_rows_after.empty else []
+    )
 
-    hold_dates = date_rows["d"].tolist()
+    # entry_date에 OHLCV 데이터가 있는지 확인
+    if not query.has_ohlcv_data(entry_date):
+        log.info(f"[시뮬레이트] {entry_date} OHLCV 데이터 없음 → 스킵")
+        return None
+
     actual_days = len(hold_dates)
     log.info(f"  확인 기간: {hold_dates[0]} ~ {hold_dates[-1]}  ({actual_days}거래일)")
 
@@ -52,37 +76,46 @@ def simulate(candidates) -> tuple:
             "close": float(row["close"]),
         }
 
-    rows_ok = []  # 매수 진입 성공
-    rows_gap = []  # 갭 상승, 매수 불가
-    rows_miss = []  # entry_date 데이터 자체 없음
+    rows_ok = []
+    rows_gap = []
+    rows_miss = []
 
     for _, sig in candidates.iterrows():
         t = sig["ticker"]
         entry = float(sig["entry_price"])
-        sl = float(sig["stop_loss"])
-        tp = float(sig["take_profit"])
+        atr = float(sig["atr"])
+        atr_sl_mult = float(sig.get("atr_sl_mult", _factor.ATR_SL_MULT))
+        atr_tp_mult = float(sig.get("atr_tp_mult", _factor.ATR_TP_MULT))
         days = ohlcv_idx.get(t, {})
 
-        # entry_date 데이터 없음
+        # entry_date(hold_dates[0]) 데이터 없음
         t1_ohv = days.get(hold_dates[0])
         if t1_ohv is None:
             rows_miss.append(sig.to_dict())
             continue
 
-        # 갭 상승 체크: entry_date 시가 > entry_price
+        # 갭 상승 체크
         if t1_ohv["open"] > entry:
             rows_gap.append(
                 {**sig.to_dict(), "t_open": t1_ohv["open"], "entry_date": hold_dates[0]}
             )
             continue
 
+        # [FIX] 실제 매수가 기준 SL/TP 재계산 (trader _make_position과 동일)
         buy_price = t1_ohv["open"]
+        sl = _tick.floor_tick(buy_price - atr_sl_mult * atr)
+        tp1 = _tick.ceil_tick(buy_price + TP1_MULT * atr)
+        tp2 = _tick.ceil_tick(buy_price + atr_tp_mult * atr)
+
         result_type = None
         exit_price = None
         exit_date = None
         last_ohv = t1_ohv
+        realized_pnl = 0.0
+        remaining_qty = 1.0  # 비율 (1.0 = 전량)
+        t1_done = False
 
-        # 모드별 최대 보유 기간: MOM=2일, MIX=3일, REV=5일
+        # 모드별 최대 보유 기간
         mode = sig.get("mode", "")
         if mode == "MOM":
             max_days = _factor.MAX_HOLD_DAYS_MOM
@@ -90,40 +123,81 @@ def simulate(candidates) -> tuple:
             max_days = _factor.MAX_HOLD_DAYS_MIX
         else:
             max_days = _factor.MAX_HOLD_DAYS
-        sig_hold_dates = hold_dates[:max_days]
 
-        # 날짜 순서대로 손익절 확인
+        # DAY 모드(max_days=0): entry_date 당일만 보유
+        if max_days == 0:
+            sig_hold_dates = [hold_dates[0]]
+        else:
+            # entry_date(매수일) + 이후 max_days일
+            sig_hold_dates = hold_dates[: max_days + 1]
+
+        # 날짜 순서대로 SL/TP1/TP2 + 트레일링 SL 확인
+        prev_high = t1_ohv["high"]  # 트레일링 SL용 전일 고가
         for d in sig_hold_dates:
             ohv = days.get(d)
             if ohv is None:
                 continue
             last_ohv = ohv
 
-            hit_sl = ohv["low"] <= sl
-            hit_tp = ohv["high"] >= tp
+            # [FIX] 트레일링 SL: 전일까지의 high 기준으로만 갱신 (보수적)
+            # 일봉에서는 당일 high/low 선후를 알 수 없으므로,
+            # 당일 high로 SL을 올린 뒤 당일 low로 손절 체크하면 낙관적 편향 발생.
+            # 전일 high 기준 갱신 → 당일 low 체크 순서로 보수적 시뮬레이션.
+            if d != sig_hold_dates[0]:  # 매수일은 전일 고가 = 매수일 자체
+                trail_sl = _tick.floor_tick(prev_high - atr_sl_mult * atr)
+                if trail_sl > sl and trail_sl < prev_high:
+                    sl = trail_sl
 
-            if hit_sl and hit_tp:
-                # 동일 캔들에서 손절/익절 동시 터치 → 시가와 가까운 쪽 우선
-                if abs(buy_price - sl) <= abs(tp - buy_price):
-                    result_type, exit_price = "손절", sl
-                else:
-                    result_type, exit_price = "익절", tp
-            elif hit_sl:
-                result_type, exit_price = "손절", sl
-            elif hit_tp:
-                result_type, exit_price = "익절", tp
-
-            if result_type:
+            # 손절 체크
+            if ohv["low"] <= sl:
+                pnl = (sl - buy_price) * remaining_qty - sl * remaining_qty * SELL_COST_RATE
+                realized_pnl += pnl
+                result_type = "손절"
+                exit_price = sl
                 exit_date = d
+                remaining_qty = 0
                 break
 
-        # 최대 보유기간 후에도 미확정 → 마지막 거래일 종가
-        if result_type is None:
-            result_type = f"미확정({len(sig_hold_dates)}일)"
-            exit_price = last_ohv["close"]
-            exit_date = sig_hold_dates[-1]
+            # TODO: TP1 체결 + 같은 봉 본전 SL 도달 시나리오 (일봉 한계)
+            # TP1 분할매도 (50%) — 미완료 시에만
+            if not t1_done and ohv["high"] >= tp1:
+                sell_ratio = 0.5
+                pnl = (tp1 - buy_price) * sell_ratio - tp1 * sell_ratio * SELL_COST_RATE
+                realized_pnl += pnl
+                remaining_qty -= sell_ratio
+                t1_done = True
+                # SL → 매수가 (본전 보장)
+                if buy_price > sl:
+                    sl = buy_price
 
-        ret_pct = (exit_price - buy_price) / buy_price * 100
+            # 트레일링 SL 갱신용 전일 고가 업데이트
+            prev_high = max(prev_high, ohv["high"])
+
+            # TP2 잔량 전량 청산
+            if ohv["high"] >= tp2 and remaining_qty > 0:
+                pnl = (tp2 - buy_price) * remaining_qty - tp2 * remaining_qty * SELL_COST_RATE
+                realized_pnl += pnl
+                result_type = "익절" if t1_done else "익절(전량)"
+                exit_price = tp2
+                exit_date = d
+                remaining_qty = 0
+                break
+
+        # 최대 보유기간 후 미확정 → 마지막 거래일 종가 청산
+        if result_type is None:
+            close_price = last_ohv["close"]
+            pnl = (close_price - buy_price) * remaining_qty - close_price * remaining_qty * SELL_COST_RATE
+            realized_pnl += pnl
+            day_label = len(sig_hold_dates)
+            if max_days == 0:
+                result_type = "데이청산"
+            else:
+                result_type = f"미확정({day_label}일)"
+            exit_price = close_price
+            exit_date = sig_hold_dates[-1] if sig_hold_dates else hold_dates[0]
+            remaining_qty = 0
+
+        ret_pct = (realized_pnl / abs(buy_price)) * 100 if buy_price else 0
         rows_ok.append(
             {
                 **sig.to_dict(),
@@ -140,7 +214,6 @@ def simulate(candidates) -> tuple:
             }
         )
 
-    # 시뮬레이션 리포트
     _report.print_simul_report(
         entry_date,
         actual_days,
@@ -152,7 +225,7 @@ def simulate(candidates) -> tuple:
 
     return rows_ok, rows_gap, rows_miss
 
+
 if __name__ == "__main__":
     from wye.blsh.domestic import scanner
     simulate(scanner.find_candidates("20260317"))
-    # issue_po()
