@@ -99,7 +99,7 @@ NXT_PRE_OPEN = "080000"   # NXT 프리마켓 개장 (매수 SOR 가능)
 KRX_OPEN = "090000"       # KRX 정규장 개장 (매도 가능)
 LIQUIDATE_TIME = "151500"  # 청산시간
 MARKET_CLOSE = "153000"  # 장 마감
-TP1_MULT = 1.0  # 1차 익절: buy + ATR × TP1_MULT (50% 분할 매도)
+# TP1_MULT, TP1_RATIO, GAP_DOWN_LIMIT → _factor.py 에서 로드
 SELL_COST_RATE = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)
 TICK_SEC = 10  # 메인 루프 주기 (현재가 조회 간격)
 FETCH_TIMEOUT = 30  # _fetch_prices as_completed 타임아웃 (종목 많아도 안전)
@@ -131,6 +131,7 @@ class Position:
     t1_done: bool = False
     qty_t1: int = 0
     realized_pnl: float = 0.0
+    po_type: str = ""
 
 
 @dataclass
@@ -142,16 +143,18 @@ class PendingOrder:
     entry_price: float
     qty: int
     deadline: float
+    po_type: str = ""
 
 
 # ─────────────────────────────────────────
 # 이력 저장 (DB INSERT ~1-5ms, 동기, 스레드 불필요)
 # ─────────────────────────────────────────
 def _save_history(
-    side: str, ticker: str, name: str, qty: int, price: float, reason: str = ""
+    side: str, ticker: str, name: str, qty: int, price: float,
+    reason: str = "", po_type: str = "",
 ):
     try:
-        query.save_trade_history(side, ticker, name, qty, price, reason)
+        query.save_trade_history(side, ticker, name, qty, price, reason, po_type)
     except Exception as e:
         log.warning(f"이력 저장 실패 ({ticker}): {e}")
 
@@ -161,7 +164,7 @@ def _save_history(
 # ─────────────────────────────────────────
 def _sell_or_log(_api: _kis.API, pos: Position, qty: int, reason: str) -> bool:
     if _api.sell(pos.ticker, qty, reason):
-        _save_history("sell", pos.ticker, pos.name, qty, 0, reason)
+        _save_history("sell", pos.ticker, pos.name, qty, 0, reason, pos.po_type)
         return True
     log.critical(f"  🚨 매도 실패: {pos.ticker} [{reason}] → 다음 틱 재시도")
     return False
@@ -182,6 +185,7 @@ def _load_positions() -> dict[str, Position]:
             v.setdefault("atr_sl_mult", _factor.ATR_SL_MULT)
             v.setdefault("atr_tp_mult", _factor.ATR_TP_MULT)
             v.setdefault("expiry_date", "")
+            v.setdefault("po_type", "")
             p = Position(**v)
             if p.max_hold_days == 0 and p.entry_date != today:
                 log.warning(f"  이전 데이 포지션 무시: {t} (entry={p.entry_date})")
@@ -220,7 +224,8 @@ def _save_positions(positions: dict[str, Position], swing_only: bool = False):
 
 
 def _make_position(
-    c: dict, buy_price: float, qty: int, entry_date: str, expiry_date: str = ""
+    c: dict, buy_price: float, qty: int, entry_date: str,
+    expiry_date: str = "", po_type: str = "",
 ) -> Position:
     """po.json dict → Position 생성."""
     atr = float(c["atr"])
@@ -245,11 +250,19 @@ def _make_position(
             log.warning(f"  expiry_date 계산 실패 ({c.get('ticker')}): {e}")
             expiry_date = entry_date
 
+    tp1_mult = float(
+        c["tp1_mult"] if c.get("tp1_mult") is not None else _factor.TP1_MULT
+    )
+    tp1_ratio = float(
+        c["tp1_ratio"] if c.get("tp1_ratio") is not None else _factor.TP1_RATIO
+    )
     sl = _tick.floor_tick(buy_price - atr_sl_mult * atr)
-    tp1 = _tick.ceil_tick(buy_price + TP1_MULT * atr)
+    tp1 = _tick.ceil_tick(buy_price + tp1_mult * atr)
     tp2 = _tick.ceil_tick(buy_price + atr_tp_mult * atr)
-    qty_t1 = max(1, qty // 2)
-    if qty < 2:
+    qty_t1 = max(1, int(qty * tp1_ratio))
+    if qty_t1 >= qty:
+        qty_t1 = qty  # tp1_ratio=1.0 → 전량 청산
+    if qty < 2 and tp1_ratio < 1.0:
         log.warning(
             f"  {c['ticker']} 수량={qty} → 1차 익절 시 전량 청산, 2차 익절 없음"
         )
@@ -271,6 +284,7 @@ def _make_position(
         expiry_date=expiry_date,
         t1_done=False,
         qty_t1=qty_t1,
+        po_type=po_type,
     )
 
 
@@ -346,26 +360,32 @@ def _submit_buy_orders(
     today: str,
     cash_usage: float = CASH_USAGE,
     cash_limit: float | None = None,
-):
+    po_type: str = "",
+) -> dict[str, dict]:
     """기 보유/진행 중 종목 제외 → 배분액 계산 → 지정가 매수 → pending 등록.
 
     Args:
         cash_usage: 가용 현금 대비 사용 비율 (cash_limit 미지정 시 적용)
         cash_limit: 절대 금액 상한 (지정 시 cash_usage 무시)
+        po_type: PO 유형 (pre/morning/final)
+
+    Returns:
+        주문 실패 종목 dict {ticker: order_dict} (KRX 개장 후 재시도용)
     """
+    failed: dict[str, dict] = {}
     holdings_api, avg_prices, cash = _api.get_balance()
     held = set(positions.keys()) | set(holdings_api.keys()) | set(pending.keys())
 
     new_orders = {t: o for t, o in orders.items() if t not in held}
     if not new_orders:
         log.info("[po] 신규 매수 대상 없음 (전부 기보유/진행중)")
-        return
+        return failed
 
     avail = cash_limit if cash_limit is not None else cash * cash_usage
     alloc = avail / len(new_orders)
     if alloc < MIN_ALLOC:
         log.warning(f"[po] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 스킵")
-        return
+        return failed
 
     deadline = time.monotonic() + PO_CANCEL_MIN * 60
 
@@ -383,7 +403,13 @@ def _submit_buy_orders(
                 entry_price=entry_price,
                 qty=qty,
                 deadline=deadline,
+                po_type=po_type,
             )
+        else:
+            failed[ticker] = o
+            log.warning(f"  [po] 주문 실패: {ticker} → KRX 개장 후 재시도 대상")
+
+    return failed
 
 
 def _check_pending_orders(
@@ -431,6 +457,7 @@ def _check_pending_orders(
                     actual_qty,
                     today,
                     po.cand.get("expiry_date") or "",
+                    po_type=po.po_type,
                 )
             except Exception as e:
                 log.error(f"  Position 생성 실패 ({ticker}): {e}")
@@ -439,7 +466,8 @@ def _check_pending_orders(
 
             positions[ticker] = pos
             _save_history(
-                "buy", ticker, pos.name, actual_qty, buy_price, "po지정가체결"
+                "buy", ticker, pos.name, actual_qty, buy_price,
+                "po지정가체결", pos.po_type,
             )
             log.info(
                 f"  ✅ po체결: {ticker} {pos.name}  매수가={buy_price:,.0f}"
@@ -498,6 +526,15 @@ def run():
         while dtutils.ctime() < NXT_PRE_OPEN:
             time.sleep(5)
 
+    # ── 상태 변수 (메인 루프 전 초기화 — pre po 처리에서 pending_po 필요)
+    pending_po: dict[str, PendingOrder] = {}
+    session_closed: dict[str, Position] = {}
+    liquidated = False
+    dirty = False
+    tick_count = 0
+    last_status_min = ""
+    cur_prices: dict[str, float] = {}
+
     # ── PO① 전일 스캔 (pre po) 매수
     pre_po_name = get_pre_po_name()
     pre_po = PO_DIR / pre_po_name
@@ -511,12 +548,18 @@ def run():
                 t = o.get("ticker")
                 if t:
                     pre_orders[t] = o
-            _submit_buy_orders(
+            failed = _submit_buy_orders(
                 pre_orders, positions, pending_po, _api, today,
-                cash_usage=PRE_MARKET_CASH_RATIO,
+                cash_usage=PRE_MARKET_CASH_RATIO, po_type="pre",
             )
+            if failed:
+                log.info(f"  [pre] 주문실패 {len(failed)}종목 → KRX 개장 후 재시도")
     else:
         log.info(f"[pre] {pre_po_name} 없음")
+        failed = {}
+
+    retry_orders: dict[str, dict] = failed  # KRX 개장 후 재시도 대상
+    retry_done = False
 
     # ── 기간 초과 포지션: KRX 개장 후 청산 (09:00 이전이면 메인 루프에서 처리)
     overdue_done = False
@@ -529,23 +572,14 @@ def run():
             for ticker in overdue:
                 pos = positions[ticker]
                 if _api.sell(ticker, pos.qty, f"기간초과 (expiry={pos.expiry_date})"):
-                    _save_history("sell", ticker, pos.name, pos.qty, 0, "기간초과청산")
-                    del positions[ticker]
+                    _save_history("sell", ticker, pos.name, pos.qty, 0, "기간초과청산", pos.po_type)
+                    session_closed[ticker] = positions.pop(ticker)
                 else:
                     log.warning(f"  기간초과 청산 실패: {ticker} → 다음 틱 재시도")
         overdue_done = True
 
     _save_positions(positions)
     log.info(f"[모니터링] {len(positions)}종목 감시 시작  (틱={TICK_SEC}s)")
-
-    # ── 상태 변수
-    pending_po: dict[str, PendingOrder] = {}
-    session_closed: dict[str, Position] = {}
-    liquidated = False
-    dirty = False
-    tick_count = 0
-    last_status_min = ""
-    cur_prices: dict[str, float] = {}
 
     # ── 장 중 메인 루프
     while True:
@@ -559,8 +593,20 @@ def run():
             log.info("[종료] 장 마감")
             break
 
-        # ── 0. KRX 개장 시 기간초과 청산 (1회)
+        # ── 0. KRX 개장 시: 기간초과 청산 + 프리마켓 실패 종목 재주문
         krx_open = now >= KRX_OPEN
+
+        # 프리마켓 주문 실패 종목 재시도 (KRX 개장 후 1회)
+        if krx_open and not retry_done and retry_orders:
+            log.info(f"[KRX 개장] 프리마켓 실패 {len(retry_orders)}종목 재주문")
+            still_failed = _submit_buy_orders(
+                retry_orders, positions, pending_po, _api, today,
+                cash_usage=PRE_MARKET_CASH_RATIO, po_type="pre",
+            )
+            if still_failed:
+                log.warning(f"  재주문도 실패: {list(still_failed.keys())}")
+            retry_done = True
+
         if krx_open and not overdue_done:
             overdue = [
                 t for t, p in list(positions.items())
@@ -571,7 +617,7 @@ def run():
                 for ticker in overdue:
                     pos = positions[ticker]
                     if _api.sell(ticker, pos.qty, f"기간초과 (expiry={pos.expiry_date})"):
-                        _save_history("sell", ticker, pos.name, pos.qty, 0, "기간초과청산")
+                        _save_history("sell", ticker, pos.name, pos.qty, 0, "기간초과청산", pos.po_type)
                         session_closed[ticker] = positions.pop(ticker)
                     else:
                         log.warning(f"  기간초과 청산 실패: {ticker} → 다음 틱 재시도")
@@ -611,7 +657,7 @@ def run():
                     log.info(f"[po] {len(orders)}종목 주문 발견")
                     _submit_buy_orders(
                         orders, positions, pending_po, _api, today,
-                        cash_usage=MORNING_CASH_RATIO,
+                        cash_usage=MORNING_CASH_RATIO, po_type="morning",
                     )
 
             if _check_pending_orders(pending_po, positions, _api, today):
@@ -630,7 +676,7 @@ def run():
             for ticker, pos in to_liq:
                 reason = f"만기청산 (expiry={pos.expiry_date})"
                 if _api.sell(ticker, pos.qty, reason):
-                    _save_history("sell", ticker, pos.name, pos.qty, 0, reason)
+                    _save_history("sell", ticker, pos.name, pos.qty, 0, reason, pos.po_type)
                     session_closed[ticker] = positions.pop(ticker)
                     log.info(f"  청산: {ticker} {pos.name}  qty={pos.qty}")
                 else:
@@ -653,7 +699,8 @@ def run():
                     _, _, cash = _api.get_balance()
                     cash_limit = cash * AFTERNOON_CASH_RATIO * CASH_USAGE
                     _submit_buy_orders(
-                        after_orders, positions, pending_po, _api, today, cash_limit
+                        after_orders, positions, pending_po, _api, today,
+                        cash_limit=cash_limit, po_type="final",
                     )
             else:
                 log.info(f" {final_po_name} 없음")

@@ -3,25 +3,28 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-_USER_HOME: Final = os.path.expanduser("~")
-CONFIG_DIR: Final = os.path.join(_USER_HOME, ".blsh/config")
-TEMP_DIR: Final = os.path.join(_USER_HOME, ".temp")
-KIS_DEVLP_YAML = os.path.join(CONFIG_DIR, "kis_devlp.yaml")
+_BLSH_HOME: Final = Path.home() / ".blsh"
+CONFIG_DIR: Final = _BLSH_HOME / "config"
+DATA_DIR: Final = _BLSH_HOME / "data"
+TEMP_DIR: Final = _BLSH_HOME / "temp"
 
-DATA_DIR = Path.home() / ".blsh" / "data"
-POSITIONS_FILE = DATA_DIR / "positions.json"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-load_dotenv(os.path.join(CONFIG_DIR, ".env"))
+KIS_DEVLP_YAML: Final = CONFIG_DIR / "kis_devlp.yaml"
 
-KIS_APP_KEY = os.getenv("KIS_APP_KEY")
-KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")
+load_dotenv()
+load_dotenv(CONFIG_DIR / ".env")
+
+KIS_APP_KEY: Final = os.getenv("KIS_APP_KEY")
+KIS_APP_SECRET: Final = os.getenv("KIS_APP_SECRET")
 
 DB_USER: Final = os.getenv("DB_USER")
 DB_PASSWORD: Final = os.getenv("DB_PASSWORD")
 DB_NAME: Final = os.getenv("DB_NAME")
 DB_HOST: Final = os.getenv("DB_HOST")
 DB_PORT: Final = os.getenv("DB_PORT")
-DB_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_URL: Final = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 KRX_API_KEY: Final = os.getenv("KRX_API_KEY")
 DART_API_KEY: Final = os.getenv("DART_API_KEY")
@@ -31,8 +34,7 @@ KRX_API_URL: Final = "https://data-dbg.krx.co.kr/svc/apis"
 KRX_LOGIN_ID: Final = os.getenv("KRX_LOGIN_ID")
 KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
 
-load_dotenv()
 KIS_ENV: Final = os.getenv("KIS_ENV")
 
 if __name__ == "__main__":
-    print(DB_URL)
+    print(KIS_ENV)

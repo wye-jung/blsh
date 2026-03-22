@@ -11,12 +11,15 @@ def _extract(zip_url, base_dir=TEMP_DIR):
     ssl._create_default_https_context = ssl._create_unverified_context
     zip_name = zip_url.rsplit("/", 1)[-1]  # e.g. "kospi_code.mst.zip"
     zip_path = os.path.join(base_dir, zip_name)
-    urllib.request.urlretrieve(zip_url, zip_path)
+    try:
+        urllib.request.urlretrieve(zip_url, zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(base_dir)
 
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(base_dir)
+        os.remove(zip_path)
+    except Exception as e:
+        print(e)
 
-    os.remove(zip_path)
     return base_dir
 
 

@@ -18,7 +18,7 @@
   │ 거래량 급증 + 양봉 (2배)                 │  +1  │ VS     │  모멘텀│
   │ 이동평균 정배열 전환 (5>20>60)           │  +1  │ MAA    │  모멘텀│
   │ 스토캐스틱 과매도 교차                   │  +1  │ SGC    │  중립  │
-  │ 52주 신고가 돌파 (20일 최대 거래량 돌파) │  +2  │ W52    │  모멘텀│
+  │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배) │  +2  │ W52    │  모멘텀│
   │ 눌림목 패턴 (5MA 종가/저가 이탈 후 복귀) │  +2  │ PB     │  모멘텀│
   │ 망치형 캔들                              │  +1  │ HMR    │  전환  │
   │ 장대 양봉                                │  +2  │ LB     │  모멘텀│
@@ -61,6 +61,7 @@ from wye.blsh.domestic import _report, _tick, _po
 from wye.blsh.domestic import _factor
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
+from wye.blsh.common.env import DATA_DIR
 
 log = logging.getLogger(__name__)
 
@@ -196,11 +197,10 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("SGC", 1))
 
     # 10. 52주 신고가 돌파 (+2) → W52 (모멘텀)
-    # TODO: 거래량 조건을 "20일 평균의 N배"로 완화 검토
     if len(close) >= 252 and volume is not None and len(volume) >= 21:
         w52_high = high.iloc[-252:-1].max()
-        vol_20_max = volume.iloc[-21:-1].max()
-        if h0 > w52_high and volume.iloc[-1] > vol_20_max:
+        vol_20_avg = volume.iloc[-21:-1].mean()
+        if h0 > w52_high and volume.iloc[-1] > vol_20_avg * _factor.W52_VOL_MULT:
             signals.append(("W52", 2))
 
     # 11. 눌림목 패턴 (+2) → PB (모멘텀)
@@ -664,10 +664,103 @@ def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
     return df
 
 
+# ─────────────────────────────────────────
+# 업종지수 패널티/보너스
+# ─────────────────────────────────────────
+_SECTOR_MAP_FILE = DATA_DIR / "cache" / "sector_map.json"
+
+
+def _load_ticker_sector_map() -> dict[str, str]:
+    """종목코드 → 업종지수명 매핑 (캐시 파일, 당일 1회 갱신)."""
+    import json
+    # 캐시 유효성: 오늘 날짜 파일이면 재사용
+    if _SECTOR_MAP_FILE.exists():
+        try:
+            data = json.loads(_SECTOR_MAP_FILE.read_text())
+            if data.get("_date") == dtutils.today():
+                return data.get("map", {})
+        except Exception:
+            pass
+
+    log.info("[업종매핑] KIS 마스터 다운로드…")
+    result: dict[str, str] = {}
+    try:
+        from wye.blsh.kis.domestic_stock.domestic_stock_info import get_kospi_info
+        kp = get_kospi_info()
+        for _, row in kp.iterrows():
+            ticker = str(row["단축코드"]).strip()
+            mid = int(row.get("지수업종중분류", 0) or 0)
+            big = int(row.get("지수업종대분류", 0) or 0)
+            idx_nm = _factor.KOSPI_MID_TO_IDX.get(mid) or _factor.KOSPI_BIG_TO_IDX.get(big)
+            if idx_nm:
+                result[ticker] = idx_nm
+    except Exception as e:
+        log.warning(f"  KOSPI 마스터 로드 실패: {e}")
+
+    # 캐시 저장
+    _SECTOR_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SECTOR_MAP_FILE.write_text(
+        json.dumps({"_date": dtutils.today(), "map": result}, ensure_ascii=False)
+    )
+    log.info(f"  KOSPI 업종매핑: {len(result)}종목 캐시 저장")
+    return result
+
+
+def _get_sector_gap(idx_nm: str, base_date: str, ma_days: int = 20) -> float:
+    """업종지수의 MA20 괴리율. 데이터 없으면 0.0 (중립)."""
+    rows = query.get_index_clsprc(idx_nm, base_date, ma_days)
+    if not rows or len(rows) < ma_days:
+        return 0.0
+    prices = [float(r["clsprc_idx"]) for r in rows]
+    cur = prices[0]  # 최신
+    ma = sum(prices) / len(prices)
+    return (cur - ma) / ma if ma else 0.0
+
+
+def _apply_sector_penalty(
+    df: pd.DataFrame, base_date: str
+) -> pd.DataFrame:
+    """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
+    if _factor.SECTOR_PENALTY_PTS == 0 and _factor.SECTOR_BONUS_PTS == 0:
+        return df
+
+    sector_map = _load_ticker_sector_map()
+    # KOSDAQ → "코스닥" 전체 지수 fallback
+    gap_cache: dict[str, float] = {}
+
+    def get_gap(ticker: str, market: str) -> float:
+        sec_nm = sector_map.get(ticker, "코스닥" if market == "KOSDAQ" else "")
+        if not sec_nm:
+            return 0.0
+        if sec_nm not in gap_cache:
+            gap_cache[sec_nm] = _get_sector_gap(sec_nm, base_date)
+        return gap_cache[sec_nm]
+
+    adjustments = []
+    for _, row in df.iterrows():
+        gap = get_gap(row["ticker"], row["market"])
+        adj = 0
+        if _factor.SECTOR_PENALTY_PTS != 0 and gap < _factor.SECTOR_PENALTY_THRESHOLD:
+            adj = _factor.SECTOR_PENALTY_PTS
+        elif _factor.SECTOR_BONUS_PTS != 0 and gap >= 0:
+            adj = _factor.SECTOR_BONUS_PTS
+        adjustments.append(adj)
+
+    df = df.copy()
+    df["buy_score"] = df["buy_score"] + adjustments
+    applied = sum(1 for a in adjustments if a != 0)
+    if applied:
+        log.info(f"[업종패널티] {applied}종목 점수 조정 ({len(gap_cache)}업종 조회)")
+    return df
+
+
 def find_candidates(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
     sdf = scan(base_date, report)
     if sdf.empty:
         return sdf
+
+    # 업종 패널티/보너스 적용
+    sdf = _apply_sector_penalty(sdf, base_date)
 
     cand_mask = (
         (sdf["buy_score"] >= _factor.INVEST_MIN_SCORE)

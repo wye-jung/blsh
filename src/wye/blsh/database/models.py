@@ -239,6 +239,7 @@ class TradeHistory(Base):
     qty = Column(Integer, comment="체결 수량")
     price = Column(Numeric, comment="체결가 (매수: 지정가, 매도: 0=시장가)")
     reason = Column(String(200), comment="사유 (손절/1차익절/만기청산 등)")
+    po_type = Column(String(10), comment="PO 유형 (pre/morning/final)")
     traded_at = Column(
         DateTime, server_default=func.now(), index=True, comment="체결 시각"
     )
