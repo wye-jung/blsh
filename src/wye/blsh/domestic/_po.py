@@ -3,10 +3,9 @@ import logging
 import shutil
 import time
 from pathlib import Path
-from dataclasses import dataclass
 from wye.blsh.common import dtutils, fileutils
 from wye.blsh.common.env import DATA_DIR
-from wye.blsh.domestic import _factor
+from wye.blsh.common import messageutils
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +60,11 @@ def make_po_file(df, po_type=None):
     if po_type:
         po_file_name = f"po_{entry_date}_{po_type}.json"
         fileutils.create_json(PO_DIR / po_file_name, po_list)
-        log.info(f"[po] {po_file_name} 생성 ({len(po_list)}종목)")
+        names = df["name"].to_list()
+        log.info(f"[po] {po_file_name} 생성 ({len(po_list)}종목: {names})")
+        messageutils.send_message(
+            f"[po] {po_file_name} 생성 ({len(po_list)}종목: {names})"
+        )
     else:
         log.warning(
             f"[po] po_type을 결정할 수 없습니다. ({len(po_list)}종목, entry_date={entry_date})"
@@ -101,9 +104,9 @@ def collect_po_orders(
     files = sorted(
         [
             f
-            for f in PO_DIR.glob(f"po_{today}*.json")
-            if not (exclude_final and f.name.endswith("final.json"))
-            and not (exclude_pre and f.name.endswith("pre.json"))
+            for f in PO_DIR.glob(f"po_{today}_*.json")
+            if not (exclude_final and f.name.endswith(f"_{PO_TYPE_FIN}.json"))
+            and not (exclude_pre and f.name.endswith(f"_{PO_TYPE_PRE}.json"))
         ],
         key=lambda f: f.stat().st_mtime,
     )
@@ -136,79 +139,3 @@ def move_po_file(path: Path):
         shutil.move(str(path), str(dest))
     except Exception as e:
         log.warning(f"po 파일 이동 실패 ({path.name}): {e}")
-
-
-# ─────────────────────────────────────────
-# 데이터 클래스
-# ─────────────────────────────────────────
-@dataclass
-class Position:
-    ticker: str
-    name: str
-    qty: int
-    buy_price: float
-    atr: float
-    atr_sl_mult: float
-    atr_tp_mult: float
-    sl: float
-    tp1: float
-    tp2: float
-    mode: str
-    max_hold_days: int
-    entry_date: str
-    expiry_date: str = ""
-    t1_done: bool = False
-    qty_t1: int = 0
-    realized_pnl: float = 0.0
-
-
-class PositionLoader:
-    def __init__(self, position_path: Path):
-        self.position_path = position_path
-
-    def load_positions(self) -> dict[str, Position]:
-        if not self.position_path.exists():
-            return {}
-        try:
-            data = json.loads(self.position_path.read_text())
-            today = dtutils.today()
-            valid: dict[str, Position] = {}
-            for t, v in data.items():
-                v.setdefault("realized_pnl", 0.0)
-                v.setdefault("atr_sl_mult", _factor.ATR_SL_MULT)
-                v.setdefault("atr_tp_mult", _factor.ATR_TP_MULT)
-                v.setdefault("expiry_date", "")
-                p = Position(**v)
-                if p.max_hold_days == 0 and p.entry_date != today:
-                    log.warning(f"  이전 데이 포지션 무시: {t} (entry={p.entry_date})")
-                    continue
-                # [FIX] 구버전 포지션 expiry_date 미설정 보정
-                if not p.expiry_date and p.max_hold_days > 0:
-                    try:
-                        p.expiry_date = (
-                            dtutils.add_biz_days(p.entry_date, p.max_hold_days)
-                            or p.entry_date
-                        )
-                        log.info(
-                            f"  expiry_date 보정: {t}  entry={p.entry_date}"
-                            f"  +{p.max_hold_days}d → {p.expiry_date}"
-                        )
-                    except Exception as e:
-                        log.warning(f"  expiry_date 보정 실패 ({t}): {e}")
-                        p.expiry_date = today  # 안전 fallback: 오늘 청산 대상
-                valid[t] = p
-            return valid
-        except Exception as e:
-            log.warning(f"포지션 파일 로드 실패: {e}")
-            return {}
-
-    def save_positions(self, positions: dict[str, Position], swing_only: bool = False):
-        to_save = (
-            {t: p for t, p in positions.items() if p.max_hold_days > 0}
-            if swing_only
-            else positions
-        )
-        if to_save:
-            fileutils.create_json(self.position_path, to_save)
-        elif self.position_path.exists():
-            self.position_path.unlink()

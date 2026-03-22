@@ -36,5 +36,8 @@ KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
 
 KIS_ENV: Final = os.getenv("KIS_ENV")
 
+TELEGRAM_BOT_TOKEN: Final = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID: Final = os.getenv("TELEGRAM_CHAT_ID")
+
 if __name__ == "__main__":
-    print(KIS_ENV)
+    print(TELEGRAM_BOT_TOKEN)

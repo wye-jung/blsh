@@ -37,22 +37,11 @@ from wye.blsh.domestic.scanner import (
 
 
 
-# ─────────────────────────────────────────
-# 업종코드 → DB idx_stk_ohlcv 지수명 매핑
-# ─────────────────────────────────────────
-# KOSPI 지수업종중분류 (더 세분화)
-_KOSPI_MID_TO_IDX = {
-    5: "음식료·담배", 6: "섬유·의류", 7: "종이·목재", 8: "화학",
-    9: "제약", 10: "비금속", 11: "금속", 12: "기계·장비",
-    13: "전기전자", 14: "의료·정밀기기", 15: "운송장비·부품",
-    24: "증권", 25: "보험",
-}
-# KOSPI 지수업종대분류 (중분류 0인 종목용 fallback)
-_KOSPI_BIG_TO_IDX = {
-    16: "유통", 17: "전기·가스", 18: "건설", 19: "운송·창고",
-    20: "통신", 21: "금융", 26: "일반서비스", 27: "제조",
-    28: "부동산", 29: "IT 서비스", 30: "오락·문화",
-}
+# 업종코드 → DB 지수명 매핑은 _factor.py에서 참조
+_KOSPI_MID_TO_IDX = _factor.KOSPI_MID_TO_IDX
+_KOSPI_BIG_TO_IDX = _factor.KOSPI_BIG_TO_IDX
+_KOSDAQ_MID_TO_IDX = _factor.KOSDAQ_MID_TO_IDX
+_KOSDAQ_BIG_TO_IDX = _factor.KOSDAQ_BIG_TO_IDX
 
 log = logging.getLogger(__name__)
 CACHE_DIR = DATA_DIR / "cache" / "optimize"
@@ -249,8 +238,12 @@ def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str], float]:
     gap_pct: (price - MA20) / MA20
     예) -0.05 = MA20 대비 -5%
     """
-    sector_names = set(_KOSPI_MID_TO_IDX.values()) | set(_KOSPI_BIG_TO_IDX.values())
+    sector_names = (
+        set(_KOSPI_MID_TO_IDX.values()) | set(_KOSPI_BIG_TO_IDX.values())
+        | set(_KOSDAQ_MID_TO_IDX.values()) | set(_KOSDAQ_BIG_TO_IDX.values())
+    )
     sector_names.add("코스닥")
+    sector_names.add("코스피")
 
     result: dict[tuple[str, str], float] = {}
 
@@ -277,8 +270,8 @@ def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str], float]:
 def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
     """종목코드 → 업종지수명 매핑.
 
-    KOSPI: 중분류 우선, 대분류 fallback
-    KOSDAQ: "코스닥" 전체 지수로 fallback (세부 업종지수 데이터 부족)
+    KOSPI: 중분류 우선, 대분류 fallback, 미매핑 → "코스피"
+    KOSDAQ: 중분류 우선, 대분류 fallback, 미매핑 → "코스닥"
     """
     from wye.blsh.kis.domestic_stock.domestic_stock_info import (
         get_kospi_info, get_kosdaq_info,
@@ -288,8 +281,8 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
     kospi_tickers = {t for t, m in ticker_market.items() if m == "KOSPI"}
     kosdaq_tickers = {t for t, m in ticker_market.items() if m == "KOSDAQ"}
 
-    # KOSPI
     try:
+        # KOSPI
         kp = get_kospi_info()
         for _, row in kp.iterrows():
             ticker = str(row["단축코드"]).strip()
@@ -298,16 +291,29 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
             mid = int(row.get("지수업종중분류", 0) or 0)
             big = int(row.get("지수업종대분류", 0) or 0)
             idx_nm = _KOSPI_MID_TO_IDX.get(mid) or _KOSPI_BIG_TO_IDX.get(big)
-            if idx_nm:
-                result[ticker] = idx_nm
-        log.info(f"  KOSPI 업종매핑: {len([t for t in result if t in kospi_tickers])}/{len(kospi_tickers)}종목")
-    except Exception as e:
-        log.warning(f"  KOSPI 마스터 로드 실패: {e}")
+            result[ticker] = idx_nm or "코스피"  # 미매핑 → 전체 지수
+        kp_mapped = sum(1 for t in kospi_tickers if result.get(t, "코스피") != "코스피")
+        log.info(f"  KOSPI 업종매핑: {kp_mapped}/{len(kospi_tickers)}종목 (미매핑→코스피)")
 
-    # KOSDAQ → 전체 지수 fallback
-    for t in kosdaq_tickers:
-        result.setdefault(t, "코스닥")
-    log.info(f"  KOSDAQ 업종매핑: {len(kosdaq_tickers)}종목 → '코스닥' fallback")
+        # KOSDAQ
+        kd = get_kosdaq_info()
+        for _, row in kd.iterrows():
+            ticker = str(row["단축코드"]).strip()
+            if ticker not in kosdaq_tickers:
+                continue
+            mid = int(row.get("지수 업종 중분류 코드", 0) or 0)
+            big = int(row.get("지수업종 대분류 코드", 0) or 0)
+            idx_nm = _KOSDAQ_MID_TO_IDX.get(mid) or _KOSDAQ_BIG_TO_IDX.get(big)
+            result[ticker] = idx_nm or "코스닥"  # 미매핑 → 전체 지수
+        kd_mapped = sum(1 for t in kosdaq_tickers if result.get(t, "코스닥") != "코스닥")
+        log.info(f"  KOSDAQ 업종매핑: {kd_mapped}/{len(kosdaq_tickers)}종목 (미매핑→코스닥)")
+    except Exception as e:
+        log.warning(f"  마스터 로드 실패: {e}")
+        # fallback: 미매핑 종목 전체 지수
+        for t in kospi_tickers:
+            result.setdefault(t, "코스피")
+        for t in kosdaq_tickers:
+            result.setdefault(t, "코스닥")
 
     return result
 

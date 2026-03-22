@@ -136,7 +136,8 @@ def evaluate_buy(close, high, low, volume, opn=None):
     c0, c1 = close.iloc[-1], close.iloc[-2]
     h0, h1 = high.iloc[-1], high.iloc[-2]
     l0, l1 = low.iloc[-1], low.iloc[-2]
-    o0 = opn.iloc[-1] if opn is not None else c1
+    has_opn = opn is not None and len(opn) >= 3
+    o0 = opn.iloc[-1] if has_opn else None
     m0, m1 = macd.iloc[-1], macd.iloc[-2]
     s0, s1 = sig.iloc[-1], sig.iloc[-2]
     r0, r1 = rsi.iloc[-1], rsi.iloc[-2]
@@ -214,25 +215,25 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("PB", 2))
 
     # 12. 망치형 캔들 (+1) → HMR (전환)
-    body = abs(c0 - o0)
-    candle_range = h0 - l0
-    if candle_range > 0:
-        lower_wick = min(c0, o0) - l0
-        upper_wick = h0 - max(c0, o0)
-        if (
-            lower_wick > candle_range * 0.5
-            and upper_wick < candle_range * 0.1
-            and body < candle_range * 0.3
-        ):
-            signals.append(("HMR", 1))
+    if o0 is not None:
+        body = abs(c0 - o0)
+        candle_range = h0 - l0
+        if candle_range > 0:
+            lower_wick = min(c0, o0) - l0
+            upper_wick = h0 - max(c0, o0)
+            if (
+                lower_wick > candle_range * 0.5
+                and upper_wick < candle_range * 0.1
+                and body < candle_range * 0.3
+            ):
+                signals.append(("HMR", 1))
 
     # 13. 장대 양봉 (+2) → LB (모멘텀)
-    body_size = c0 - o0
-    if body_size > atr0 * 1.5:
+    if o0 is not None and c0 > o0 and (c0 - o0) > atr0 * 1.5:
         signals.append(("LB", 2))
 
     # 14. 모닝스타 (+2) → MS (전환)
-    if opn is not None and len(close) >= 3:
+    if has_opn and len(close) >= 3:
         c_2, c_1, c_0 = close.iloc[-3], close.iloc[-2], close.iloc[-1]
         o_2, o_1, o_0 = opn.iloc[-3], opn.iloc[-2], opn.iloc[-1]
         body_d1 = o_2 - c_2
@@ -340,6 +341,10 @@ def scan_dataframe(
     opn = df[open_col].dropna() if open_col and open_col in df.columns else None
 
     idx = close.index.intersection(high.index).intersection(low.index)
+    if vol is not None:
+        idx = idx.intersection(vol.index)
+    if opn is not None:
+        idx = idx.intersection(opn.index)
     close, high, low = close[idx], high[idx], low[idx]
     if vol is not None:
         vol = vol[idx]
@@ -480,7 +485,8 @@ def classify_supply(qty_list):
     history = qty_list[:-1]
     if today <= 0:
         return None, 0
-    if all(q <= 0 for q in history):
+    # TRN: 최소 2일 이상 매도/0 후 전환이어야 의미 있음
+    if len(history) >= 2 and all(q <= 0 for q in history):
         return "TRN", 3
     consec = 1
     for q in reversed(history):
@@ -518,7 +524,9 @@ def enrich_with_db(results: list, base_date: str) -> list:
             return {}
         result = {}
         for ticker, grp in df.groupby("isu_srt_cd"):
-            recent = grp.head(5).sort_values("trd_dd")
+            recent = (
+                grp.sort_values("trd_dd", ascending=False).head(5).sort_values("trd_dd")
+            )
             result[ticker] = {
                 "frgn": recent["frgn_qty"].fillna(0).tolist(),
                 "inst": recent["inst_qty"].fillna(0).tolist(),
@@ -610,8 +618,8 @@ def check_index_above_ma(
         df = pd.DataFrame(query.get_index_clsprc(idx_nm, base_date, ma_days))
         if len(df) < ma_days:
             return True
-        prices = df["clsprc_idx"].astype(float).iloc[::-1]
-        cur = float(prices.iloc[-1])
+        prices = df["clsprc_idx"].astype(float)
+        cur = float(prices.iloc[0])  # DESC 정렬: [0]=최신
         ma = prices.mean()
         gap_pct = (cur - ma) / ma
         skip = gap_pct < -drop_limit
@@ -633,7 +641,10 @@ def check_index_above_ma(
 # ─────────────────────────────────────────
 # 스캔 및 대상 선별
 # ─────────────────────────────────────────
-def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
+def scan(base_date=None, report: bool = False) -> pd.DataFrame:
+    if base_date is None:
+        base_date = dtutils.get_latest_biz_date()
+
     if not query.has_ohlcv_data(base_date):
         log.warning(f"{base_date} - ohlcv 데이터가 없습니다")
         return pd.DataFrame()
@@ -673,21 +684,27 @@ def scan(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
 _SECTOR_MAP_FILE = DATA_DIR / "cache" / "sector_map.json"
 
 
-def _load_ticker_sector_map() -> dict[str, str]:
-    """종목코드 → 업종지수명 매핑 (캐시 파일, 당일 1회 갱신)."""
+def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
+    """KOSPI 종목코드 → 업종지수명 매핑 (캐시 파일, base_date 기준 1회 갱신).
+
+    Note: KIS 마스터는 항상 현재 데이터만 제공. 과거 base_date로 스캔 시
+    현재 업종 매핑이 적용되는 한계가 있으나, 업종 변경은 매우 드뭄.
+    """
     import json
 
-    # 캐시 유효성: 오늘 날짜 파일이면 재사용
+    cache_date = base_date or dtutils.today()
     if _SECTOR_MAP_FILE.exists():
         try:
             data = json.loads(_SECTOR_MAP_FILE.read_text())
-            if data.get("_date") == dtutils.today():
+            if data.get("_date") == cache_date:
                 return data.get("map", {})
         except Exception:
             pass
 
     log.info("[업종매핑] KIS 마스터 다운로드…")
     result: dict[str, str] = {}
+
+    # KOSPI
     try:
         from wye.blsh.kis.domestic_stock.domestic_stock_info import get_kospi_info
 
@@ -704,12 +721,33 @@ def _load_ticker_sector_map() -> dict[str, str]:
     except Exception as e:
         log.warning(f"  KOSPI 마스터 로드 실패: {e}")
 
-    # 캐시 저장
-    _SECTOR_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _SECTOR_MAP_FILE.write_text(
-        json.dumps({"_date": dtutils.today(), "map": result}, ensure_ascii=False)
-    )
-    log.info(f"  KOSPI 업종매핑: {len(result)}종목 캐시 저장")
+    # KOSDAQ
+    try:
+        from wye.blsh.kis.domestic_stock.domestic_stock_info import get_kosdaq_info
+
+        kd = get_kosdaq_info()
+        for _, row in kd.iterrows():
+            ticker = str(row["단축코드"]).strip()
+            mid = int(row.get("지수 업종 중분류 코드", 0) or 0)
+            big = int(row.get("지수업종 대분류 코드", 0) or 0)
+            idx_nm = _factor.KOSDAQ_MID_TO_IDX.get(
+                mid
+            ) or _factor.KOSDAQ_BIG_TO_IDX.get(big)
+            if idx_nm:
+                result[ticker] = idx_nm
+    except Exception as e:
+        log.warning(f"  KOSDAQ 마스터 로드 실패: {e}")
+
+    # 캐시 저장 (빈 결과면 저장 스킵)
+    if result:
+        _SECTOR_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SECTOR_MAP_FILE.write_text(
+            json.dumps({"_date": cache_date, "map": result}, ensure_ascii=False)
+        )
+        log.info(f"  KOSPI+KOSDAQ 업종매핑: {len(result)}종목 캐시 저장")
+    else:
+        log.warning("  업종매핑 0건 → 캐시 미저장")
+
     return result
 
 
@@ -729,12 +767,13 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     if _factor.SECTOR_PENALTY_PTS == 0 and _factor.SECTOR_BONUS_PTS == 0:
         return df
 
-    sector_map = _load_ticker_sector_map()
-    # KOSDAQ → "코스닥" 전체 지수 fallback
+    sector_map = _load_ticker_sector_map(base_date)
     gap_cache: dict[str, float] = {}
 
     def get_gap(ticker: str, market: str) -> float:
-        sec_nm = sector_map.get(ticker, "코스닥" if market == "KOSDAQ" else "")
+        # KOSPI 미매핑 → "코스피" 전체 지수, KOSDAQ → "코스닥" 전체 지수
+        fallback = "코스피" if market == "KOSPI" else "코스닥"
+        sec_nm = sector_map.get(ticker, fallback)
         if not sec_nm:
             return 0.0
         if sec_nm not in gap_cache:
@@ -759,9 +798,10 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     return df
 
 
-def find_candidates(
-    base_date=dtutils.get_latest_biz_date(), report: bool = False
-) -> pd.DataFrame:
+def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
+    if base_date is None:
+        base_date = dtutils.get_latest_biz_date()
+
     sdf = scan(base_date, report)
     if sdf.empty:
         return sdf
@@ -828,20 +868,24 @@ def find_candidates(
     return df
 
 
-def save_candidates(base_date=dtutils.get_latest_biz_date(), report=True) -> None:
+def save_candidates(base_date=None, report=True) -> None:
+    if base_date is None:
+        base_date = dtutils.get_latest_biz_date()
     df = find_candidates(base_date, True)
     if not df.empty:
-        entry_date = df.iloc[0]["entry_date"]
         modelManager = ModelManager(TradeCandidates)
-        modelManager.delete(base_date=base_date, entry_date=entry_date)
+        modelManager.delete(base_date=base_date)
         modelManager.create(df)
 
 
-def issue_po(base_date=dtutils.get_latest_biz_date(), po_type=None):
+def issue_po(base_date=None, po_type=None):
     """PO 파일 발행. po_type: 'pre'/'final'/None(자동)"""
-    _po.make_po_file(find_candidates(base_date, report=False), po_type=po_type)
+    df = find_candidates(base_date, False)
+    if not df.empty:
+        _po.make_po_file(df, po_type=po_type)
 
 
 if __name__ == "__main__":
-    # save_candidates()
+    base_date = dtutils.get_latest_biz_date()
+    # save_candidates(base_date)
     issue_po()
