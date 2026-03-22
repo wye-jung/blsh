@@ -3,10 +3,11 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-_BLSH_HOME: Final = Path.home() / ".blsh"
-CONFIG_DIR: Final = _BLSH_HOME / "config"
-DATA_DIR: Final = _BLSH_HOME / "data"
-TEMP_DIR: Final = _BLSH_HOME / "temp"
+BLSH_HOME: Final = Path.home() / ".blsh"
+CONFIG_DIR: Final = BLSH_HOME / "config"
+DATA_DIR: Final = BLSH_HOME / "data"
+TEMP_DIR: Final = BLSH_HOME / "temp"
+LOG_DIR: Final = BLSH_HOME / "logs"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TEMP_DIR.mkdir(parents=True, exist_ok=True)

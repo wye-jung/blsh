@@ -54,6 +54,7 @@
 """
 
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
@@ -62,9 +63,13 @@ from wye.blsh.domestic import _report, _tick, _po
 from wye.blsh.domestic import _factor
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import DATA_DIR
+from wye.blsh.common.env import DATA_DIR, LOG_DIR
 
 log = logging.getLogger(__name__)
+_fh = TimedRotatingFileHandler(LOG_DIR / "scanner.log", when="midnight", backupCount=30, encoding="utf-8")
+_fh.suffix = "%Y-%m-%d"
+_fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+log.addHandler(_fh)
 
 # ─────────────────────────────────────────
 # 신호 분류 맵 (flag → 성격)
@@ -889,3 +894,4 @@ if __name__ == "__main__":
     base_date = dtutils.get_latest_biz_date()
     # save_candidates(base_date)
     issue_po()
+    # log.info("file log test")
