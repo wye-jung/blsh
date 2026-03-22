@@ -12,6 +12,10 @@ log = logging.getLogger(__name__)
 
 PO_DIR = DATA_DIR / "po"
 PO_DONE_DIR = PO_DIR / "done"
+PO_TYPE_PRE = "pre"
+PO_TYPE_FIN = "final"
+PO_TYPE_REG = "regular"
+
 
 def make_po_file(df, po_type=None):
     """PO 파일 생성.
@@ -41,33 +45,36 @@ def make_po_file(df, po_type=None):
         ]
     ].to_dict(orient="records")
 
+    entry_date = str(df.iloc[0]["entry_date"])
+    today = dtutils.today()
+
     if po_type is None:
         ctime = dtutils.ctime()
-        if ctime >= "153000":
-            po_type = "pre"
-        elif ctime >= "140000":
-            po_type = "final"
-        else:
-            po_type = "regular"
+        if entry_date > today or (entry_date == today and ctime < "080000"):
+            po_type = PO_TYPE_PRE
+        elif entry_date == today:
+            if ctime >= "140000":
+                po_type = PO_TYPE_FIN
+            else:
+                po_type = PO_TYPE_REG
 
-    if po_type == "pre":
-        entry_date = str(df.iloc[0]["entry_date"])
-        po_file_name = f"po_{entry_date}_pre.json"
-    elif po_type == "final":
-        po_file_name = get_final_po_name()
+    if po_type:
+        po_file_name = f"po_{entry_date}_{po_type}.json"
+        fileutils.create_json(PO_DIR / po_file_name, po_list)
+        log.info(f"[po] {po_file_name} 생성 ({len(po_list)}종목)")
     else:
-        po_file_name = f"po_{dtutils.now()}.json"
-
-    fileutils.create_file(PO_DIR / po_file_name, po_list)
-    log.info(f"[po] {po_file_name} 생성 ({len(po_list)}종목, type={po_type})")
+        log.warning(
+            f"[po] po_type을 결정할 수 없습니다. ({len(po_list)}종목, entry_date={entry_date})"
+        )
 
 
 def get_pre_po_name():
-    return f"po_{dtutils.today()}_pre.json"
+    return f"po_{dtutils.today()}_{PO_TYPE_PRE}.json"
 
 
 def get_final_po_name():
-    return f"po_{dtutils.today()}_final.json"
+    return f"po_{dtutils.today()}_{PO_TYPE_FIN}.json"
+
 
 def parse_po_file(path: Path) -> list[dict]:
     try:
@@ -81,7 +88,9 @@ def parse_po_file(path: Path) -> list[dict]:
     return []
 
 
-def collect_po_orders(exclude_final: bool = True, exclude_pre: bool = True) -> dict[str, dict]:
+def collect_po_orders(
+    exclude_final: bool = True, exclude_pre: bool = True
+) -> dict[str, dict]:
     """PO_DIR에서 po_*.json 읽기 → ticker별 최신 주문. 처리 후 done으로 이동.
 
     [FIX] 파싱 실패 파일은 이동하지 않음 (다음 틱에서 재시도).
@@ -151,6 +160,7 @@ class Position:
     t1_done: bool = False
     qty_t1: int = 0
     realized_pnl: float = 0.0
+
 
 class PositionLoader:
     def __init__(self, position_path: Path):

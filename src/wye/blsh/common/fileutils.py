@@ -6,7 +6,8 @@ from dataclasses import asdict, dataclass, is_dataclass
 
 log = logging.getLogger(__name__)
 
-def create_file(path:Path, contents)->bool:
+
+def create_file(path: Path, contents) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     try:
@@ -18,12 +19,17 @@ def create_file(path:Path, contents)->bool:
         tmp.unlink(missing_ok=True)
         return False
 
-def create_json(path:Path, data:Union[dataclass, dict, list])->bool:
+
+def create_json(path: Path, data: Union[dataclass, dict, list]) -> bool:
     if data:
-        return create_file(path, json.dumps(
-                    asdict(data) if is_dataclass(data) else
-                    {t: asdict(p) for t, p in data.items()} if isinstance(data, dict) else data,
-                    ensure_ascii=False,
-                    indent=2,
-                ))
+        json_dumpbs = json.dumps(
+            asdict(data)
+            if is_dataclass(data)
+            else {t: asdict(p) for t, p in data.items()}
+            if isinstance(data, dict)
+            else data,
+            ensure_ascii=False,
+            indent=2,
+        )
+        return create_file(path, json_dumpbs)
     return False

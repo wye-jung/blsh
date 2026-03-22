@@ -52,6 +52,7 @@
 출력: stock_signals 테이블 저장
 ─────────────────────────────────────────────────────
 """
+
 import logging
 import numpy as np
 import pandas as pd
@@ -157,11 +158,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("MGC", 2))
     # 2. MACD 예상 골든크로스 (+1) → MPGC (중립)
     elif (
-            m0 < s0
-            and len(hist) >= 3
-            and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
-            and abs(s0) > 0
-            and (s0 - m0) / abs(s0) <= _factor.GAP_THRESHOLD
+        m0 < s0
+        and len(hist) >= 3
+        and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
+        and abs(s0) > 0
+        and (s0 - m0) / abs(s0) <= _factor.GAP_THRESHOLD
     ):
         signals.append(("MPGC", 1))
 
@@ -255,7 +256,9 @@ def evaluate_buy(close, high, low, volume, opn=None):
     flag_set = set(flags)
     mom_score = sum(pts for f, pts in signals if f in _MOMENTUM_FLAGS)
     rev_score = sum(pts for f, pts in signals if f in _REVERSAL_FLAGS)
-    neu_score = sum(pts for f, pts in signals if f not in _MOMENTUM_FLAGS | _REVERSAL_FLAGS)
+    neu_score = sum(
+        pts for f, pts in signals if f not in _MOMENTUM_FLAGS | _REVERSAL_FLAGS
+    )
 
     rev_cnt = len(flag_set & _REVERSAL_FLAGS)
     mom_cnt = len(flag_set & _MOMENTUM_FLAGS)
@@ -673,6 +676,7 @@ _SECTOR_MAP_FILE = DATA_DIR / "cache" / "sector_map.json"
 def _load_ticker_sector_map() -> dict[str, str]:
     """종목코드 → 업종지수명 매핑 (캐시 파일, 당일 1회 갱신)."""
     import json
+
     # 캐시 유효성: 오늘 날짜 파일이면 재사용
     if _SECTOR_MAP_FILE.exists():
         try:
@@ -686,12 +690,15 @@ def _load_ticker_sector_map() -> dict[str, str]:
     result: dict[str, str] = {}
     try:
         from wye.blsh.kis.domestic_stock.domestic_stock_info import get_kospi_info
+
         kp = get_kospi_info()
         for _, row in kp.iterrows():
             ticker = str(row["단축코드"]).strip()
             mid = int(row.get("지수업종중분류", 0) or 0)
             big = int(row.get("지수업종대분류", 0) or 0)
-            idx_nm = _factor.KOSPI_MID_TO_IDX.get(mid) or _factor.KOSPI_BIG_TO_IDX.get(big)
+            idx_nm = _factor.KOSPI_MID_TO_IDX.get(mid) or _factor.KOSPI_BIG_TO_IDX.get(
+                big
+            )
             if idx_nm:
                 result[ticker] = idx_nm
     except Exception as e:
@@ -717,9 +724,7 @@ def _get_sector_gap(idx_nm: str, base_date: str, ma_days: int = 20) -> float:
     return (cur - ma) / ma if ma else 0.0
 
 
-def _apply_sector_penalty(
-    df: pd.DataFrame, base_date: str
-) -> pd.DataFrame:
+def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
     if _factor.SECTOR_PENALTY_PTS == 0 and _factor.SECTOR_BONUS_PTS == 0:
         return df
@@ -754,7 +759,9 @@ def _apply_sector_penalty(
     return df
 
 
-def find_candidates(base_date=dtutils.today(), report: bool = False) -> pd.DataFrame:
+def find_candidates(
+    base_date=dtutils.get_latest_biz_date(), report: bool = False
+) -> pd.DataFrame:
     sdf = scan(base_date, report)
     if sdf.empty:
         return sdf
@@ -821,7 +828,7 @@ def find_candidates(base_date=dtutils.today(), report: bool = False) -> pd.DataF
     return df
 
 
-def save_candidates(base_date=dtutils.today(), report=True) -> None:
+def save_candidates(base_date=dtutils.get_latest_biz_date(), report=True) -> None:
     df = find_candidates(base_date, True)
     if not df.empty:
         entry_date = df.iloc[0]["entry_date"]
@@ -829,11 +836,12 @@ def save_candidates(base_date=dtutils.today(), report=True) -> None:
         modelManager.delete(base_date=base_date, entry_date=entry_date)
         modelManager.create(df)
 
-def issue_po(po_type=None):
+
+def issue_po(base_date=dtutils.get_latest_biz_date(), po_type=None):
     """PO 파일 발행. po_type: 'pre'/'final'/None(자동)"""
-    _po.make_po_file(find_candidates(report=False), po_type=po_type)
+    _po.make_po_file(find_candidates(base_date, report=False), po_type=po_type)
 
 
 if __name__ == "__main__":
-    save_candidates()
-    # issue_po()
+    # save_candidates()
+    issue_po()

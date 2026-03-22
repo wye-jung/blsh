@@ -29,8 +29,8 @@ def strftime(time, fmt=DEFAULT_DATE_FMT):
     return time.strftime(fmt)
 
 
-def nextday(date_str, fmt=DEFAULT_DATE_FMT):
-    return add_days(date_str, 1)
+def next_biz_day(date_str=today(), fmt=DEFAULT_DATE_FMT):
+    return add_biz_days(date_str, 1, fmt)
 
 
 def add_days(date_str, days: int, fmt=DEFAULT_DATE_FMT):
@@ -48,3 +48,11 @@ def add_biz_days(date_str, days: int, fmt=DEFAULT_DATE_FMT):
 
     rows = query.get_max_hold_dates(date_str, days)
     return rows[-1]["d"] if rows else None
+
+
+def get_latest_biz_date():
+    from wye.blsh.krx.krx_auth import login_krx
+    from pykrx.website import krx
+
+    login_krx()
+    return krx.get_nearest_business_day_in_a_week()
