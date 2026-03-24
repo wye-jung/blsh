@@ -19,32 +19,26 @@ import logging
 log = logging.getLogger(__name__)
 
 
-def collect_latest_ohlcv():
+def collect():
     login_krx()
     latest_biz_date = krx.get_nearest_business_day_in_a_week()
-    print(f"latest biz date: {latest_biz_date}")
-    _collect_idx_data(latest_biz_date)
-    _collect_isu_data(latest_biz_date)
-
-
-def collect(fromdate=None, override:bool=False):
-    login_krx()
-    latest_biz_date = krx.get_nearest_business_day_in_a_week()
-    if fromdate is None:
-        max_ohlcv_date = query.get_max_ohlcv_date()
-        if max_ohlcv_date is None:
-            fromdate = latest_biz_date
-        elif max_ohlcv_date < latest_biz_date:
-            fromdate = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
-        else:
-            if not override:
-                print("All data collected already.")
-                return
-            fromdate = latest_biz_date
+    max_ohlcv_date = query.get_max_ohlcv_date()
+    
+    if max_ohlcv_date is None:
+        fromdate = latest_biz_date
+    elif max_ohlcv_date < latest_biz_date:
+        fromdate = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
+    elif max_ohlcv_date == latest_biz_date:
+        if "080000" < ctdtutils.ctime() < "153000":
+            _collect_idx_data(max_ohlcv_date)
+            _collect_isu_data(max_ohlcv_date)
+            return
+        else query.get_fetched_at(max_ohlcv_date).strftime(dtutils.TIME_FMT) < "200000":
+            fromdate = max_ohlcv_date
 
     if fromdate:
         _collect(fromdate, latest_biz_date)
-
+        
     _collect_holiday()
 
 
@@ -104,7 +98,7 @@ def _collect_holiday():
         import pandas as pd
 
         ka.auth()
-        base_date = query.get_krx_holiday_max_dt()["d"]
+        base_date = query.get_krx_holiday_max_dt()
         log.info(f"krx_holiday 미보유 ({base_date} 이후) → KIS API 조회")
         log.info(f"chk_holiday로 {base_date} 기준 약 100일치 데이터 반환")
         df = ds.chk_holiday(bass_dt=base_date)

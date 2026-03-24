@@ -6,18 +6,6 @@ from wye.blsh.database import engine, select_one, select_first, select_all, exec
 
 log = logging.getLogger(__name__)
 
-_min_krx_holiday_date = None
-
-
-def _get_min_krx_holiday_date():
-    global _min_krx_holiday_date
-    if _min_krx_holiday_date is None:
-        _min_krx_holiday_date = select_one("select min(bass_dt) as d from krx_holiday")[
-            "d"
-        ]
-    return _min_krx_holiday_date
-
-
 _ALLOWED_TABLES = {
     "isu_ksp_ohlcv",
     "isu_ksd_ohlcv",
@@ -41,13 +29,24 @@ def has_ohlcv_data(base_date) -> bool:
         is not None
     )
 
+def get_max_ohlcv_date(base_date):
+    row = select_one("select max(trd_dd) as d from idx_stk_ohlcv")
+    return row["d"] if row else None
 
-def get_max_ohlcv_date():
-    return select_one("select max(trd_dd) As d from idx_stk_ohlcv")["d"]
+def get_fetched_at(base_date:str=None):
+    base_date = dtutils.today() if base_date is None else base_date
+    row = select_one(
+        """
+        select max(fetched_at) as t from idx_stk_ohlcv 
+        where trd_dd=:bd
+        """
+        bd=base_date)
+    return row["t"] if row else None
 
 
-def get_latest_biz_date(base_date: str = time.strftime("%Y%m%d")) -> str:
+def get_latest_biz_date(base_date: str = None) -> str:
     """최근 거래일"""
+    base_date = dtutils.today() if base_date is None else base_date
     row = select_one(
         """
         SELECT MAX(trd_dd) AS d FROM idx_stk_ohlcv 
@@ -114,7 +113,7 @@ def get_krx_holiday_max_dt():
         """
         SELECT max(bass_dt) as d FROM krx_holiday
         """,
-    )
+    )["d"]
 
 
 def save_holiday(df):
@@ -155,17 +154,6 @@ def get_netbid_trdvol(table, tickers, base_date):
             .all()
         )
     return result
-
-
-def get_candidates(entry_date):
-    return select_all(
-        """
-        SELECT *
-        FROM trade_candidates
-        WHERE entry_date = :td
-        """,
-        td=entry_date,
-    )
 
 
 def get_index_clsprc(idx_nm, base_date, ma_days=20):

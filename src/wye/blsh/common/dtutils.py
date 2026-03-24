@@ -1,44 +1,38 @@
 from datetime import date, datetime, timedelta
 from wye.blsh.database import query
 
-DEFAULT_DATE_FMT = "%Y%m%d"
-DEFAULT_TIME_FMT = "%H%M%S"
+DATE_FMT = "%Y%m%d"
+TIME_FMT = "%H%M%S"
 
-
-def ctime(fmt: str = DEFAULT_TIME_FMT) -> str:
+def ctime(fmt: str = TIME_FMT) -> str:
     return datetime.now().strftime(fmt)
 
 
-def today(fmt: str = DEFAULT_DATE_FMT) -> str:
+def today(fmt: str = DATE_FMT) -> str:
     return date.today().strftime(fmt)
 
 
-def now(fmt: str = DEFAULT_DATE_FMT + DEFAULT_TIME_FMT) -> str:
+def now(fmt: str = DATE_FMT+TIME_FMT) -> str:
     return datetime.now().strftime(fmt)
 
 
-def is_valid_date(date_str, date_format=DEFAULT_DATE_FMT):
+def is_valid_date(date_str, date_format=DATE_FMT):
     try:
         datetime.strptime(date_str, date_format)
         return True
     except ValueError:
         return False
 
-
-def strftime(time, fmt=DEFAULT_DATE_FMT):
-    return time.strftime(fmt)
-
-
-def next_biz_day(date_str=today(), fmt=DEFAULT_DATE_FMT):
+def next_biz_day(date_str=today(), fmt=DATE_FMT):
     return add_biz_days(date_str, 1, fmt)
 
 
-def add_days(date_str, days: int, fmt=DEFAULT_DATE_FMT):
+def add_days(date_str, days: int, fmt=DATE_FMT):
     date_obj = datetime.strptime(date_str, fmt).date()
     return (date_obj + timedelta(days=days)).strftime(fmt)
 
 
-def add_biz_days(date_str, days: int, fmt=DEFAULT_DATE_FMT):
+def add_biz_days(date_str, days: int, fmt=DATE_FMT):
     if days == 0:
         return date_str
 
