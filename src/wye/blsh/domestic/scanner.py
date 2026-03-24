@@ -875,14 +875,13 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     return df
 
 
-def issue_po(base_date=None, po_type=None):
-    """PO 파일 발행. po_type: 'pre'/'final'/None(자동)"""
+def issue_po(base_date=None):
     df = find_candidates(base_date, False)
     if not df.empty:
         # modelManager = ModelManager(TradeCandidates)
         # modelManager.delete(base_date=base_date)
         # modelManager.create(df)
-        _po.make_po_file(df, po_type=po_type)
+        _po.make_po_file(df)
 
 
 if __name__ == "__main__":
