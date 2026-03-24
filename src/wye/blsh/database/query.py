@@ -2,9 +2,27 @@ import logging
 import time
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
-from wye.blsh.database import engine, select_one, select_first, select_all, execute_batch
+from wye.blsh.database import (
+    engine,
+    select_one,
+    select_first,
+    select_all,
+    execute_batch,
+)
 
 log = logging.getLogger(__name__)
+
+_min_krx_holiday_date = None
+
+
+def _get_min_krx_holiday_date():
+    global _min_krx_holiday_date
+    if _min_krx_holiday_date is None:
+        _min_krx_holiday_date = select_one("select min(bass_dt) as d from krx_holiday")[
+            "d"
+        ]
+    return _min_krx_holiday_date
+
 
 _ALLOWED_TABLES = {
     "isu_ksp_ohlcv",
@@ -29,38 +47,25 @@ def has_ohlcv_data(base_date) -> bool:
         is not None
     )
 
-def get_max_ohlcv_date(base_date):
-    row = select_one("select max(trd_dd) as d from idx_stk_ohlcv")
-    return row["d"] if row else None
 
-def get_fetched_at(base_date:str=None):
-    base_date = dtutils.today() if base_date is None else base_date
-    row = select_one(
+def get_max_ohlcv_date():
+    return select_one("select max(trd_dd) as d from idx_stk_ohlcv")["d"]
+
+
+def get_fetched_at(base_date):
+    return select_one(
         """
         select max(fetched_at) as t from idx_stk_ohlcv 
         where trd_dd=:bd
-        """
-        bd=base_date)
-    return row["t"] if row else None
-
-
-def get_latest_biz_date(base_date: str = None) -> str:
-    """최근 거래일"""
-    base_date = dtutils.today() if base_date is None else base_date
-    row = select_one(
-        """
-        SELECT MAX(trd_dd) AS d FROM idx_stk_ohlcv 
-        WHERE trd_dd <= :bd
         """,
         bd=base_date,
-    )
-    return row["d"] if row else None
+    )["t"]
 
 
 def find_next_biz_date(base_date) -> str | None:
     """다음 영업일"""
     if base_date < _get_min_krx_holiday_date():
-        row = select_first(
+        row = select_one(
             """
             SELECT min(trd_dd) AS d FROM idx_stk_ohlcv
             WHERE trd_dd > :bd
@@ -77,7 +82,7 @@ def find_next_biz_date(base_date) -> str | None:
             """,
             bd=base_date,
         )
-    return row["d"] if row else None
+    return row["d"]
 
 
 def get_biz_dates(fromdate, todate):
@@ -245,8 +250,13 @@ def get_max_hold_dates(target_date, max_hold_days):
 # 매매 이력
 # ─────────────────────────────────────────
 def save_trade_history(
-    side: str, ticker: str, name: str, qty: int, price: float,
-    reason: str = "", po_type: str = "",
+    side: str,
+    ticker: str,
+    name: str,
+    qty: int,
+    price: float,
+    reason: str = "",
+    po_type: str = "",
 ):
     """매매 이력 1건 INSERT. ~1-5ms (동기, 스레드 불필요)."""
     with Session(engine) as session:

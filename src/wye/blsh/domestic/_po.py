@@ -65,10 +65,12 @@ def make_po_file(df, po_type=None):
         messageutils.send_message(
             f"[po] {po_file_name} 생성 ({len(po_list)}종목: {names})"
         )
+        return po_file_name
     else:
         log.warning(
             f"[po] po_type을 결정할 수 없습니다. ({len(po_list)}종목, entry_date={entry_date})"
         )
+        return None
 
 
 def get_pre_po_name():

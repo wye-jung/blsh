@@ -228,4 +228,4 @@ def simulate(candidates) -> tuple | None:
 
 if __name__ == "__main__":
     from wye.blsh.domestic import scanner
-    simulate(scanner.find_candidates("20260317"))
+    simulate(scanner.("20260317"))

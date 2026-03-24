@@ -66,7 +66,9 @@ from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR, LOG_DIR
 
 log = logging.getLogger(__name__)
-_fh = TimedRotatingFileHandler(LOG_DIR / "scanner.log", when="midnight", backupCount=30, encoding="utf-8")
+_fh = TimedRotatingFileHandler(
+    LOG_DIR / "scanner.log", when="midnight", backupCount=30, encoding="utf-8"
+)
 _fh.suffix = "%Y-%m-%d"
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 log.addHandler(_fh)
@@ -873,25 +875,15 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     return df
 
 
-def save_candidates(base_date=None, report=True) -> None:
-    if base_date is None:
-        base_date = dtutils.get_latest_biz_date()
-    df = find_candidates(base_date, True)
-    if not df.empty:
-        modelManager = ModelManager(TradeCandidates)
-        modelManager.delete(base_date=base_date)
-        modelManager.create(df)
-
-
 def issue_po(base_date=None, po_type=None):
     """PO 파일 발행. po_type: 'pre'/'final'/None(자동)"""
     df = find_candidates(base_date, False)
     if not df.empty:
+        # modelManager = ModelManager(TradeCandidates)
+        # modelManager.delete(base_date=base_date)
+        # modelManager.create(df)
         _po.make_po_file(df, po_type=po_type)
 
 
 if __name__ == "__main__":
-    base_date = dtutils.get_latest_biz_date()
-    # save_candidates(base_date)
-    issue_po()
-    # log.info("file log test")
+    issue_po(dtutils.get_latest_biz_date())

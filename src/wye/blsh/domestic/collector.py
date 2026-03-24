@@ -23,23 +23,22 @@ def collect():
     login_krx()
     latest_biz_date = krx.get_nearest_business_day_in_a_week()
     max_ohlcv_date = query.get_max_ohlcv_date()
-    
+    fromdate = None
     if max_ohlcv_date is None:
         fromdate = latest_biz_date
     elif max_ohlcv_date < latest_biz_date:
         fromdate = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
     elif max_ohlcv_date == latest_biz_date:
-        if "080000" < ctdtutils.ctime() < "153000":
+        if "080000" < dtutils.ctime() < "153000":
             _collect_idx_data(max_ohlcv_date)
             _collect_isu_data(max_ohlcv_date)
-            return
-        else query.get_fetched_at(max_ohlcv_date).strftime(dtutils.TIME_FMT) < "200000":
+        elif query.get_fetched_at(max_ohlcv_date).strftime(dtutils.TIME_FMT) < "200000":
             fromdate = max_ohlcv_date
 
     if fromdate:
         _collect(fromdate, latest_biz_date)
-        
-    _collect_holiday()
+
+    return query.get_max_ohlcv_date()
 
 
 def _collect(fromdate, todate):
@@ -90,7 +89,7 @@ def _collect_base_info():
 
 
 # 휴장일 from KIS
-def _collect_holiday():
+def collect_holiday():
     today = dtutils.today()
     if not query.get_krx_holiday(today):
         from wye.blsh.kis import kis_auth as ka

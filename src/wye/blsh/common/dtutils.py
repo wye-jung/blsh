@@ -1,8 +1,8 @@
 from datetime import date, datetime, timedelta
-from wye.blsh.database import query
 
 DATE_FMT = "%Y%m%d"
 TIME_FMT = "%H%M%S"
+
 
 def ctime(fmt: str = TIME_FMT) -> str:
     return datetime.now().strftime(fmt)
@@ -12,7 +12,7 @@ def today(fmt: str = DATE_FMT) -> str:
     return date.today().strftime(fmt)
 
 
-def now(fmt: str = DATE_FMT+TIME_FMT) -> str:
+def now(fmt: str = DATE_FMT + TIME_FMT) -> str:
     return datetime.now().strftime(fmt)
 
 
@@ -22,6 +22,7 @@ def is_valid_date(date_str, date_format=DATE_FMT):
         return True
     except ValueError:
         return False
+
 
 def next_biz_day(date_str=today(), fmt=DATE_FMT):
     return add_biz_days(date_str, 1, fmt)
@@ -35,6 +36,8 @@ def add_days(date_str, days: int, fmt=DATE_FMT):
 def add_biz_days(date_str, days: int, fmt=DATE_FMT):
     if days == 0:
         return date_str
+
+    from wye.blsh.database import query
 
     check_dt = add_days(date_str, days * 2, fmt)
     if query.get_krx_holiday(check_dt) is None:
