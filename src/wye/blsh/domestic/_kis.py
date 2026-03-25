@@ -124,8 +124,17 @@ class API:
             log.warning(f"잔고 조회 실패: {e}")
         return {}, {}, 0.0
 
-    def buy(self, ticker: str, qty: int, entry_price: float) -> str | None:
-        """지정가 매수 (SOR: KRX/NXT 중 유리한 쪽으로 자동 라우팅). 성공 시 주문번호 반환."""
+    def buy(
+        self, ticker: str, qty: int, entry_price: float, excg_id_dvsn_cd: str = "KRX"
+    ) -> str | None:
+        """
+        지정가 매수 (SOR: KRX/NXT 중 유리한 쪽으로 자동 라우팅). 성공 시 주문번호 반환.
+        모의투자에서 SOR 미지원.
+        SOR 주문은 일반 주문보다 제약 존재
+        예:
+            SOR → 정정 불가 케이스 존재
+            거래소 변경 정정 불가
+        """
         try:
             self.rate_limiter.wait()
             with _api_sem:
@@ -138,7 +147,7 @@ class API:
                     ord_dvsn="00",
                     ord_qty=str(qty),
                     ord_unpr=str(int(entry_price)),
-                    excg_id_dvsn_cd="SOR",
+                    excg_id_dvsn_cd=excg_id_dvsn_cd,
                 )
             if df is not None and not df.empty:
                 odno = str(df.iloc[0].get("odno", ""))

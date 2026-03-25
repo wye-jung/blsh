@@ -383,6 +383,7 @@ def _submit_buy_orders(
     cash_usage: float = CASH_USAGE,
     cash_limit: float | None = None,
     po_type: str = "",
+    excg_id_dvsn_cd: str = "KRX",
 ) -> dict[str, dict]:
     """기 보유/진행 중 종목 제외 → 배분액 계산 → 지정가 매수 → pending 등록.
 
@@ -417,7 +418,7 @@ def _submit_buy_orders(
             log.warning(f"[po] entry_price 없음 ({ticker}) → 스킵")
             continue
         qty = max(1, int(alloc // entry_price))
-        odno = _api.buy(ticker, qty, entry_price)
+        odno = _api.buy(ticker, qty, entry_price, excg_id_dvsn_cd)
         if odno:
             pending[ticker] = PendingOrder(
                 cand=o,
@@ -587,6 +588,7 @@ def run():
                 today,
                 cash_usage=PRE_MARKET_CASH_RATIO,
                 po_type="pre",
+                excg_id_dvsn_cd="NXT",
             )
             if failed:
                 log.info(f"  [pre] 주문실패 {len(failed)}종목 → KRX 개장 후 재시도")
