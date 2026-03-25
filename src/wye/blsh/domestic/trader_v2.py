@@ -110,7 +110,7 @@ AFTERNOON_CASH_RATIO = (
 MIN_ALLOC = 10_000  # 종목당 최소 배분액 (1만원)
 NXT_PRE_OPEN = "080000"  # NXT 프리마켓 개장 (매수 SOR 가능)
 KRX_OPEN = "090000"  # KRX 정규장 개장 (매도 가능)
-LIQUIDATE_TIME = "151500"  # 청산시간
+LIQUIDATE_TIME = "152000"  # 청산시간
 MARKET_CLOSE = "153000"  # 장 마감
 # TP1_MULT, TP1_RATIO, GAP_DOWN_LIMIT → _factor.py 에서 로드
 SELL_COST_RATE = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)
@@ -175,6 +175,10 @@ def _save_history(
         query.save_trade_history(side, ticker, name, qty, price, reason, po_type)
     except Exception as e:
         log.warning(f"이력 저장 실패 ({ticker}): {e}")
+
+    messageutils.send_message(
+        " | ".join([side, ticker, name, qty, price, reason, po_type])
+    )
 
 
 # ─────────────────────────────────────────
@@ -543,7 +547,7 @@ def run():
         log.error(str(e))
         return
 
-    messageutils.send_message(f"{today} trader_v2를 시작합니다.")
+    messageutils.send_message(f"{today} trader를 시작합니다.")
 
     # ── 포지션 로드
     positions: dict[str, Position] = _load_positions()
@@ -850,7 +854,7 @@ def run():
             f"  만기={p.expiry_date}"
         )
 
-    messageutils.send_message(f"{today} trader_v2가 종료됩니다.")
+    messageutils.send_message(f"{today} trader가 종료됩니다.")
 
 
 # ─────────────────────────────────────────
