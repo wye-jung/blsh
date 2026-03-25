@@ -66,3 +66,4 @@ class ModelManager:
             print(
                 f"Deleted {result.rowcount} rows from {self.model.__tablename__} table"
             )
+            return result.rowcount

@@ -59,8 +59,12 @@ import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
 
-from wye.blsh.domestic import _report, _tick, _po
+from wye.blsh.domestic import _report, _tick
 from wye.blsh.domestic import _factor
+from wye.blsh.domestic.consts import (
+    PO_TYPE_PRE, PO_TYPE_REG, PO_TYPE_FIN
+)
+
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR, LOG_DIR
@@ -828,20 +832,6 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df = df[
-        [
-            "base_date",
-            "ticker",
-            "name",
-            "market",
-            "buy_score",
-            "mode",
-            "entry_price",
-            "stop_loss",
-            "take_profit",
-            "atr",
-        ]
-    ]
     df["atr_sl_mult"] = _factor.ATR_SL_MULT
     df["atr_tp_mult"] = _factor.ATR_TP_MULT
     conditions = [
@@ -852,14 +842,24 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     days = [_factor.MAX_HOLD_DAYS_MIX, _factor.MAX_HOLD_DAYS_MOM, _factor.MAX_HOLD_DAYS]
     df["max_hold_days"] = np.select(conditions, days, default=_factor.MAX_HOLD_DAYS)
 
+    today = dtutils.today()
     ctime = dtutils.ctime()
-    if base_date == dtutils.today() and ctime < "151500":
-        entry_date = base_date
-        if ctime > "130000":
+    po_type = None
+    if base_date == today and ctime < "151500":
+        entry_date = today
+        if ctime < "080000":
+            po_type = PO_TYPE_PRE
+        elif ctime > "140000":
             df["max_hold_days"] = df["max_hold_days"] + 1
+            po_type = PO_TYPE_FIN
+        else:
+            po_type = PO_TYPE_REG
     else:
         entry_date = query.find_next_biz_date(base_date)
+        po_type = PO_TYPE_PRE
+
     df["entry_date"] = entry_date
+    df["po_type"] = po_type
 
     expiry_cache: dict[tuple, str | None] = {}
 
@@ -872,16 +872,19 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     df["expiry_date"] = df.apply(
         lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
     )
+
     return df
 
 
 def issue_po(base_date=None):
     df = find_candidates(base_date, False)
     if not df.empty:
-        # modelManager = ModelManager(TradeCandidates)
-        # modelManager.delete(base_date=base_date)
-        # modelManager.create(df)
-        _po.make_po_file(df)
+        modelManager = ModelManager(TradeCandidates)
+        # modelManager.delete(base_date=base_date, po_type=po_type)
+        try:
+            modelManager.create(df)
+        except Exception as e:
+            log.debug("aleady exists.")
 
 
 if __name__ == "__main__":

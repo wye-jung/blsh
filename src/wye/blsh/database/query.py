@@ -9,6 +9,7 @@ from wye.blsh.database import (
     select_all,
     execute_batch,
 )
+from wye.blsh.common import dtutils
 
 log = logging.getLogger(__name__)
 
@@ -279,10 +280,26 @@ def save_trade_history(
         )
         session.commit()
 
+def get_trade_candidates(po_type: str):
+    """금일 매수 대상 종목 조회"""
+    date_str = dtutils.today()
+    return select_all(
+        """
+        SELECT 
+            ticker, name, market, mode, max_hold_days, 
+            entry_price, atr, atr_sl_mult, atr_tp_mult, 
+            entry_date, expiry_date 
+        FROM trade_candidates
+        WHERE entry_date = :d
+        and po_type = :t
+        """,
+        d=date_str,
+        t=po_type,
+    )
 
 def get_trade_history(date_str: str | None = None):
     """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘)."""
-    date_str = date_str or time.strftime("%Y%m%d")
+    date_str = date_str or dtutils.today()
     return select_all(
         """
         SELECT * FROM trade_history

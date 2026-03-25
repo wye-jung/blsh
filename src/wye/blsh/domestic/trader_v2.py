@@ -74,13 +74,8 @@ import os
 import time
 from dataclasses import dataclass
 from wye.blsh.domestic import _tick, _kis, _factor
-from wye.blsh.domestic._po import (
-    PO_DIR,
-    parse_po_file,
-    collect_po_orders,
-    move_po_file,
-    get_pre_po_name,
-    get_final_po_name,
+from wye.blsh.domestic.consts import (
+    PO_TYPE_PRE, PO_TYPE_REG, PO_TYPE_FIN
 )
 from wye.blsh.common import dtutils, fileutils, messageutils
 from wye.blsh.common.env import DATA_DIR, LOG_DIR
@@ -565,14 +560,12 @@ def run():
     cur_prices: dict[str, float] = {}
 
     # ── PO① 전일 스캔 (pre po) 매수
-    pre_po_name = get_pre_po_name()
-    pre_po = PO_DIR / pre_po_name
-    if pre_po.exists():
+    pre_po = query.get_trade_candidates(PO_TYPE_PRE)
+    if not pre_po.empty:
         log.info(
             f"[pre] {pre_po_name} 발견 → 전일 스캔 매수 ({PRE_MARKET_CASH_RATIO:.0%})"
         )
-        raw = parse_po_file(pre_po)
-        move_po_file(pre_po)
+        raw = pre_po.to_dict(orient="records")
         if raw:
             pre_orders: dict[str, dict] = {}
             for o in raw:
@@ -714,11 +707,11 @@ def run():
         # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱)
         if is_slow_tick:
             if now < LIQUIDATE_TIME:
-                orders = collect_po_orders(exclude_final=True)
-                if orders:
-                    log.info(f"[po] {len(orders)}종목 주문 발견")
+                po_regular = query.get_trade_candidates(PO_TYPE_REG)
+                if not po_regular.empty:
+                    log.info(f"[po] {len(po_regular)}종목 주문 발견")
                     _submit_buy_orders(
-                        orders,
+                        po_regular.to_dict(orient="records"),
                         positions,
                         pending_po,
                         _api,
@@ -752,12 +745,10 @@ def run():
                     log.warning(f"  청산 실패: {ticker} → 다음 영업일 재시도")
 
             # final po 처리
-            final_po_name = get_final_po_name()
-            po_final = PO_DIR / final_po_name
-            if po_final.exists():
+            po_final = query.get_trade_candidates(PO_TYPE_FIN)
+            if not po_final.empty:
                 log.info(f"{final_po_name} 처리")
-                raw = parse_po_file(po_final)
-                move_po_file(po_final)
+                raw = po_final.to_dict(orient="records")
                 if raw:
                     after_orders: dict[str, dict] = {}
                     for o in raw:
