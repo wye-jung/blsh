@@ -5,7 +5,7 @@
 import logging
 import pandas as pd
 import numpy as np
-from wye.blsh.domestic import _factor as fac
+from wye.blsh.domestic import config as fac
 
 log = logging.getLogger(__name__)
 

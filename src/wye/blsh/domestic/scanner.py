@@ -58,11 +58,11 @@ from logging.handlers import TimedRotatingFileHandler
 import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
-
-from wye.blsh.domestic import _report, _tick
-from wye.blsh.domestic import _factor
-from wye.blsh.domestic.consts import (
-    PO_TYPE_PRE, PO_TYPE_REG, PO_TYPE_FIN
+from wye.blsh.common import fileutils
+from wye.blsh.domestic import reporter, Tick
+from wye.blsh.domestic import config
+from wye.blsh.domestic import (
+    PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, get_po_path
 )
 
 from wye.blsh.database.models import TradeCandidates
@@ -89,33 +89,33 @@ _MOMENTUM_FLAGS = {"MGC", "MAA", "W52", "PB", "LB", "VS", "OBV"}
 # 지표 계산
 # ─────────────────────────────────────────
 def calc_macd(c):
-    es = c.ewm(span=_factor.MACD_SHORT, adjust=False).mean()
-    el = c.ewm(span=_factor.MACD_LONG, adjust=False).mean()
+    es = c.ewm(span=config.MACD_SHORT, adjust=False).mean()
+    el = c.ewm(span=config.MACD_LONG, adjust=False).mean()
     m = es - el
-    s = m.ewm(span=_factor.MACD_SIGNAL, adjust=False).mean()
+    s = m.ewm(span=config.MACD_SIGNAL, adjust=False).mean()
     return m, s, m - s
 
 
-def calc_rsi(c, p=_factor.RSI_PERIOD):
+def calc_rsi(c, p=config.RSI_PERIOD):
     d = c.diff()
     g = d.clip(lower=0).ewm(alpha=1 / p, adjust=False).mean()
     l = (-d.clip(upper=0)).ewm(alpha=1 / p, adjust=False).mean()
     return 100 - 100 / (1 + g / l.replace(0, np.nan))
 
 
-def calc_bb(c, p=_factor.BB_PERIOD, k=_factor.BB_STD):
+def calc_bb(c, p=config.BB_PERIOD, k=config.BB_STD):
     m = c.rolling(p).mean()
     s = c.rolling(p).std()
     return m + k * s, m, m - k * s
 
 
-def calc_atr(h, l, c, p=_factor.ATR_PERIOD):
+def calc_atr(h, l, c, p=config.ATR_PERIOD):
     pc = c.shift(1)
     tr = pd.concat([h - l, (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
     return tr.ewm(span=p, adjust=False).mean()
 
 
-def calc_stoch(h, l, c, k=_factor.STOCH_K, d=_factor.STOCH_D, sm=_factor.STOCH_SMOOTH):
+def calc_stoch(h, l, c, k=config.STOCH_K, d=config.STOCH_D, sm=config.STOCH_SMOOTH):
     lo = l.rolling(k).min()
     hi = h.rolling(k).max()
     rk = 100 * (c - lo) / (hi - lo).replace(0, np.nan)
@@ -132,7 +132,7 @@ def calc_obv(c, v):
 # 매수 신호 평가
 # ─────────────────────────────────────────
 def evaluate_buy(close, high, low, volume, opn=None):
-    min_len = _factor.MACD_LONG + _factor.MACD_SIGNAL + 5
+    min_len = config.MACD_LONG + config.MACD_SIGNAL + 5
     if len(close) < min_len:
         return 0, [], {}
 
@@ -141,7 +141,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
     bbu, bbm, bbl = calc_bb(close)
     atr = calc_atr(high, low, close)
     sk, sd = calc_stoch(high, low, close)
-    mas = {p: close.rolling(p).mean() for p in _factor.MA_PERIODS}
+    mas = {p: close.rolling(p).mean() for p in config.MA_PERIODS}
     obv = calc_obv(close, volume) if volume is not None else None
 
     c0, c1 = close.iloc[-1], close.iloc[-2]
@@ -170,19 +170,19 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("MGC", 2))
     # 2. MACD 예상 골든크로스 (+1) → MPGC (중립)
     elif (
-        m0 < s0
-        and len(hist) >= 3
-        and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
-        and abs(s0) > 0
-        and (s0 - m0) / abs(s0) <= _factor.GAP_THRESHOLD
+            m0 < s0
+            and len(hist) >= 3
+            and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
+            and abs(s0) > 0
+            and (s0 - m0) / abs(s0) <= config.GAP_THRESHOLD
     ):
         signals.append(("MPGC", 1))
 
     # 3. RSI 30 상향 돌파 (+2) → RBO (전환)
-    if r0 > _factor.RSI_OVERSOLD and r1 <= _factor.RSI_OVERSOLD:
+    if r0 > config.RSI_OVERSOLD and r1 <= config.RSI_OVERSOLD:
         signals.append(("RBO", 2))
     # 4. RSI 과매도 (+1) → ROV (전환)
-    elif r0 < _factor.RSI_OVERSOLD:
+    elif r0 < config.RSI_OVERSOLD:
         signals.append(("ROV", 1))
 
     # 5. 볼린저 하단 반등 (+1) → BBL (전환)
@@ -213,7 +213,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
     if len(close) >= 252 and volume is not None and len(volume) >= 21:
         w52_high = high.iloc[-252:-1].max()
         vol_20_avg = volume.iloc[-21:-1].mean()
-        if h0 > w52_high and volume.iloc[-1] > vol_20_avg * _factor.W52_VOL_MULT:
+        if h0 > w52_high and volume.iloc[-1] > vol_20_avg * config.W52_VOL_MULT:
             signals.append(("W52", 2))
 
     # 11. 눌림목 패턴 (+2) → PB (모멘텀)
@@ -297,9 +297,9 @@ def evaluate_buy(close, high, low, volume, opn=None):
         score = mom_score + rev_score + neu_score
 
     # ── 매수가 / 손절 / 익절 (호가 단위 보정)
-    entry_price = _tick.ceil_tick(c0 + 0.5 * atr0)
-    stop_loss = _tick.floor_tick(c0 - _factor.ATR_SL_MULT * atr0)
-    take_profit = _tick.ceil_tick(c0 + _factor.ATR_TP_MULT * atr0)
+    entry_price = Tick.ceil_tick(c0 + 0.5 * atr0)
+    stop_loss = Tick.floor_tick(c0 - config.ATR_SL_MULT * atr0)
+    take_profit = Tick.ceil_tick(c0 + config.ATR_TP_MULT * atr0)
 
     indicators = {
         "mode": mode,
@@ -342,7 +342,7 @@ def scan_dataframe(
     df = df.sort_index().apply(pd.to_numeric, errors="coerce")
     df = df[df.index <= base_date]
 
-    if len(df) < _factor.LOOKBACK_DAYS // 3:
+    if len(df) < config.LOOKBACK_DAYS // 3:
         return None
 
     close = df[close_col].dropna()
@@ -363,7 +363,7 @@ def scan_dataframe(
         opn = opn[idx]
 
     score, flags, ind = evaluate_buy(close, high, low, vol, opn)
-    if score < _factor.MIN_SCORE:
+    if score < config.MIN_SCORE:
         return None
 
     icon = "🔴" if score >= 5 else "🟡" if score >= 3 else "🔵"
@@ -411,8 +411,8 @@ def scan_market(
             {
                 "start": start,
                 "base_date": base_date,
-                "filter_start": dtutils.add_days(base_date, _factor.TRDVAL_DAYS * -2),
-                "min_val": _factor.TRDVAL_MIN,
+                "filter_start": dtutils.add_days(base_date, config.TRDVAL_DAYS * -2),
+                "min_val": config.TRDVAL_MIN,
             },
             open_col=open_col,
         )
@@ -515,7 +515,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
     candidates = [
         r
         for r in results
-        if r["buy_score"] >= _factor.ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
+        if r["buy_score"] >= config.ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
     ]
     if not candidates:
         return results
@@ -622,7 +622,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
 
 
 def check_index_above_ma(
-    idx_nm, base_date, ma_days=20, drop_limit=_factor.INDEX_DROP_LIMIT
+    idx_nm, base_date, ma_days=20, drop_limit=config.INDEX_DROP_LIMIT
 ):
     """지수 환경 체크. MA 대비 -drop_limit 이하일 때만 스캔 스킵."""
     try:
@@ -660,17 +660,17 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
         log.warning(f"{base_date} - ohlcv 데이터가 없습니다")
         return pd.DataFrame()
 
-    start = dtutils.add_days(base_date, _factor.LOOKBACK_DAYS * -1)
+    start = dtutils.add_days(base_date, config.LOOKBACK_DAYS * -1)
     name_map = query.get_ticker_name_map()
 
     results = []
 
-    if check_index_above_ma("코스피", base_date, _factor.INDEX_MA_DAYS):
+    if check_index_above_ma("코스피", base_date, config.INDEX_MA_DAYS):
         results += scan_market("isu_ksp_ohlcv", "KOSPI", start, base_date, name_map)
     else:
         log.warning("[KOSPI] 지수 20MA 아래 → 스캔 스킵")
 
-    if check_index_above_ma("코스닥", base_date, _factor.INDEX_MA_DAYS):
+    if check_index_above_ma("코스닥", base_date, config.INDEX_MA_DAYS):
         results += scan_market("isu_ksd_ohlcv", "KOSDAQ", start, base_date, name_map)
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
@@ -684,7 +684,7 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if report:
-        _report.print_general_summary(df)
+        reporter.print_general_summary(df)
 
     return df
 
@@ -724,7 +724,7 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
             ticker = str(row["단축코드"]).strip()
             mid = int(row.get("지수업종중분류", 0) or 0)
             big = int(row.get("지수업종대분류", 0) or 0)
-            idx_nm = _factor.KOSPI_MID_TO_IDX.get(mid) or _factor.KOSPI_BIG_TO_IDX.get(
+            idx_nm = config.KOSPI_MID_TO_IDX.get(mid) or config.KOSPI_BIG_TO_IDX.get(
                 big
             )
             if idx_nm:
@@ -741,9 +741,9 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
             ticker = str(row["단축코드"]).strip()
             mid = int(row.get("지수 업종 중분류 코드", 0) or 0)
             big = int(row.get("지수업종 대분류 코드", 0) or 0)
-            idx_nm = _factor.KOSDAQ_MID_TO_IDX.get(
+            idx_nm = config.KOSDAQ_MID_TO_IDX.get(
                 mid
-            ) or _factor.KOSDAQ_BIG_TO_IDX.get(big)
+            ) or config.KOSDAQ_BIG_TO_IDX.get(big)
             if idx_nm:
                 result[ticker] = idx_nm
     except Exception as e:
@@ -775,7 +775,7 @@ def _get_sector_gap(idx_nm: str, base_date: str, ma_days: int = 20) -> float:
 
 def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
-    if _factor.SECTOR_PENALTY_PTS == 0 and _factor.SECTOR_BONUS_PTS == 0:
+    if config.SECTOR_PENALTY_PTS == 0 and config.SECTOR_BONUS_PTS == 0:
         return df
 
     sector_map = _load_ticker_sector_map(base_date)
@@ -795,10 +795,10 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     for _, row in df.iterrows():
         gap = get_gap(row["ticker"], row["market"])
         adj = 0
-        if _factor.SECTOR_PENALTY_PTS != 0 and gap < _factor.SECTOR_PENALTY_THRESHOLD:
-            adj = _factor.SECTOR_PENALTY_PTS
-        elif _factor.SECTOR_BONUS_PTS != 0 and gap >= 0:
-            adj = _factor.SECTOR_BONUS_PTS
+        if config.SECTOR_PENALTY_PTS != 0 and gap < config.SECTOR_PENALTY_THRESHOLD:
+            adj = config.SECTOR_PENALTY_PTS
+        elif config.SECTOR_BONUS_PTS != 0 and gap >= 0:
+            adj = config.SECTOR_BONUS_PTS
         adjustments.append(adj)
 
     df = df.copy()
@@ -821,30 +821,29 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     sdf = _apply_sector_penalty(sdf, base_date)
 
     cand_mask = (
-        (sdf["buy_score"] >= _factor.INVEST_MIN_SCORE)
+        (sdf["buy_score"] >= config.INVEST_MIN_SCORE)
         & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
     )
     df = sdf[cand_mask].copy()
     if report:
-        _report.print_invest_report(df)
+        reporter.print_invest_report(df)
 
     if df.empty:
         return df
 
-    df["atr_sl_mult"] = _factor.ATR_SL_MULT
-    df["atr_tp_mult"] = _factor.ATR_TP_MULT
+    df["atr_sl_mult"] = config.ATR_SL_MULT
+    df["atr_tp_mult"] = config.ATR_TP_MULT
     conditions = [
         df["mode"] == "MIX",
         df["mode"] == "MOM",
         df["mode"] == "REV",
     ]
-    days = [_factor.MAX_HOLD_DAYS_MIX, _factor.MAX_HOLD_DAYS_MOM, _factor.MAX_HOLD_DAYS]
-    df["max_hold_days"] = np.select(conditions, days, default=_factor.MAX_HOLD_DAYS)
+    days = [config.MAX_HOLD_DAYS_MIX, config.MAX_HOLD_DAYS_MOM, config.MAX_HOLD_DAYS]
+    df["max_hold_days"] = np.select(conditions, days, default=config.MAX_HOLD_DAYS)
 
     today = dtutils.today()
     ctime = dtutils.ctime()
-    po_type = None
     if base_date == today and ctime < "151500":
         entry_date = today
         if ctime < "080000":
@@ -853,13 +852,10 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
             df["max_hold_days"] = df["max_hold_days"] + 1
             po_type = PO_TYPE_FIN
         else:
-            po_type = PO_TYPE_REG
+            po_type = PO_TYPE_INI
     else:
         entry_date = query.find_next_biz_date(base_date)
         po_type = PO_TYPE_PRE
-
-    df["entry_date"] = entry_date
-    df["po_type"] = po_type
 
     expiry_cache: dict[tuple, str | None] = {}
 
@@ -869,23 +865,35 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
             expiry_cache[key] = dtutils.add_biz_days(str(ed), int(mhd))
         return expiry_cache[key]
 
+    df["po_type"] = po_type
+    df["entry_date"] = entry_date
     df["expiry_date"] = df.apply(
-        lambda r: _get_expiry(r["entry_date"], r["max_hold_days"]), axis=1
+        lambda r: _get_expiry(entry_date, r["max_hold_days"]), axis=1
     )
-
     return df
 
 
 def issue_po(base_date=None):
-    df = find_candidates(base_date, False)
+    df = find_candidates(base_date, False)[[
+       "base_date", "ticker", "name", "market",
+        "buy_score", "mode", "entry_price",
+        "atr", "atr_sl_mult", "atr_tp_mult",
+        "max_hold_days",
+        "po_type", "entry_date", "expiry_date"
+    ]]
     if not df.empty:
-        modelManager = ModelManager(TradeCandidates)
-        # modelManager.delete(base_date=base_date, po_type=po_type)
-        try:
-            modelManager.create(df)
-        except Exception as e:
-            log.debug("aleady exists.")
+        entry_date = df.iloc[0]["entry_date"]
+        po_type = df.iloc[0]["po_type"]
+
+        po = get_po_path(po_type, entry_date)
+        if fileutils.create_json(po, df.set_index("ticker").to_dict("index")):
+            log.info(f"{po.name} 생성.")
+
+        model_manager = ModelManager(TradeCandidates)
+        model_manager.delete(entry_date=entry_date, po_type=po_type)
+        model_manager.create(df)
+
 
 
 if __name__ == "__main__":
-    issue_po(dtutils.get_latest_biz_date())
+    print(issue_po())

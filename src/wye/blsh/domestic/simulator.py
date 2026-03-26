@@ -11,7 +11,7 @@
 import logging
 import pandas as pd
 from wye.blsh.database import query
-from wye.blsh.domestic import _factor, _report, _tick
+from wye.blsh.domestic import config, reporter, Tick
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def simulate(candidates) -> tuple | None:
         return None
 
     entry_date = candidates.iloc[0]["entry_date"]
-    max_hold = _factor.MAX_HOLD_DAYS
+    max_hold = config.MAX_HOLD_DAYS
 
     log.info(f"[시뮬레이트] 목표일={entry_date}  최대 {max_hold}거래일 추적")
 
@@ -84,8 +84,8 @@ def simulate(candidates) -> tuple | None:
         t = sig["ticker"]
         entry = float(sig["entry_price"])
         atr = float(sig["atr"])
-        atr_sl_mult = float(sig.get("atr_sl_mult", _factor.ATR_SL_MULT))
-        atr_tp_mult = float(sig.get("atr_tp_mult", _factor.ATR_TP_MULT))
+        atr_sl_mult = float(sig.get("atr_sl_mult", config.ATR_SL_MULT))
+        atr_tp_mult = float(sig.get("atr_tp_mult", config.ATR_TP_MULT))
         days = ohlcv_idx.get(t, {})
 
         # entry_date(hold_dates[0]) 데이터 없음
@@ -103,9 +103,9 @@ def simulate(candidates) -> tuple | None:
 
         # [FIX] 실제 매수가 기준 SL/TP 재계산 (trader _make_position과 동일)
         buy_price = t1_ohv["open"]
-        sl = _tick.floor_tick(buy_price - atr_sl_mult * atr)
-        tp1 = _tick.ceil_tick(buy_price + TP1_MULT * atr)
-        tp2 = _tick.ceil_tick(buy_price + atr_tp_mult * atr)
+        sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
+        tp1 = Tick.ceil_tick(buy_price + TP1_MULT * atr)
+        tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
 
         result_type = None
         exit_price = None
@@ -118,11 +118,11 @@ def simulate(candidates) -> tuple | None:
         # 모드별 최대 보유 기간
         mode = sig.get("mode", "")
         if mode == "MOM":
-            max_days = _factor.MAX_HOLD_DAYS_MOM
+            max_days = config.MAX_HOLD_DAYS_MOM
         elif mode == "MIX":
-            max_days = _factor.MAX_HOLD_DAYS_MIX
+            max_days = config.MAX_HOLD_DAYS_MIX
         else:
-            max_days = _factor.MAX_HOLD_DAYS
+            max_days = config.MAX_HOLD_DAYS
 
         # DAY 모드(max_days=0): entry_date 당일만 보유
         if max_days == 0:
@@ -144,7 +144,7 @@ def simulate(candidates) -> tuple | None:
             # 당일 high로 SL을 올린 뒤 당일 low로 손절 체크하면 낙관적 편향 발생.
             # 전일 high 기준 갱신 → 당일 low 체크 순서로 보수적 시뮬레이션.
             if d != sig_hold_dates[0]:  # 매수일은 전일 고가 = 매수일 자체
-                trail_sl = _tick.floor_tick(prev_high - atr_sl_mult * atr)
+                trail_sl = Tick.floor_tick(prev_high - atr_sl_mult * atr)
                 if trail_sl > sl and trail_sl < prev_high:
                     sl = trail_sl
 
@@ -214,7 +214,7 @@ def simulate(candidates) -> tuple | None:
             }
         )
 
-    _report.print_simul_report(
+    reporter.print_simul_report(
         entry_date,
         actual_days,
         candidates,
@@ -228,4 +228,4 @@ def simulate(candidates) -> tuple | None:
 
 if __name__ == "__main__":
     from wye.blsh.domestic import scanner
-    simulate(scanner.("20260317"))
+    simulate(scanner.find_candidates("20260317"))

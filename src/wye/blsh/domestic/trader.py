@@ -74,9 +74,9 @@ from logging.handlers import TimedRotatingFileHandler
 import os
 import time
 from dataclasses import dataclass
-from wye.blsh.domestic import Tick, kis_api, config
+from wye.blsh.domestic import Tick, kis_client, config
 from wye.blsh.domestic import (
-    PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO_DIR, get_po_path
+    PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, get_po_path
 )
 from wye.blsh.common import dtutils, fileutils, messageutils
 from wye.blsh.common.env import DATA_DIR, LOG_DIR
@@ -180,7 +180,7 @@ def _save_history(
 # ─────────────────────────────────────────
 # 매도 + SL/TP
 # ─────────────────────────────────────────
-def _sell_or_log(_api: _kis.API, pos: Position, qty: int, reason: str) -> bool:
+def _sell_or_log(_api: kis_client.API, pos: Position, qty: int, reason: str) -> bool:
     if _api.sell(pos.ticker, qty, reason):
         _save_history("sell", pos.ticker, pos.name, qty, 0, reason, pos.po_type)
         return True
@@ -200,8 +200,8 @@ def _load_positions() -> dict[str, Position]:
         valid: dict[str, Position] = {}
         for t, v in data.items():
             v.setdefault("realized_pnl", 0.0)
-            v.setdefault("atr_sl_mult", _factor.ATR_SL_MULT)
-            v.setdefault("atr_tp_mult", _factor.ATR_TP_MULT)
+            v.setdefault("atr_sl_mult", config.ATR_SL_MULT)
+            v.setdefault("atr_tp_mult", config.ATR_TP_MULT)
             v.setdefault("expiry_date", "")
             v.setdefault("po_type", "")
             p = Position(**v)
@@ -252,10 +252,10 @@ def _make_position(
     """po.json dict → Position 생성."""
     atr = float(c["atr"])
     atr_sl_mult = float(
-        c["atr_sl_mult"] if c.get("atr_sl_mult") is not None else _factor.ATR_SL_MULT
+        c["atr_sl_mult"] if c.get("atr_sl_mult") is not None else config.ATR_SL_MULT
     )
     atr_tp_mult = float(
-        c["atr_tp_mult"] if c.get("atr_tp_mult") is not None else _factor.ATR_TP_MULT
+        c["atr_tp_mult"] if c.get("atr_tp_mult") is not None else config.ATR_TP_MULT
     )
 
     if c.get("max_hold_days") is not None:
@@ -273,10 +273,10 @@ def _make_position(
             expiry_date = entry_date
 
     tp1_mult = float(
-        c["tp1_mult"] if c.get("tp1_mult") is not None else _factor.TP1_MULT
+        c["tp1_mult"] if c.get("tp1_mult") is not None else config.TP1_MULT
     )
     tp1_ratio = float(
-        c["tp1_ratio"] if c.get("tp1_ratio") is not None else _factor.TP1_RATIO
+        c["tp1_ratio"] if c.get("tp1_ratio") is not None else config.TP1_RATIO
     )
     sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
     tp1 = Tick.ceil_tick(buy_price + tp1_mult * atr)
@@ -311,7 +311,7 @@ def _make_position(
 
 
 def _process_position(
-    _api: _kis.API, pos: Position, current: float
+    _api: kis_client.API, pos: Position, current: float
 ) -> tuple[bool, bool]:
     """현재가 기준 SL/TP 처리.
 
@@ -378,7 +378,7 @@ def _submit_buy_orders(
     orders: dict[str, dict],
     positions: dict[str, Position],
     pending: dict[str, PendingOrder],
-    _api: _kis.API,
+    _api: kis_client.API,
     today: str,
     cash_usage: float = CASH_USAGE,
     cash_limit: float | None = None,
@@ -438,7 +438,7 @@ def _submit_buy_orders(
 def _check_pending_orders(
     pending: dict[str, PendingOrder],
     positions: dict[str, Position],
-    _api: _kis.API,
+    _api: kis_client.API,
     today: str,
 ) -> bool:
     """체결 확인 + 시간 초과 취소. 변동 있으면 True."""
@@ -516,7 +516,7 @@ def _check_pending_orders(
     return changed
 
 
-def _cancel_all_pending(pending: dict[str, PendingOrder], _api: _kis.API):
+def _cancel_all_pending(pending: dict[str, PendingOrder], _api: kis_client.API):
     for ticker, po in pending.items():
         _api.cancel_order(ticker, po.odno, po.qty)
     pending.clear()
@@ -538,7 +538,7 @@ def run():
         return
 
     try:
-        _api = _kis.API(os.environ.get("KIS_ENV", "demo").lower(), FETCH_TIMEOUT)
+        _api = kis_client.API(os.environ.get("KIS_ENV", "demo").lower(), FETCH_TIMEOUT)
     except RuntimeError as e:
         log.error(str(e))
         return

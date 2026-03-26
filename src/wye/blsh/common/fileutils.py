@@ -1,11 +1,6 @@
 import json
-import logging
-from typing import Union
+import shutil
 from pathlib import Path
-from dataclasses import asdict, dataclass, is_dataclass
-
-log = logging.getLogger(__name__)
-
 
 def create_file(path: Path, contents) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -15,21 +10,25 @@ def create_file(path: Path, contents) -> bool:
         tmp.replace(path)
         return True
     except Exception as e:
-        log.error(f"파일 저장 실패: {e}")
         tmp.unlink(missing_ok=True)
         return False
 
 
-def create_json(path: Path, data: Union[dataclass, dict, list]) -> bool:
+def create_json(path: Path, data, **kwargs) -> bool:
     if data:
-        json_dumpbs = json.dumps(
-            asdict(data)
-            if is_dataclass(data)
-            else {t: asdict(p) for t, p in data.items()}
-            if isinstance(data, dict)
-            else data,
+        json_dumps = json.dumps(
+            data,
             ensure_ascii=False,
             indent=2,
+            **kwargs
         )
-        return create_file(path, json_dumpbs)
+        return create_file(path, json_dumps)
     return False
+
+# def move_file(source: Path, target: Path):
+#     target.parent.mkdir(parents=True, exist_ok=True)
+#     try:
+#         shutil.move(source, target)
+#         return True
+#     except Exception as e:
+#         return False
