@@ -11,10 +11,9 @@ from wye.blsh.kis import kis_auth as ka
 from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
 
 log = logging.getLogger(__name__)
+
 _API_CONCURRENCY = 2
 _api_sem = threading.Semaphore(_API_CONCURRENCY)  # 동시 API 호출 수 제한
-
-
 class _RateLimiter:
     """초당 최대 N회 호출 제한 (멀티스레드 안전)"""
 

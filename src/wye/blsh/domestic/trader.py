@@ -69,13 +69,14 @@ po_*.json 포맷 (list 또는 단일 dict):
 
 import json
 import logging
+from pathlib import Path
 from logging.handlers import TimedRotatingFileHandler
 import os
 import time
 from dataclasses import dataclass
-from wye.blsh.domestic import _tick, _kis, _factor
-from wye.blsh.domestic.consts import (
-    PO_TYPE_PRE, PO_TYPE_REG, PO_TYPE_FIN
+from wye.blsh.domestic import Tick, kis_api, config
+from wye.blsh.domestic import (
+    PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO_DIR, get_po_path
 )
 from wye.blsh.common import dtutils, fileutils, messageutils
 from wye.blsh.common.env import DATA_DIR, LOG_DIR
@@ -93,13 +94,13 @@ log.addHandler(_fh)
 # 설정
 # ─────────────────────────────────────────
 CASH_USAGE = 0.9  # 가용 현금의 90% 사용
-PRE_MARKET_CASH_RATIO = (
+PRE_CASH_RATIO = (
     0.30  # PO① 전일 스캔: 가용 현금의 30% (확정 일봉, 갭 리스크 있음)
 )
-MORNING_CASH_RATIO = (
+INI_CASH_RATIO = (
     0.15  # PO② 오전 스캔: 가용 현금의 15% (장중 미확정 데이터 → 탐색적)
 )
-AFTERNOON_CASH_RATIO = (
+FIN_CASH_RATIO = (
     0.55  # PO③ 오후 스캔: 청산 후 현금의 55% (확정에 가까운 데이터 → 주력)
 )
 MIN_ALLOC = 10_000  # 종목당 최소 배분액 (1만원)
@@ -107,7 +108,7 @@ NXT_PRE_OPEN = "080000"  # NXT 프리마켓 개장 (매수 SOR 가능)
 KRX_OPEN = "090000"  # KRX 정규장 개장 (매도 가능)
 LIQUIDATE_TIME = "152000"  # 청산시간
 MARKET_CLOSE = "153000"  # 장 마감
-# TP1_MULT, TP1_RATIO, GAP_DOWN_LIMIT → _factor.py 에서 로드
+# TP1_MULT, TP1_RATIO, GAP_DOWN_LIMIT → config.py 에서 로드
 SELL_COST_RATE = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)
 TICK_SEC = 10  # 메인 루프 주기 (현재가 조회 간격)
 FETCH_TIMEOUT = 30  # _fetch_prices as_completed 타임아웃 (종목 많아도 안전)
@@ -277,9 +278,9 @@ def _make_position(
     tp1_ratio = float(
         c["tp1_ratio"] if c.get("tp1_ratio") is not None else _factor.TP1_RATIO
     )
-    sl = _tick.floor_tick(buy_price - atr_sl_mult * atr)
-    tp1 = _tick.ceil_tick(buy_price + tp1_mult * atr)
-    tp2 = _tick.ceil_tick(buy_price + atr_tp_mult * atr)
+    sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
+    tp1 = Tick.ceil_tick(buy_price + tp1_mult * atr)
+    tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
     qty_t1 = max(1, int(qty * tp1_ratio))
     if qty_t1 >= qty:
         qty_t1 = qty  # tp1_ratio=1.0 → 전량 청산
@@ -320,7 +321,7 @@ def _process_position(
     ret_pct = (current - pos.buy_price) / pos.buy_price * 100
     changed = False
 
-    trail_sl = _tick.floor_tick(current - pos.atr_sl_mult * pos.atr)
+    trail_sl = Tick.floor_tick(current - pos.atr_sl_mult * pos.atr)
     if trail_sl > pos.sl and trail_sl < current:
         log.info(
             f"  🔺 트레일링 SL: {pos.ticker}  {pos.sl:,.0f} → {trail_sl:,.0f}"
@@ -526,7 +527,7 @@ def _cancel_all_pending(pending: dict[str, PendingOrder], _api: _kis.API):
 # ─────────────────────────────────────────
 def run():
     print()
-    log.info(">>>>> START TRADER_V2 <<<<<<")
+    log.info(">>>>> START TRADER <<<<<<")
     today = dtutils.today()
 
     kh = query.get_krx_holiday(today)
@@ -564,33 +565,31 @@ def run():
     last_status_min = ""
     cur_prices: dict[str, float] = {}
 
+    def _parse_po(po_path:Path)->dict[str, dict]:
+        try:
+            orders = json.loads(po.read_text())
+            log.info(f"  {len(orders)} 종목")
+        except Exception as e:
+            log.warning(f"  파일 파싱 실패: {e}")
+            orders = {}
+
     # ── PO① 전일 스캔 (pre po) 매수
-    pre_po = query.get_trade_candidates(PO_TYPE_PRE)
-    if not pre_po.empty:
-        log.info(
-            f"[pre] {pre_po_name} 발견 → 전일 스캔 매수 ({PRE_MARKET_CASH_RATIO:.0%})"
+    po = get_po_path(PO_TYPE_PRE)
+    if po.exists():
+        log.info(f"[매수] {po.name}")
+        failed = _submit_buy_orders(
+            _parse_po(po),
+            positions,
+            pending_po,
+            _api,
+            today,
+            cash_usage=PRE_CASH_RATIO,
+            po_type=PO_TYPE_PRE,
+            excg_id_dvsn_cd="NXT",
         )
-        raw = pre_po.to_dict(orient="records")
-        if raw:
-            pre_orders: dict[str, dict] = {}
-            for o in raw:
-                t = o.get("ticker")
-                if t:
-                    pre_orders[t] = o
-            failed = _submit_buy_orders(
-                pre_orders,
-                positions,
-                pending_po,
-                _api,
-                today,
-                cash_usage=PRE_MARKET_CASH_RATIO,
-                po_type="pre",
-                excg_id_dvsn_cd="NXT",
-            )
-            if failed:
-                log.info(f"  [pre] 주문실패 {len(failed)}종목 → KRX 개장 후 재시도")
+        if failed:
+            log.info(f"  주문실패 {len(failed)}종목 → KRX 개장 후 재시도")
     else:
-        log.info(f"[pre] {pre_po_name} 없음")
         failed = {}
 
     retry_orders: dict[str, dict] = failed  # KRX 개장 후 재시도 대상
@@ -650,8 +649,8 @@ def run():
                 pending_po,
                 _api,
                 today,
-                cash_usage=PRE_MARKET_CASH_RATIO,
-                po_type="pre",
+                cash_usage=PRE_CASH_RATIO,
+                po_type=PO_TYPE_PRE,
             )
             if still_failed:
                 log.warning(f"  재주문도 실패: {list(still_failed.keys())}")
@@ -713,17 +712,17 @@ def run():
         # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱)
         if is_slow_tick:
             if now < LIQUIDATE_TIME:
-                po_regular = query.get_trade_candidates(PO_TYPE_REG)
-                if not po_regular.empty:
-                    log.info(f"[po] {len(po_regular)}종목 주문 발견")
+                po = get_po_path(PO_TYPE_INI)
+                if  po.exists():
+                    log.info(f"[매수] {po.name}")
                     _submit_buy_orders(
-                        po_regular.to_dict(orient="records"),
+                        _parse_po(po),
                         positions,
                         pending_po,
                         _api,
                         today,
-                        cash_usage=MORNING_CASH_RATIO,
-                        po_type="morning",
+                        cash_usage=INI_CASH_RATIO,
+                        po_type=PO_TYPE_INI,
                     )
 
             if _check_pending_orders(pending_po, positions, _api, today):
@@ -751,30 +750,21 @@ def run():
                     log.warning(f"  청산 실패: {ticker} → 다음 영업일 재시도")
 
             # final po 처리
-            po_final = query.get_trade_candidates(PO_TYPE_FIN)
-            if not po_final.empty:
-                log.info(f"{final_po_name} 처리")
-                raw = po_final.to_dict(orient="records")
-                if raw:
-                    after_orders: dict[str, dict] = {}
-                    for o in raw:
-                        t = o.get("ticker")
-                        if t:
-                            after_orders[t] = o
-                    time.sleep(2)
-                    _, _, cash = _api.get_balance()
-                    cash_limit = cash * AFTERNOON_CASH_RATIO * CASH_USAGE
-                    _submit_buy_orders(
-                        after_orders,
-                        positions,
-                        pending_po,
-                        _api,
-                        today,
-                        cash_limit=cash_limit,
-                        po_type="final",
-                    )
-            else:
-                log.info(f" {final_po_name} 없음")
+            po = get_po_path(PO_TYPE_FIN)
+            if po.exists():
+                log.info(f"[매수] {po.name}")
+                time.sleep(2)
+                _, _, cash = _api.get_balance()
+                cash_limit = cash * FIN_CASH_RATIO * CASH_USAGE
+                _submit_buy_orders(
+                    _parse_po(po),
+                    positions,
+                    pending_po,
+                    _api,
+                    today,
+                    cash_limit=cash_limit,
+                    po_type=PO_TYPE_FIN,
+                )
 
             liquidated = True
             dirty = True
