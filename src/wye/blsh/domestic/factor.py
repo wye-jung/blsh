@@ -1,17 +1,17 @@
 """
-최적 파라미터 (2026-03-22 기준, 최근 2년 백테스트)
+최적 파라미터 (2026-03-27 기준, 최근 2년 백테스트)
 
 파라미터              DAY     SWING
 ──────────────────────────────────────
-INVEST_MIN_SCORE     12      11
-ATR_SL_MULT          2.5     2.0
-ATR_TP_MULT          2.0     2.0
-TP1_MULT             0.7     1.0
-TP1_RATIO            0.7     0.5
-GAP_DOWN_LIMIT       0.03    0.03
-MAX_HOLD_DAYS(REV)   1       7
-MAX_HOLD_DAYS_MIX    1       3
-MAX_HOLD_DAYS_MOM    0       1
+INVEST_MIN_SCORE     14      9
+ATR_SL_MULT          1.5     2.5
+ATR_TP_MULT          3.0     3.0
+TP1_MULT             1.0     1.5
+TP1_RATIO            0.3     0.3
+GAP_DOWN_LIMIT       0       0.05
+MAX_HOLD_DAYS(REV)   1       10
+MAX_HOLD_DAYS_MIX    1       5
+MAX_HOLD_DAYS_MOM    0       3
 SECTOR_PENALTY       -5%/-2  -5%/-2
 SECTOR_BONUS         +1      +1
 

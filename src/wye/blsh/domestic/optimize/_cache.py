@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR
 from wye.blsh.database.query import engine, select_all
-from wye.blsh.domestic import factor, sector, Tick
+from wye.blsh.domestic import sector, Tick
 from wye.blsh.domestic.scanner import (
     calc_macd,
     calc_rsi,
@@ -33,6 +33,17 @@ from wye.blsh.domestic.scanner import (
     _REVERSAL_FLAGS,
     _MOMENTUM_FLAGS,
     classify_supply,
+    # scanner 자체 상수 (_cache에서도 사용)
+    GAP_THRESHOLD,
+    RSI_OVERSOLD,
+    W52_VOL_MULT,
+    INDEX_DROP_LIMIT,
+    LOOKBACK_DAYS,
+    TRDVAL_MIN,
+    MACD_LONG,
+    MACD_SIGNAL,
+    MIN_SCORE,
+    ENRICH_SCORE,
 )
 
 
@@ -131,14 +142,14 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
         & (hist.shift(2) < hist.shift(1))
         & (hist.shift(1) < hist)
         & (hist < 0)
-        & (gap <= factor.GAP_THRESHOLD)
+        & (gap <= GAP_THRESHOLD)
     )
 
     # 3. RBO: RSI 30 상향 돌파 (+2)
-    out["RBO"] = (r0 > factor.RSI_OVERSOLD) & (r1 <= factor.RSI_OVERSOLD)
+    out["RBO"] = (r0 > RSI_OVERSOLD) & (r1 <= RSI_OVERSOLD)
 
     # 4. ROV: RSI 과매도 (+1) — RBO와 상호 배타
-    out["ROV"] = ~out["RBO"].astype(bool) & (r0 < factor.RSI_OVERSOLD)
+    out["ROV"] = ~out["RBO"].astype(bool) & (r0 < RSI_OVERSOLD)
 
     # 5. BBL: 볼린저 하단 반등 (+1)
     out["BBL"] = (l1 < bbl1) & (c0 > bbl)
@@ -160,7 +171,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     # 10. W52: 52주 신고가 돌파 (+2)
     w52_high = h.rolling(252, min_periods=200).max().shift(1)
     vol_20_avg = v.rolling(20).mean().shift(1)
-    out["W52"] = (h > w52_high) & (v > vol_20_avg * factor.W52_VOL_MULT)
+    out["W52"] = (h > w52_high) & (v > vol_20_avg * W52_VOL_MULT)
 
     # 11. PB: 눌림목 패턴 (+2)
     out["PB"] = (
@@ -228,7 +239,7 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
-                result.setdefault(d, {})[key] = v >= -factor.INDEX_DROP_LIMIT
+                result.setdefault(d, {})[key] = v >= -INDEX_DROP_LIMIT
     return result
 
 
@@ -457,7 +468,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
     # ── 1. 영업일
     log.info("[1/6] 영업일 로드")
-    lookback_start = dtutils.add_days(start_date, -(factor.LOOKBACK_DAYS + 30))
+    lookback_start = dtutils.add_days(start_date, -(LOOKBACK_DAYS + 30))
     all_biz = [
         r["d"]
         for r in select_all(
@@ -533,7 +544,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     for ticker, df in ohlcv_by_ticker.items():
         avg20 = df["trdval"].rolling(20, min_periods=10).mean()
         for d in cache.scan_dates:
-            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= factor.TRDVAL_MIN:
+            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= TRDVAL_MIN:
                 trdval_pass.setdefault(d, set()).add(ticker)
 
     # ── 6. 벡터화 신호 계산
@@ -542,7 +553,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     total = len(ohlcv_by_ticker)
     t0 = time.time()
     for i, (ticker, df) in enumerate(ohlcv_by_ticker.items()):
-        if len(df) < factor.MACD_LONG + factor.MACD_SIGNAL + 5:
+        if len(df) < MACD_LONG + MACD_SIGNAL + 5:
             continue
         try:
             stock_sigs[ticker] = _compute_stock_signals(df)
@@ -580,11 +591,11 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
             mode = _classify_mode(flags)
             score = _calc_score(flags, mode)
-            if score < factor.MIN_SCORE:
+            if score < MIN_SCORE:
                 continue
 
             # 수급 보강 (score >= ENRICH_SCORE 인 경우만)
-            if score >= factor.ENRICH_SCORE:
+            if score >= ENRICH_SCORE:
                 sup = supply.get((ticker, date))
                 if sup:
                     bonus, bonus_flags, has_pov = sup

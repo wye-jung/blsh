@@ -1,5 +1,7 @@
+"""
+쿼리
+"""
 import logging
-import time
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
 from wye.blsh.database import (
@@ -33,7 +35,6 @@ _ALLOWED_TABLES = {
     "idx_stk_ohlcv",
     "etf_ohlcv",
 }
-
 
 def _validate_table(table: str) -> None:
     if table not in _ALLOWED_TABLES:

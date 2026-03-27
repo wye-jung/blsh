@@ -1,5 +1,5 @@
 """
-매수 신호 스캐너 v12
+매수 신호 스캐너
 ─────────────────────────────────────────────────────
 대상: KOSPI(isu_ksp_ohlcv) / KOSDAQ(isu_ksd_ohlcv)
 
@@ -48,9 +48,6 @@
   │ 외국인+기관 동시 해당                    │  +1  │ FI   │
   │ 개인만 대량 순매수 (외인·기관 없을 때)   │  -1  │ P_OV │
   └──────────────────────────────────────────┴──────┴──────┘
-
-출력: stock_signals 테이블 저장
-─────────────────────────────────────────────────────
 """
 
 import logging
@@ -58,8 +55,7 @@ from logging.handlers import TimedRotatingFileHandler
 import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
-from wye.blsh.common import fileutils
-from wye.blsh.domestic import reporter, Tick
+from wye.blsh.domestic import reporter, Tick, Milestone
 from wye.blsh.domestic import factor, sector
 from wye.blsh.domestic import (
     PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO
@@ -392,7 +388,7 @@ def scan_dataframe(
         opn = opn[idx]
 
     score, flags, ind = evaluate_buy(close, high, low, vol, opn)
-    if score < factor.MIN_SCORE:
+    if score < MIN_SCORE:
         return None
 
     icon = "🔴" if score >= 5 else "🟡" if score >= 3 else "🔵"
@@ -440,8 +436,8 @@ def scan_market(
             {
                 "start": start,
                 "base_date": base_date,
-                "filter_start": dtutils.add_days(base_date, factor.TRDVAL_DAYS * -2),
-                "min_val": factor.TRDVAL_MIN,
+                "filter_start": dtutils.add_days(base_date, TRDVAL_DAYS * -2),
+                "min_val": TRDVAL_MIN,
             },
             open_col=open_col,
         )
@@ -544,7 +540,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
     candidates = [
         r
         for r in results
-        if r["buy_score"] >= factor.ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
+        if r["buy_score"] >= ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
     ]
     if not candidates:
         return results
@@ -651,7 +647,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
 
 
 def check_index_above_ma(
-    idx_nm, base_date, ma_days=20, drop_limit=factor.INDEX_DROP_LIMIT
+    idx_nm, base_date, ma_days=20, drop_limit=INDEX_DROP_LIMIT
 ):
     """지수 환경 체크. MA 대비 -drop_limit 이하일 때만 스캔 스킵."""
     try:
@@ -753,9 +749,7 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
             ticker = str(row["단축코드"]).strip()
             mid = int(row.get("지수업종중분류", 0) or 0)
             big = int(row.get("지수업종대분류", 0) or 0)
-            idx_nm = sector.KOSPI_MID_TO_IDX.get(mid) or sector.KOSPI_BIG_TO_IDX.get(
-             sector
-            )
+            idx_nm = sector.KOSPI_MID_TO_IDX.get(mid) or sector.KOSPI_BIG_TO_IDX.get(big)
             if idx_nm:
                 result[ticker] = idx_nm
     except Exception as e:
@@ -873,17 +867,19 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 
     today = dtutils.today()
     ctime = dtutils.ctime()
-    if base_date == today and ctime < "151500":
+    if base_date == today and ctime < dtutils.add_time(Milestone.LIQUIDATE_TIME, minutes=-3):
         entry_date = today
-        if ctime < "080000":
+        if ctime < Milestone.NXT_OPEN_TIME:
             po_type = PO_TYPE_PRE
-        elif ctime > "140000":
+        elif ctime < dtutils.add_time(Milestone.KRX_EARLY_TIME, minutes=-3):
+            po_type = PO_TYPE_INI
+        elif ctime > dtutils.add_time(Milestone.LIQUIDATE_TIME, hours=-1):
             df["max_hold_days"] = df["max_hold_days"] + 1
             po_type = PO_TYPE_FIN
         else:
-            po_type = PO_TYPE_INI
+            po_type = ""
     else:
-        entry_date = query.find_next_biz_date(base_date)
+        entry_date = dtutils.next_biz_date(base_date)
         po_type = PO_TYPE_PRE
 
     expiry_cache: dict[tuple, str | None] = {}
@@ -903,25 +899,25 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 
 
 def issue_po(base_date=None):
-    df = find_candidates(base_date, False)[[
-       "base_date", "ticker", "name", "market",
-        "buy_score", "mode", "entry_price",
-        "atr", "atr_sl_mult", "atr_tp_mult",
-        "max_hold_days",
-        "po_type", "entry_date", "expiry_date"
-    ]]
+    df = find_candidates(base_date, True)
     if not df.empty:
+        df = df[[
+            "base_date", "ticker", "name", "market",
+            "buy_score", "mode", "entry_price",
+            "atr", "atr_sl_mult", "atr_tp_mult",
+            "max_hold_days",
+            "po_type", "entry_date", "expiry_date"
+        ]]
         entry_date = df.iloc[0]["entry_date"]
         po_type = df.iloc[0]["po_type"]
 
         po = PO(po_type, entry_date)
         if po.create(df.set_index("ticker").to_dict("index")):
-            log.info(f"{po.path.name} 생성.")
+            log.info(f"{len(df)} 종목. {po.path.name} 생성.")
 
         model_manager = ModelManager(TradeCandidates)
         model_manager.delete(entry_date=entry_date, po_type=po_type)
         model_manager.create(df)
-
 
 
 if __name__ == "__main__":

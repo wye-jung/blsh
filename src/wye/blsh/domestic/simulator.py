@@ -1,23 +1,20 @@
 """
-백테스트
+백테스트 시뮬레이터
 
-변경 이력:
-  - entry_date OHLCV 포함 (매수일 누락 수정)
-  - buy_price 기준 SL/TP 재계산 (scanner 종가 기준 → 실제 매수가 기준)
-  - TP1 분할매도 + 트레일링 SL 반영 (실제 trader_v2 로직 일치)
-  - DAY 모드(max_hold_days=0) 지원: entry_date 당일 매수→청산
+- entry_date OHLCV 포함 (매수일 누락 수정)
+- buy_price 기준 SL/TP 재계산 (scanner 종가 기준 → 실제 매수가 기준)
+- TP1 분할매도(factor.TP1_MULT/TP1_RATIO) + 트레일링 SL 반영 (trader 로직 일치)
+- 모드별 max_hold_days 지원 (DAY max_hold=0 당일청산 포함)
+- 보수적 트레일링: 전일 high 기준으로만 SL 갱신 (일봉 한계 감안)
 """
 
 import logging
 import pandas as pd
 from wye.blsh.database import query
-from wye.blsh.domestic import factor, reporter, Tick
+from wye.blsh.domestic import reporter, Tick, factor
+from wye.blsh.domestic.trader import SELL_COST_RATE
 
 log = logging.getLogger(__name__)
-
-# 트레이더와 동일한 상수
-TP1_MULT = 1.0
-SELL_COST_RATE = 0.002
 
 
 def simulate(candidates) -> tuple | None:
@@ -104,7 +101,7 @@ def simulate(candidates) -> tuple | None:
         # [FIX] 실제 매수가 기준 SL/TP 재계산 (trader _make_position과 동일)
         buy_price = t1_ohv["open"]
         sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
-        tp1 = Tick.ceil_tick(buy_price + TP1_MULT * atr)
+        tp1 = Tick.ceil_tick(buy_price + factor.TP1_MULT * atr)
         tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
 
         result_type = None
@@ -161,7 +158,7 @@ def simulate(candidates) -> tuple | None:
             # TODO: TP1 체결 + 같은 봉 본전 SL 도달 시나리오 (일봉 한계)
             # TP1 분할매도 (50%) — 미완료 시에만
             if not t1_done and ohv["high"] >= tp1:
-                sell_ratio = 0.5
+                sell_ratio = factor.TP1_RATIO
                 pnl = (tp1 - buy_price) * sell_ratio - tp1 * sell_ratio * SELL_COST_RATE
                 realized_pnl += pnl
                 remaining_qty -= sell_ratio

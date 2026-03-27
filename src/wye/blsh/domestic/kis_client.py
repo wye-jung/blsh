@@ -1,3 +1,11 @@
+"""
+A module for managing stock trading through a KIS API client.
+
+This module includes functionality for rate-limited API calls, fetching
+stock prices, retrieving account balances, placing market and limit orders,
+and canceling orders. It aims to provide an organized structure for interacting
+with the KIS domestic stock trading API.
+"""
 import logging
 import threading
 import time

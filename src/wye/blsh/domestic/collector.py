@@ -1,3 +1,10 @@
+"""
+ohlcv 데이터, 종목 기본정보 및 개장일 정보 수집
+idx_stk_ohlcv, isu_ksp_ohlcv, isu_ksd_ohlcv, etf_ohlcv
+idx_stk_info, isu_ksp_info, isu_ksd_info
+stock_base_info, etf_base_info
+krx_holidays
+"""
 import time
 from pykrx.website import krx
 from wye.blsh.database import ModelManager, query
@@ -23,27 +30,27 @@ def collect():
     login_krx()
     latest_biz_date = krx.get_nearest_business_day_in_a_week()
     max_ohlcv_date = query.get_max_ohlcv_date()
-    fromdate = None
+    from_date: str = None
     if max_ohlcv_date is None:
-        fromdate = latest_biz_date
+        from_date = latest_biz_date
     elif max_ohlcv_date < latest_biz_date:
-        fromdate = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
+        from_date = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
     elif max_ohlcv_date == latest_biz_date:
         if "080000" < dtutils.ctime() < "153000":
             _collect_idx_data(max_ohlcv_date)
             _collect_isu_data(max_ohlcv_date)
-        elif query.get_fetched_at(max_ohlcv_date).strftime(dtutils.TIME_FMT) < "200000":
-            fromdate = max_ohlcv_date
+        elif query.get_fetched_at(max_ohlcv_date).strftime(dtutils._TIME_FMT) < "200000":
+            from_date = max_ohlcv_date
 
-    if fromdate:
-        _collect(fromdate, latest_biz_date)
+    if from_date:
+        _collect(from_date, latest_biz_date)
 
     return query.get_max_ohlcv_date()
 
 
-def _collect(fromdate, todate):
-    log.info(f"_collect from {fromdate} to {todate}")
-    for d in query.get_biz_dates(fromdate=fromdate, todate=todate):
+def _collect(from_date, to_date):
+    log.info(f"_collect from {from_date} to {to_date}")
+    for d in query.get_biz_dates(fromdate=from_date, todate=to_date):
         date = d["d"]
         print(date)
         _collect_idx_data(date)
@@ -120,4 +127,3 @@ def _recreate(df, model, **filters):
 
 if __name__ == "__main__":
     collect()
-    # collect_latest_ohlcv()
