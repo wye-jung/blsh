@@ -9,6 +9,7 @@ import time
 from pykrx.website import krx
 from wye.blsh.database import ModelManager, query
 from wye.blsh.common import dtutils
+from wye.blsh.domestic import Milestone
 from wye.blsh.database.models import (
     IsuKspOhlcv,
     IsuKsdOhlcv,
@@ -36,10 +37,10 @@ def collect():
     elif max_ohlcv_date < latest_biz_date:
         from_date = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
     elif max_ohlcv_date == latest_biz_date:
-        if "080000" < dtutils.ctime() < "153000":
+        if Milestone.NXT_OPEN_TIME < dtutils.ctime() < Milestone.NXT_CLOSE_TIME:
             _collect_idx_data(max_ohlcv_date)
             _collect_isu_data(max_ohlcv_date)
-        elif query.get_fetched_at(max_ohlcv_date).strftime(dtutils._TIME_FMT) < "200000":
+        elif query.get_fetched_at(max_ohlcv_date).strftime(dtutils._TIME_FMT) < Milestone.NXT_CLOSE_TIME:
             from_date = max_ohlcv_date
 
     if from_date:
