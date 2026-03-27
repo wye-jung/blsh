@@ -27,18 +27,20 @@
         청산 실패 시 다음 영업일 재시도 (포지션 영속 저장).
     4. 청산 직후 PO③(오후 스캔) 지정가 매수 (55% × 90%)
     5. 매수/매도 성공 시 trade_history DB + 텔레그램 알림
+    6. 15:30 KRX 마감 → NXT 에프터마켓(~20:00) SL/TP 모니터링 지속
+       NXT는 시장가 불가 → 지정가 매도 (Tick.floor_tick(현재가))
 
 구조:
     완전 단일 스레드 — 작업별 차등 주기
     ┌──────────────────────────────────────────────────────┐
-    │ 매 틱 (10초):                                        │
-    │   → 현재가 조회 + SL/TP 처리 (최우선)               │
-    │ 매 SLOW 틱 (30초):                                   │
-    │   → PO 파일 감시 + 주문 제출                        │
-    │   → pending 체결 확인 / 미체결 취소                  │
-    │ 이벤트 기반:                                         │
-    │   → 포지션 저장 (변경 시에만)                        │
-    │   → 15:15 만기 청산 + PO③ 매수 (1회)              │
+    │ 09:00~15:30 (KRX 정규장):                            │
+    │   매 틱 (10초): 현재가 조회 + SL/TP (KRX 시장가 매도) │
+    │   매 SLOW 틱 (30초): PO 감시 + 체결 확인             │
+    │   15:15 만기 청산 + PO③ 매수                       │
+    ├──────────────────────────────────────────────────────┤
+    │ 15:30~20:00 (NXT 에프터마켓):                        │
+    │   매 틱 (10초): 현재가 조회 + SL/TP (NXT 지정가 매도) │
+    │   PO 감시 중단, 신규 매수 없음                      │
     └──────────────────────────────────────────────────────┘
 
 PO 파일 포맷: ~/.blsh/data/po/po-{entry_date}-{po_type}.json
@@ -153,8 +155,15 @@ def _save_history(
 # ─────────────────────────────────────────
 # 매도 + SL/TP
 # ─────────────────────────────────────────
-def _sell_or_log(kis: KISClient, pos: Position, qty: int, reason: str) -> bool:
-    if kis.sell(pos.ticker, qty, reason):
+def _sell_or_log(
+    kis: KISClient, pos: Position, qty: int, reason: str, nxt_price: int = 0
+) -> bool:
+    """nxt_price > 0 이면 NXT 지정가 매도, 아니면 KRX 시장가 매도."""
+    if nxt_price > 0:
+        ok = kis.sell_nxt(pos.ticker, qty, nxt_price, reason)
+    else:
+        ok = kis.sell(pos.ticker, qty, reason)
+    if ok:
         _save_history("sell", pos.ticker, pos.name, qty, 0, reason, pos.po_type)
         return True
     log.critical(f"  🚨 매도 실패: {pos.ticker} [{reason}] → 다음 틱 재시도")
@@ -283,15 +292,19 @@ def _make_position(
 
 
 def _process_position(
-    kis: KISClient, pos: Position, current: float
+    kis: KISClient, pos: Position, current: float, nxt_mode: bool = False
 ) -> tuple[bool, bool]:
     """현재가 기준 SL/TP 처리.
 
+    Args:
+        nxt_mode: True이면 NXT 에프터마켓 — 지정가 매도 사용
     Returns:
         (closed, changed) — closed: 포지션 완전 청산, changed: SL 등 상태 변경
     """
     ret_pct = (current - pos.buy_price) / pos.buy_price * 100
     changed = False
+    # NXT 모드: 현재가를 지정가로 사용 (0이면 KRX 시장가)
+    sell_price = Tick.floor_tick(current) if nxt_mode else 0
 
     trail_sl = Tick.floor_tick(current - pos.atr_sl_mult * pos.atr)
     if trail_sl > pos.sl and trail_sl < current:
@@ -305,7 +318,7 @@ def _process_position(
     # [FIX] 매도 성공 시에만 changed=True (실패 시 상태 불변)
     if current <= pos.sl:
         reason = f"손절 {ret_pct:+.2f}% (SL={pos.sl:,.0f})"
-        if _sell_or_log(kis, pos, pos.qty, reason):
+        if _sell_or_log(kis, pos, pos.qty, reason, nxt_price=sell_price):
             pos.realized_pnl += (
                 current - pos.buy_price
             ) * pos.qty - current * pos.qty * SELL_COST_RATE
@@ -316,7 +329,7 @@ def _process_position(
     if not pos.t1_done and current >= pos.tp1:
         qty_sell = pos.qty_t1
         reason = f"1차익절 {ret_pct:+.2f}% (TP1={pos.tp1:,.0f})"
-        if _sell_or_log(kis, pos, qty_sell, reason):
+        if _sell_or_log(kis, pos, qty_sell, reason, nxt_price=sell_price):
             pos.realized_pnl += (
                 current - pos.buy_price
             ) * qty_sell - current * qty_sell * SELL_COST_RATE
@@ -332,7 +345,7 @@ def _process_position(
 
     if current >= pos.tp2:
         reason = f"2차익절 {ret_pct:+.2f}% (TP2={pos.tp2:,.0f})"
-        if _sell_or_log(kis, pos, pos.qty, reason):
+        if _sell_or_log(kis, pos, pos.qty, reason, nxt_price=sell_price):
             pos.realized_pnl += (
                 current - pos.buy_price
             ) * pos.qty - current * pos.qty * SELL_COST_RATE
@@ -508,8 +521,8 @@ def run():
         return
 
     ctime = dtutils.ctime()
-    if not Milestone.KRX_CLOSE_TIME > ctime > Milestone.KRX_OPEN_TIME:
-        log.info(f"{ctime} 개장시간이 아닙니다.")
+    if ctime >= Milestone.NXT_CLOSE_TIME:
+        log.info(f"{ctime} 거래시간이 아닙니다 (NXT 마감 후).")
         return
 
     try:
@@ -534,6 +547,7 @@ def run():
     session_closed: dict[str, Position] = {}
     ini_po_bought = False
     liquidated = False
+    krx_closed = False
     dirty = False
     tick_count = 0
     last_status_min = ""
@@ -599,13 +613,27 @@ def run():
         # [FIX] 포지션/pending 없으면 느린 틱 주기로 전환 (빈 10초 틱 방지)
         has_active = bool(positions) or bool(pending_po)
 
-        if now >= Milestone.KRX_CLOSE_TIME:
+        # ── NXT 마감 (20:00) → 종료
+        if now >= Milestone.NXT_CLOSE_TIME:
             _cancel_all_pending(pending_po, kis)
-            log.info("[종료] 장 마감")
+            log.info("[종료] NXT 마감")
             break
 
+        # ── KRX 마감 (15:30) → pending 취소, NXT 모니터링 전환
+        if not krx_closed and now >= Milestone.KRX_CLOSE_TIME:
+            _cancel_all_pending(pending_po, kis)
+            krx_closed = True
+            if positions:
+                log.info(
+                    f"[KRX 마감] NXT 에프터마켓 SL/TP 모니터링 전환"
+                    f"  ({len(positions)}종목 감시, ~{Milestone.NXT_CLOSE_TIME[:2]}:00)"
+                )
+            else:
+                log.info("[KRX 마감] 보유 종목 없음 → 종료")
+                break
+
         # ── 0. KRX 개장 시: 기간초과 청산 + 프리마켓 실패 종목 재주문
-        krx_open = now >= Milestone.KRX_OPEN_TIME
+        krx_open = now >= Milestone.KRX_OPEN_TIME and not krx_closed
 
         # 프리마켓 주문 실패 종목 재시도 (KRX 개장 후 1회)
         if krx_open and not retry_done and retry_orders:
@@ -651,8 +679,8 @@ def run():
                 dirty = True
             overdue_done = True
 
-        # ── 1. 현재가 조회 + SL/TP 처리 (매 틱 — KRX 개장 후에만)
-        if krx_open and positions:
+        # ── 1. 현재가 조회 + SL/TP 처리 (KRX 장중 + NXT 에프터마켓)
+        if (krx_open or krx_closed) and positions:
             cur_prices = kis.fetch_prices(list(positions.keys()))
             closed: list[str] = []
 
@@ -666,7 +694,9 @@ def run():
                     f"  SL={pos.sl:,.0f}  TP1={pos.tp1:,.0f}  TP2={pos.tp2:,.0f}"
                     f"  {ret_pct:+.2f}%  {'[T1완료]' if pos.t1_done else ''}"
                 )
-                is_closed, is_changed = _process_position(kis, pos, cur)
+                is_closed, is_changed = _process_position(
+                    kis, pos, cur, nxt_mode=krx_closed
+                )
                 if is_closed:
                     closed.append(ticker)
                 if is_changed:
@@ -676,8 +706,8 @@ def run():
                 for ticker in closed:
                     session_closed[ticker] = positions.pop(ticker)
 
-        # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱)
-        if is_slow_tick:
+        # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱 — KRX 장중만)
+        if is_slow_tick and not krx_closed:
             if not ini_po_bought and now <= Milestone.KRX_EARLY_TIME:
                 po = PO(PO_TYPE_INI)
                 if  po.exists():
@@ -740,7 +770,7 @@ def run():
             dirty = True
 
         # ── 4. 종료 조건
-        if not positions and not pending_po and liquidated:
+        if not positions and (liquidated or krx_closed):
             log.info("[모니터링] 전 포지션 청산")
             break
 
@@ -773,7 +803,7 @@ def run():
         wait_sec = TICK_SEC if has_active else TICK_SEC * SLOW_EVERY
         deadline = time.monotonic() + wait_sec
         while time.monotonic() < deadline:
-            if dtutils.ctime() >= Milestone.KRX_CLOSE_TIME:
+            if dtutils.ctime() >= Milestone.NXT_CLOSE_TIME:
                 break
             time.sleep(1)
 

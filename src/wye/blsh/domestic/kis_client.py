@@ -215,6 +215,29 @@ class KISClient:
             log.error(f"  매도 오류 ({ticker}): {e}")
         return False
 
+    def sell_nxt(self, ticker: str, qty: int, price: int, reason: str = "") -> bool:
+        """NXT 지정가 매도. NXT는 시장가 불가이므로 지정가만 지원. 성공 시 True."""
+        try:
+            self.rate_limiter.wait()
+            with _api_sem:
+                df = ds.order_cash(
+                    env_dv=self.env_dv,
+                    ord_dv="sell",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    pdno=ticker,
+                    ord_dvsn="00",
+                    ord_qty=str(qty),
+                    ord_unpr=str(int(price)),
+                    excg_id_dvsn_cd="NXT",
+                )
+            if df is not None and not df.empty:
+                log.info(f"  📤 NXT매도: {ticker}  수량={qty}  지정가={int(price):,}  [{reason}]")
+                return True
+        except Exception as e:
+            log.error(f"  NXT 매도 오류 ({ticker}): {e}")
+        return False
+
     def cancel_order(self, ticker: str, odno: str, qty: int) -> bool:
         """주문 취소. 성공 시 True."""
         try:
