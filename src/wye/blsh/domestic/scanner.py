@@ -647,11 +647,11 @@ def enrich_with_db(results: list, base_date: str) -> list:
 
 
 def check_index_above_ma(
-    idx_nm, base_date, ma_days=20, drop_limit=INDEX_DROP_LIMIT
+    idx_nm, base_date, ma_days=20, drop_limit=INDEX_DROP_LIMIT, idx_clss=None
 ):
     """지수 환경 체크. MA 대비 -drop_limit 이하일 때만 스캔 스킵."""
     try:
-        df = pd.DataFrame(query.get_index_clsprc(idx_nm, base_date, ma_days))
+        df = pd.DataFrame(query.get_index_clsprc(idx_nm, base_date, ma_days, idx_clss=idx_clss))
         if len(df) < ma_days:
             return True
         prices = df["clsprc_idx"].astype(float)
@@ -690,12 +690,12 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
 
     results = []
 
-    if check_index_above_ma("코스피", base_date, INDEX_MA_DAYS):
+    if check_index_above_ma("코스피", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSPI):
         results += scan_market("isu_ksp_ohlcv", "KOSPI", start, base_date, name_map)
     else:
         log.warning("[KOSPI] 지수 20MA 아래 → 스캔 스킵")
 
-    if check_index_above_ma("코스닥", base_date, INDEX_MA_DAYS):
+    if check_index_above_ma("코스닥", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSDAQ):
         results += scan_market("isu_ksd_ohlcv", "KOSDAQ", start, base_date, name_map)
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
@@ -785,9 +785,9 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
     return result
 
 
-def _get_sector_gap(idx_nm: str, base_date: str, ma_days: int = 20) -> float:
+def _get_sector_gap(idx_nm: str, base_date: str, ma_days: int = 20, idx_clss: str = None) -> float:
     """업종지수의 MA20 괴리율. 데이터 없으면 0.0 (중립)."""
-    rows = query.get_index_clsprc(idx_nm, base_date, ma_days)
+    rows = query.get_index_clsprc(idx_nm, base_date, ma_days, idx_clss=idx_clss)
     if not rows or len(rows) < ma_days:
         return 0.0
     prices = [float(r["clsprc_idx"]) for r in rows]
@@ -802,7 +802,7 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
         return df
 
     sector_map = _load_ticker_sector_map(base_date)
-    gap_cache: dict[str, float] = {}
+    gap_cache: dict[tuple[str, str], float] = {}  # (sec_nm, idx_clss) → gap
 
     def get_gap(ticker: str, market: str) -> float:
         # KOSPI 미매핑 → "코스피" 전체 지수, KOSDAQ → "코스닥" 전체 지수
@@ -810,9 +810,11 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
         sec_nm = sector_map.get(ticker, fallback)
         if not sec_nm:
             return 0.0
-        if sec_nm not in gap_cache:
-            gap_cache[sec_nm] = _get_sector_gap(sec_nm, base_date)
-        return gap_cache[sec_nm]
+        idx_clss = sector.get_idx_clss(market)
+        key = (sec_nm, idx_clss)
+        if key not in gap_cache:
+            gap_cache[key] = _get_sector_gap(sec_nm, base_date, idx_clss=idx_clss)
+        return gap_cache[key]
 
     adjustments = []
     for _, row in df.iterrows():

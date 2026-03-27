@@ -1,6 +1,11 @@
 """
 업종코드 → DB idx_stk_ohlcv 지수명 매핑
 """
+from typing import Final
+
+# idx_stk_ohlcv.idx_clss 값 (collector.py Idx 클래스 참조)
+IDX_CLSS_KOSPI: Final = "02"
+IDX_CLSS_KOSDAQ: Final = "03"
 KOSPI_MID_TO_IDX = {
     5: "음식료\u00b7담배",
     6: "섬유\u00b7의류",
@@ -55,3 +60,8 @@ KOSDAQ_BIG_TO_IDX = {
     1014: "금융",
     1015: "오락\u00b7문화",
 }
+
+
+def get_idx_clss(market: str) -> str:
+    """시장 문자열 → idx_clss 변환. 'KOSPI'→'02', 'KOSDAQ'→'03'."""
+    return IDX_CLSS_KOSPI if market == "KOSPI" else IDX_CLSS_KOSDAQ

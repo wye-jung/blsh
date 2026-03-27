@@ -163,15 +163,26 @@ def get_netbid_trdvol(table, tickers, base_date):
     return result
 
 
-def get_index_clsprc(idx_nm, base_date, ma_days=20):
+def get_index_clsprc(idx_nm, base_date, ma_days=20, idx_clss=None):
+    if idx_clss:
+        return select_all(
+            """
+            SELECT clsprc_idx
+            FROM idx_stk_ohlcv
+            WHERE idx_nm = :nm AND idx_clss = :clss AND trd_dd <= :bd
+            ORDER BY trd_dd DESC
+            LIMIT :days
+            """,
+            **{"nm": idx_nm, "clss": idx_clss, "bd": base_date, "days": ma_days + 1},
+        )
     return select_all(
         """
-                SELECT clsprc_idx
-                FROM idx_stk_ohlcv
-                WHERE idx_nm = :nm AND trd_dd <= :bd
-                ORDER BY trd_dd DESC
-                LIMIT :days
-            """,
+        SELECT clsprc_idx
+        FROM idx_stk_ohlcv
+        WHERE idx_nm = :nm AND trd_dd <= :bd
+        ORDER BY trd_dd DESC
+        LIMIT :days
+        """,
         **{"nm": idx_nm, "bd": base_date, "days": ma_days + 1},
     )
 

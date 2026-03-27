@@ -225,11 +225,15 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
 def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
     """날짜별 KOSPI/KOSDAQ 20MA 환경. {date: {'KOSPI': bool, 'KOSDAQ': bool}}"""
     result: dict[str, dict[str, bool]] = {}
-    for idx_nm, key in [("코스피", "KOSPI"), ("코스닥", "KOSDAQ")]:
+    for idx_nm, key, clss in [
+        ("코스피", "KOSPI", sector.IDX_CLSS_KOSPI),
+        ("코스닥", "KOSDAQ", sector.IDX_CLSS_KOSDAQ),
+    ]:
         rows = select_all(
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
-            "WHERE idx_nm = :nm AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, s=start, e=end,
+            "WHERE idx_nm = :nm AND idx_clss = :clss "
+            "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
+            nm=idx_nm, clss=clss, s=start, e=end,
         )
         if not rows:
             continue
@@ -243,26 +247,33 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
     return result
 
 
-def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str], float]:
-    """업종지수별 MA20 괴리율. {(idx_nm, date): gap_pct}
+def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str, str], float]:
+    """업종지수별 MA20 괴리율. {(idx_nm, idx_clss, date): gap_pct}
 
     gap_pct: (price - MA20) / MA20
     예) -0.05 = MA20 대비 -5%
     """
-    sector_names = (
-        set(_KOSPI_MID_TO_IDX.values()) | set(_KOSPI_BIG_TO_IDX.values())
-        | set(_KOSDAQ_MID_TO_IDX.values()) | set(_KOSDAQ_BIG_TO_IDX.values())
-    )
-    sector_names.add("코스닥")
-    sector_names.add("코스피")
+    # (idx_nm, idx_clss) 쌍 생성 — KOSPI/KOSDAQ 동명 업종 구분
+    sector_pairs: set[tuple[str, str]] = set()
+    for nm in _KOSPI_MID_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSPI))
+    for nm in _KOSPI_BIG_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSPI))
+    for nm in _KOSDAQ_MID_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSDAQ))
+    for nm in _KOSDAQ_BIG_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSDAQ))
+    sector_pairs.add(("코스피", sector.IDX_CLSS_KOSPI))
+    sector_pairs.add(("코스닥", sector.IDX_CLSS_KOSDAQ))
 
-    result: dict[tuple[str, str], float] = {}
+    result: dict[tuple[str, str, str], float] = {}
 
-    for idx_nm in sector_names:
+    for idx_nm, clss in sector_pairs:
         rows = select_all(
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
-            "WHERE idx_nm = :nm AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, s=start, e=end,
+            "WHERE idx_nm = :nm AND idx_clss = :clss "
+            "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
+            nm=idx_nm, clss=clss, s=start, e=end,
         )
         if not rows:
             continue
@@ -272,9 +283,9 @@ def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str], float]:
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
-                result[(idx_nm, d)] = float(v)
+                result[(idx_nm, clss, d)] = float(v)
 
-    log.info(f"  업종지수 환경: {len(sector_names)}업종, {len(result):,}건")
+    log.info(f"  업종지수 환경: {len(sector_pairs)}업종, {len(result):,}건")
     return result
 
 
@@ -415,7 +426,7 @@ class OptCache:
         self.name_map: dict[str, str] = {}
         self.ticker_market: dict[str, str] = {}
         self.ticker_sector: dict[str, str] = {}  # ticker → 업종지수명
-        self.sector_gaps: dict[tuple[str, str], float] = {}  # (업종지수명, date) → MA20 괴리율
+        self.sector_gaps: dict[tuple[str, str, str], float] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
 
     # ── pickle I/O
     def save(self, tag: str = ""):
@@ -614,7 +625,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
             # 업종지수 MA20 괴리율 (없으면 0.0 = 중립)
             sec_nm = cache.ticker_sector.get(ticker, "")
-            sec_gap = cache.sector_gaps.get((sec_nm, date), 0.0) if sec_nm else 0.0
+            idx_clss = sector.get_idx_clss(mkt)
+            sec_gap = cache.sector_gaps.get((sec_nm, idx_clss, date), 0.0) if sec_nm else 0.0
 
             day_sigs.append(
                 {
