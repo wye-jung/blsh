@@ -27,15 +27,15 @@ DB_HOST: Final = os.getenv("DB_HOST")
 DB_PORT: Final = os.getenv("DB_PORT")
 DB_URL: Final = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
-KRX_API_KEY: Final = os.getenv("KRX_API_KEY")
-DART_API_KEY: Final = os.getenv("DART_API_KEY")
-
-KRX_API_URL: Final = "https://data-dbg.krx.co.kr/svc/apis"
+# DART_API_KEY: Final = os.getenv("DART_API_KEY")
+# KRX_API_KEY: Final = os.getenv("KRX_API_KEY")
+# KRX_API_URL: Final = "https://data-dbg.krx.co.kr/svc/apis"
 
 KRX_LOGIN_ID: Final = os.getenv("KRX_LOGIN_ID")
 KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
 
-KIS_ENV: Final = os.getenv("KIS_ENV")
+KIS_ENV: Final = os.getenv("KIS_ENV") # KIS 모드: "demo" | "real"
+TRADE_FLAG: Final = os.environ.get("TRADE_FLAG", "SWING").upper() # 트레이딩 모드: "DAY" | "SWING"
 
 TELEGRAM_BOT_TOKEN: Final = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID: Final = os.getenv("TELEGRAM_CHAT_ID")

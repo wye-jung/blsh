@@ -11,7 +11,7 @@
 import logging
 import pandas as pd
 from wye.blsh.database import query
-from wye.blsh.domestic import config, reporter, Tick
+from wye.blsh.domestic import factor, reporter, Tick
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def simulate(candidates) -> tuple | None:
         return None
 
     entry_date = candidates.iloc[0]["entry_date"]
-    max_hold = config.MAX_HOLD_DAYS
+    max_hold = factor.MAX_HOLD_DAYS
 
     log.info(f"[시뮬레이트] 목표일={entry_date}  최대 {max_hold}거래일 추적")
 
@@ -84,8 +84,8 @@ def simulate(candidates) -> tuple | None:
         t = sig["ticker"]
         entry = float(sig["entry_price"])
         atr = float(sig["atr"])
-        atr_sl_mult = float(sig.get("atr_sl_mult", config.ATR_SL_MULT))
-        atr_tp_mult = float(sig.get("atr_tp_mult", config.ATR_TP_MULT))
+        atr_sl_mult = float(sig.get("atr_sl_mult", factor.ATR_SL_MULT))
+        atr_tp_mult = float(sig.get("atr_tp_mult", factor.ATR_TP_MULT))
         days = ohlcv_idx.get(t, {})
 
         # entry_date(hold_dates[0]) 데이터 없음
@@ -118,11 +118,11 @@ def simulate(candidates) -> tuple | None:
         # 모드별 최대 보유 기간
         mode = sig.get("mode", "")
         if mode == "MOM":
-            max_days = config.MAX_HOLD_DAYS_MOM
+            max_days = factor.MAX_HOLD_DAYS_MOM
         elif mode == "MIX":
-            max_days = config.MAX_HOLD_DAYS_MIX
+            max_days = factor.MAX_HOLD_DAYS_MIX
         else:
-            max_days = config.MAX_HOLD_DAYS
+            max_days = factor.MAX_HOLD_DAYS
 
         # DAY 모드(max_days=0): entry_date 당일만 보유
         if max_days == 0:

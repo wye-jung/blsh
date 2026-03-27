@@ -31,7 +31,7 @@ class _RateLimiter:
             self.last_call = time.monotonic()
 
 
-class API:
+class KISClient:
     def __init__(self, env_dv="demo", poll_sec=30):
         if env_dv == "real":
             log.warning("🚨 실전투자 모드  (KIS_ENV=real)")

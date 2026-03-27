@@ -24,11 +24,3 @@ def create_json(path: Path, data, **kwargs) -> bool:
         )
         return create_file(path, json_dumps)
     return False
-
-# def move_file(source: Path, target: Path):
-#     target.parent.mkdir(parents=True, exist_ok=True)
-#     try:
-#         shutil.move(source, target)
-#         return True
-#     except Exception as e:
-#         return False

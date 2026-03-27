@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR
 from wye.blsh.database.query import engine, select_all
-from wye.blsh.domestic import config, _tick
+from wye.blsh.domestic import factor, sector, Tick
 from wye.blsh.domestic.scanner import (
     calc_macd,
     calc_rsi,
@@ -37,11 +37,11 @@ from wye.blsh.domestic.scanner import (
 
 
 
-# 업종코드 → DB 지수명 매핑은 _factor.py에서 참조
-_KOSPI_MID_TO_IDX = config.KOSPI_MID_TO_IDX
-_KOSPI_BIG_TO_IDX = config.KOSPI_BIG_TO_IDX
-_KOSDAQ_MID_TO_IDX = config.KOSDAQ_MID_TO_IDX
-_KOSDAQ_BIG_TO_IDX = config.KOSDAQ_BIG_TO_IDX
+# 업종코드 → DB 지수명 매핑은 factor.py에서 참조
+_KOSPI_MID_TO_IDX = sector.KOSPI_MID_TO_IDX
+_KOSPI_BIG_TO_IDX = sector.KOSPI_BIG_TO_IDX
+_KOSDAQ_MID_TO_IDX = sector.KOSDAQ_MID_TO_IDX
+_KOSDAQ_BIG_TO_IDX = sector.KOSDAQ_BIG_TO_IDX
 
 log = logging.getLogger(__name__)
 CACHE_DIR = DATA_DIR / "cache" / "optimize"
@@ -131,14 +131,14 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
         & (hist.shift(2) < hist.shift(1))
         & (hist.shift(1) < hist)
         & (hist < 0)
-        & (gap <= _factor.GAP_THRESHOLD)
+        & (gap <= factor.GAP_THRESHOLD)
     )
 
     # 3. RBO: RSI 30 상향 돌파 (+2)
-    out["RBO"] = (r0 > config.RSI_OVERSOLD) & (r1 <= config.RSI_OVERSOLD)
+    out["RBO"] = (r0 > factor.RSI_OVERSOLD) & (r1 <= factor.RSI_OVERSOLD)
 
     # 4. ROV: RSI 과매도 (+1) — RBO와 상호 배타
-    out["ROV"] = ~out["RBO"].astype(bool) & (r0 < _factor.RSI_OVERSOLD)
+    out["ROV"] = ~out["RBO"].astype(bool) & (r0 < factor.RSI_OVERSOLD)
 
     # 5. BBL: 볼린저 하단 반등 (+1)
     out["BBL"] = (l1 < bbl1) & (c0 > bbl)
@@ -160,7 +160,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     # 10. W52: 52주 신고가 돌파 (+2)
     w52_high = h.rolling(252, min_periods=200).max().shift(1)
     vol_20_avg = v.rolling(20).mean().shift(1)
-    out["W52"] = (h > w52_high) & (v > vol_20_avg * _factor.W52_VOL_MULT)
+    out["W52"] = (h > w52_high) & (v > vol_20_avg * factor.W52_VOL_MULT)
 
     # 11. PB: 눌림목 패턴 (+2)
     out["PB"] = (
@@ -228,7 +228,7 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
-                result.setdefault(d, {})[key] = v >= -_factor.INDEX_DROP_LIMIT
+                result.setdefault(d, {})[key] = v >= -factor.INDEX_DROP_LIMIT
     return result
 
 
@@ -457,7 +457,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
     # ── 1. 영업일
     log.info("[1/6] 영업일 로드")
-    lookback_start = dtutils.add_days(start_date, -(_factor.LOOKBACK_DAYS + 30))
+    lookback_start = dtutils.add_days(start_date, -(factor.LOOKBACK_DAYS + 30))
     all_biz = [
         r["d"]
         for r in select_all(
@@ -533,7 +533,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     for ticker, df in ohlcv_by_ticker.items():
         avg20 = df["trdval"].rolling(20, min_periods=10).mean()
         for d in cache.scan_dates:
-            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= config.TRDVAL_MIN:
+            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= factor.TRDVAL_MIN:
                 trdval_pass.setdefault(d, set()).add(ticker)
 
     # ── 6. 벡터화 신호 계산
@@ -542,7 +542,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     total = len(ohlcv_by_ticker)
     t0 = time.time()
     for i, (ticker, df) in enumerate(ohlcv_by_ticker.items()):
-        if len(df) < _factor.MACD_LONG + config.MACD_SIGNAL + 5:
+        if len(df) < factor.MACD_LONG + factor.MACD_SIGNAL + 5:
             continue
         try:
             stock_sigs[ticker] = _compute_stock_signals(df)
@@ -580,11 +580,11 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
             mode = _classify_mode(flags)
             score = _calc_score(flags, mode)
-            if score < _factor.MIN_SCORE:
+            if score < factor.MIN_SCORE:
                 continue
 
             # 수급 보강 (score >= ENRICH_SCORE 인 경우만)
-            if score >= _factor.ENRICH_SCORE:
+            if score >= factor.ENRICH_SCORE:
                 sup = supply.get((ticker, date))
                 if sup:
                     bonus, bonus_flags, has_pov = sup
@@ -599,7 +599,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             if atr_val <= 0 or close_val <= 0:
                 continue
 
-            entry_price = _tick.ceil_tick(close_val + 0.5 * atr_val)
+            entry_price = Tick.ceil_tick(close_val + 0.5 * atr_val)
 
             # 업종지수 MA20 괴리율 (없으면 0.0 = 중립)
             sec_nm = cache.ticker_sector.get(ticker, "")
