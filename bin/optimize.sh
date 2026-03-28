@@ -6,4 +6,4 @@ cd /home/wye/workspace/blsh
 LOG_DIR="$HOME/.blsh/logs"
 mkdir -p "$LOG_DIR"
 
-uv run python -m wye.blsh.domestic.optimize.grid_search 2>&1 > "$LOG_DIR/optimize.log"
+uv run python -m wye.blsh.domestic.optimize.grid_search > "$LOG_DIR/optimize.log" 2>&1

@@ -5,6 +5,7 @@ such as creating orders, checking existence, and loading JSON data. It also incl
 utility methods for price tick manipulations (`Tick`) and constants for time-based
 milestones (`Milestone`).
 """
+
 import logging
 import json
 import time
@@ -18,6 +19,7 @@ PO_TYPE_PRE: Final = "pre"
 PO_TYPE_INI: Final = "ini"
 PO_TYPE_FIN: Final = "fin"
 
+
 class PO:
     _po_dir = DATA_DIR / "po"
     _done_dir = _po_dir / "done"
@@ -30,16 +32,19 @@ class PO:
     def exists(self):
         return self.path.exists()
 
-    def create(self, orders:dict[str, dict])->bool:
+    def create(self, orders: dict[str, dict]) -> bool:
         return fileutils.create_json(self.path, orders)
 
-    def loads(self)->dict[str, dict]:
+    def loads(self) -> dict[str, dict]:
         try:
             orders = json.loads(self.path.read_text())
             self._done_dir.mkdir(parents=True, exist_ok=True)
             dest = self._done_dir / self.path.name
             if dest.exists():
-                dest = self._done_dir / f"{self.path.stem}_{int(time.time())}{self.path.suffix}"
+                dest = (
+                    self._done_dir
+                    / f"{self.path.stem}_{int(time.time())}{self.path.suffix}"
+                )
             try:
                 # shutil.move(str(self.path), str(dest))
                 self.path.rename(dest)
@@ -48,8 +53,9 @@ class PO:
         except Exception as e:
             log.warning(e)
             orders = {}
-        
+
         return orders
+
 
 class Tick:
     @staticmethod
@@ -91,10 +97,11 @@ class Tick:
             result = (result // final_tick + 1) * final_tick
         return result
 
+
 class Milestone:
     NXT_OPEN_TIME: Final = "080000"  # NXT 프리마켓 개장 (매수 SOR 가능)
     KRX_OPEN_TIME: Final = "090000"  # KRX 정규장 개장 (매도 가능)
-    KRX_EARLY_TIME: Final = "101000"  # 장 초반 매수
+    KRX_EARLY_TIME: Final = "101500"  # 장 초반 매수
     LIQUIDATE_TIME: Final = "151500"  # 청산시간
     KRX_CLOSE_TIME: Final = "153000"  # KRX 마감
     NXT_CLOSE_TIME: Final = "200000"  # NTX 마감
