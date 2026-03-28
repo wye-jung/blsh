@@ -33,6 +33,9 @@ CRON_ENTRIES=(
 
     # 7. Grid Search 최적화 (매주 토 02:00)
     "0 2 * * 6 cd $BLSH_DIR && bin/optimize.sh >> ~/.blsh/logs/optimize.log 2>&1 $BLSH_TAG"
+
+    # 8. 업종지수 매핑 확인 (매주 월 06:30)
+    "30 6 * * 1 cd $BLSH_DIR && uv run python -m wye.blsh.domestic.sector_check >> ~/.blsh/logs/cron.log 2>&1 $BLSH_TAG"
 )
 
 install_cron() {
@@ -60,7 +63,8 @@ install_cron() {
     echo "  월~금 10:05  데이터 수집 + PO② (장초반 스캔)"
     echo "  월~금 15:05  데이터 수집 + PO③ (청산 후 스캔)"
     echo "  월~금 20:30  일일 로그 분석 리포트"
-    echo "  토   02:00  Grid Search 최적화"
+    echo "  토   02:00  Grid Search 최적화
+  월   06:30  업종지수 매핑 확인"
     echo ""
     echo "로그 위치: ~/.blsh/logs/"
 }
