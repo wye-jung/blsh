@@ -390,7 +390,7 @@ def scan_dataframe(
         return None
 
     icon = "🔴" if score >= 5 else "🟡" if score >= 3 else "🔵"
-    log.info(f"  {icon} [{score:2d}pt] {ticker:10s} {name[:18]:18s} ({market}) {flags}")
+    log.debug(f"  {icon} [{score:2d}pt] {ticker:10s} {name[:18]:18s} ({market}) {flags}")
 
     return {
         "base_date": base_date,
@@ -422,7 +422,7 @@ def scan_market(
     vol_col="acc_trdvol",
     open_col="tdd_opnprc",
 ):
-    log.info(f"[{market}] {table} 스캔 시작  (기준일: {base_date})")
+    log.debug(f"[{market}] {table} 스캔 시작  (기준일: {base_date})")
 
     df_all = pd.DataFrame(
         query.get_ohlcv(
@@ -459,7 +459,7 @@ def scan_market(
         if row is not None:
             results.append(row)
 
-    log.info(f"[{market}] 신호 종목: {len(results)}건 (거래대금 필터 후)")
+    log.debug(f"[{market}] 신호 종목: {len(results)}건 (거래대금 필터 후)")
     return results
 
 
@@ -543,7 +543,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
     if not candidates:
         return results
 
-    log.info(f"[수급 보강] 대상 {len(candidates)}종목  (기준일: {base_date})")
+    log.debug(f"[수급 보강] 대상 {len(candidates)}종목  (기준일: {base_date})")
 
     kospi_ticks = [r["ticker"] for r in candidates if r["market"] == "KOSPI"]
     kosdaq_ticks = [r["ticker"] for r in candidates if r["market"] == "KOSDAQ"]
@@ -578,7 +578,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}
     if missing:
-        log.info(f"  DB 미보유 {len(missing)}종목 → KIS API fallback")
+        log.debug(f"  DB 미보유 {len(missing)}종목 → KIS API fallback")
         try:
             for row in missing:
                 fl, ol = fetch_investor_daily(row["ticker"], base_date, n_days=5)
@@ -614,7 +614,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
             results[idx]["buy_score"] += f_sc
             results[idx]["buy_flags"] += f",F_{f_sig}"
             icon = "🔥" if f_sig == "TRN" else ("💰💰" if f_sig == "C3" else "💰")
-            log.info(
+            log.debug(
                 f"  {icon} 외국인 {f_sig}({f_sc:+d}): {t} {row['name']}  {sup['frgn']}"
             )
 
@@ -622,14 +622,14 @@ def enrich_with_db(results: list, base_date: str) -> list:
             results[idx]["buy_score"] += o_sc
             results[idx]["buy_flags"] += f",I_{o_sig}"
             icon = "🔥" if o_sig == "TRN" else ("🏦🏦" if o_sig == "C3" else "🏦")
-            log.info(
+            log.debug(
                 f"  {icon} 기관   {o_sig}({o_sc:+d}): {t} {row['name']}  {sup['inst']}"
             )
 
         if f_sc > 0 and o_sc > 0:
             results[idx]["buy_score"] += 1
             results[idx]["buy_flags"] += ",FI"
-            log.info(f"  ⭐ 외국인+기관 동시: {t} {row['name']}")
+            log.debug(f"  ⭐ 외국인+기관 동시: {t} {row['name']}")
 
         indi = sup.get("today_indi") or 0
         frgn = sup["today_frgn"] or 0
@@ -637,7 +637,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
         if indi > 0 and frgn <= 0 and inst <= 0 and indi > abs(frgn) + abs(inst):
             results[idx]["buy_score"] -= 1
             results[idx]["buy_flags"] += ",P_OV"
-            log.info(
+            log.debug(
                 f"  ⚠️  개인 과매수 패널티(-1): {t} {row['name']}  개인={indi:+.0f}"
             )
 
@@ -667,7 +667,7 @@ def check_index_above_ma(
             status = f"허용 ⚠️  (MA 대비 {gap_pct:.1%}, 임계 -{drop_limit:.0%} 미만)"
         else:
             status = f"위 ✅ (MA 대비 {gap_pct:+.1%})"
-        log.info(
+        log.debug(
             f"[지수 환경] {idx_nm}  현재가={cur:.2f}  {ma_days}MA={ma:.2f}  → {status}"
         )
         return not skip
@@ -743,7 +743,7 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
         except Exception:
             pass
 
-    log.info("[업종매핑] KIS 마스터 다운로드…")
+    log.debug("[업종매핑] KIS 마스터 다운로드…")
     result: dict[str, str] = {}
 
     # KOSPI
@@ -786,7 +786,7 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
         _SECTOR_MAP_FILE.write_text(
             json.dumps({"_date": cache_date, "map": result}, ensure_ascii=False)
         )
-        log.info(f"  KOSPI+KOSDAQ 업종매핑: {len(result)}종목 캐시 저장")
+        log.debug(f"  KOSPI+KOSDAQ 업종매핑: {len(result)}종목 캐시 저장")
     else:
         log.warning("  업종매핑 0건 → 캐시 미저장")
 
@@ -841,7 +841,7 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     df["buy_score"] = df["buy_score"] + adjustments
     applied = sum(1 for a in adjustments if a != 0)
     if applied:
-        log.info(f"[업종패널티] {applied}종목 점수 조정 ({len(gap_cache)}업종 조회)")
+        log.debug(f"[업종패널티] {applied}종목 점수 조정 ({len(gap_cache)}업종 조회)")
     return df
 
 
@@ -948,4 +948,4 @@ def issue_po(base_date=None):
 
 
 if __name__ == "__main__":
-    issue_po()
+    find_candidates(report=True)
