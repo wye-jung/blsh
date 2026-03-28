@@ -491,6 +491,13 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
     # fork 전에 캐시를 전역 변수로 설정 (CoW — 자식 프로세스에 복사 없이 공유)
     _WORKER_CACHE = cache
 
+    # DB 연결 풀 해제: fork 전 SQLAlchemy 백그라운드 스레드 락 제거 (Linux hang 방지)
+    try:
+        from wye.blsh.database.query import engine as _db_engine
+        _db_engine.dispose()
+    except Exception:
+        pass
+
     n_workers = workers if workers > 0 else os.cpu_count()
     log.info(f"병렬 처리: {n_workers}코어")
 
