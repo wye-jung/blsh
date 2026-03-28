@@ -89,6 +89,29 @@ def find_next_biz_date(base_date) -> str | None:
     return row["d"] if row else None
 
 
+def find_prev_biz_date(base_date) -> str | None:
+    """이전 영업일"""
+    if base_date <= _get_min_krx_holiday_date():
+        row = select_one(
+            """
+            SELECT max(trd_dd) AS d FROM idx_stk_ohlcv
+            WHERE trd_dd < :bd
+            """,
+            bd=base_date,
+        )
+    else:
+        row = select_first(
+            """
+            SELECT bass_dt AS d FROM krx_holiday
+            WHERE bass_dt < :bd AND opnd_yn = 'Y'
+            ORDER BY bass_dt DESC
+            LIMIT 1
+            """,
+            bd=base_date,
+        )
+    return row["d"] if row else None
+
+
 def get_biz_dates(fromdate, todate):
     return select_all(
         """

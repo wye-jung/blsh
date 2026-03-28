@@ -12,15 +12,21 @@ import logging
 import pandas as pd
 from wye.blsh.database import query
 from wye.blsh.domestic import reporter, Tick, factor
-from wye.blsh.domestic.trader import SELL_COST_RATE
+from wye.blsh.domestic.trader import SELL_COST_RATE, MIN_ALLOC, CASH_USAGE
 
 log = logging.getLogger(__name__)
 
 
-def simulate(candidates) -> tuple | None:
+def simulate(candidates, cash: float = 0) -> tuple | None:
     """
     수익률 시뮬레이트.
-    Returns: (rows_ok, rows_gap, rows_miss) 또는 데이터 없으면 None
+
+    Args:
+        candidates: find_candidates() 반환 DataFrame
+        cash: 초기 잔고 (0이면 수익률만 계산, >0이면 trader 배분 로직으로 손익금액 계산)
+
+    Returns:
+        (rows_ok, rows_gap, rows_miss) 또는 데이터 없으면 None
     """
     if candidates.empty:
         log.info("[시뮬레이트] 후보 종목 없음")
@@ -72,6 +78,18 @@ def simulate(candidates) -> tuple | None:
             "low": float(row["low"]),
             "close": float(row["close"]),
         }
+
+    # ── trader 배분 로직 (cash > 0 일 때)
+    if cash > 0:
+        avail = cash * CASH_USAGE
+        alloc = avail / len(candidates)
+        if alloc < MIN_ALLOC:
+            log.warning(
+                f"[시뮬레이트] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 최소액으로 진행"
+            )
+            alloc = MIN_ALLOC
+    else:
+        alloc = 0
 
     rows_ok = []
     rows_gap = []
@@ -201,6 +219,8 @@ def simulate(candidates) -> tuple | None:
             remaining_qty = 0
 
         ret_pct = (realized_pnl / buy_price) * 100 if buy_price else 0
+        qty = max(1, int(alloc // buy_price)) if alloc > 0 else None
+        pnl_amount = realized_pnl * qty if qty is not None else None
         rows_ok.append(
             {
                 **sig.to_dict(),
@@ -210,6 +230,8 @@ def simulate(candidates) -> tuple | None:
                 "exit_date": exit_date,
                 "result_type": result_type,
                 "ret_pct": ret_pct,
+                "qty": qty,
+                "pnl_amount": pnl_amount,
                 "t_open": t1_ohv["open"],
                 "t_high": last_ohv["high"],
                 "t_low": last_ohv["low"],
@@ -224,12 +246,20 @@ def simulate(candidates) -> tuple | None:
         rows_ok,
         rows_gap,
         rows_miss,
+        cash=cash,
     )
 
     return rows_ok, rows_gap, rows_miss
 
 
 if __name__ == "__main__":
+    import sys
+    from wye.blsh.common import dtutils
     from wye.blsh.domestic import scanner
 
-    simulate(scanner.find_candidates("20260317"))
+    dt = (
+        sys.argv[1]
+        if len(sys.argv) > 1
+        else dtutils.prev_biz_date(dtutils.max_ohlcv_date())
+    )
+    simulate(scanner.find_candidates(dt), cash=10_000_000)

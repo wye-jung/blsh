@@ -150,13 +150,15 @@ def print_invest_report(df):
 
 
 def print_simul_report(
-    target_date, actual_days, candidates, rows_ok, rows_gap, rows_miss
+    target_date, actual_days, candidates, rows_ok, rows_gap, rows_miss, cash: float = 0
 ):
     _print_header("시뮬레이션 리포트")
 
+    cash_mode = cash > 0
+    cash_label = f"  초기잔고 {cash:,.0f}원" if cash_mode else ""
     log.info(
         f"  📊 수익률 리포트  |  매수일: {target_date}"
-        f"  (최대 {factor.MAX_HOLD_DAYS}거래일, 실제 {actual_days}거래일)"
+        f"  (최대 {factor.MAX_HOLD_DAYS}거래일, 실제 {actual_days}거래일){cash_label}"
     )
     log.info(
         f"  대상: 선별 종목 {len(candidates)}개  "
@@ -194,20 +196,43 @@ def print_simul_report(
                 else:
                     tag = f"⏳{r['result_type']}"
 
+            amt_str = ""
+            if cash_mode and r.get("qty") and r.get("pnl_amount") is not None:
+                invested = r["buy_price"] * r["qty"]
+                amt_str = (
+                    f"  {r['qty']}주 (투자 {invested:>9,.0f}원)"
+                    f"  손익 {r['pnl_amount']:>+10,.0f}원"
+                )
+
             log.info(
                 f"  {tag:<10s}  [{r['buy_score']:2d}pt/{r['mode']}]  "
                 f"{r['ticker']}  {r['name'][:12]:<12s}  {r['market']:<6s}  "
                 f"매수 {r['buy_price']:>8,.0f} ({r['entry_date']})  "
                 f"청산 {r['exit_price']:>8,.0f} ({r['exit_date']})  "
-                f"수익률 {r['ret_pct']:>+6.2f}%"
+                f"수익률 {r['ret_pct']:>+6.2f}%{amt_str}"
             )
 
         avg_ret = df_ok["ret_pct"].mean()
         win_rate = len(wins) / len(df_ok) * 100 if len(df_ok) else 0
-        log.info(
-            f"  평균 수익률: {avg_ret:+.2f}%  승률: {win_rate:.1f}%  "
-            f"(익절 {len(wins)} / 손절 {len(cuts)} / 미확정 {len(holds)})"
-        )
+        if cash_mode and df_ok["pnl_amount"].notna().any():
+            total_pnl = df_ok["pnl_amount"].sum()
+            total_invested = (df_ok["buy_price"] * df_ok["qty"]).sum()
+            final_balance = cash - total_invested + total_invested + total_pnl
+            log.info(
+                f"  평균 수익률: {avg_ret:+.2f}%  승률: {win_rate:.1f}%  "
+                f"(익절 {len(wins)} / 손절 {len(cuts)} / 미확정 {len(holds)})"
+            )
+            log.info(
+                f"  총투자금: {total_invested:>12,.0f}원  "
+                f"총손익: {total_pnl:>+12,.0f}원  "
+                f"최종잔고: {final_balance:>12,.0f}원  "
+                f"(초기 {cash:,.0f}원 → {final_balance / cash * 100:.1f}%)"
+            )
+        else:
+            log.info(
+                f"  평균 수익률: {avg_ret:+.2f}%  승률: {win_rate:.1f}%  "
+                f"(익절 {len(wins)} / 손절 {len(cuts)} / 미확정 {len(holds)})"
+            )
 
     if rows_gap:
         log.info(f"  ▶ 갭 상승 (매수 불가) {len(rows_gap)}종목")

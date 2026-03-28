@@ -15,8 +15,10 @@ import argparse
 import logging
 import multiprocessing as mp
 import os
+import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import product
 from pathlib import Path
 
@@ -354,6 +356,22 @@ def _fmt_val(key: str, val) -> str:
     return str(val)
 
 
+def _read_mode_opt_line(mode: str) -> str:
+    """기존 factor.py에서 모드별 최적화 주석 전체를 읽어 반환. 없으면 빈 문자열."""
+    if not _FACTOR_PATH.exists():
+        return ""
+    text = _FACTOR_PATH.read_text(encoding="utf-8")
+    m = re.search(rf"# {mode} 최적화: (.+)", text)
+    return m.group(1).strip() if m else ""
+
+
+def _make_opt_line(ts: str, period: str, s: Stats) -> str:
+    return (
+        f"{ts}  기간 {period}  {s.trades}건  "
+        f"승률 {s.win_rate:.1f}%  평균 {s.avg_ret:+.2f}%  총 {s.total_ret:+.1f}%"
+    )
+
+
 def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
     """DAY/SWING 최적 파라미터로 factor.py 재생성."""
     day_d = _params_to_dict(best["DAY"][0]) if "DAY" in best else None
@@ -372,6 +390,20 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
             return
 
     today = dtutils.today()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    start_date = dtutils.add_days(today, -years * 365)
+    period = f"{start_date}~{today}"
+
+    day_opt = (
+        _make_opt_line(now_str, period, best["DAY"][1])
+        if "DAY" in best
+        else (_read_mode_opt_line("DAY") or "기존 유지")
+    )
+    swing_opt = (
+        _make_opt_line(now_str, period, best["SWING"][1])
+        if "SWING" in best
+        else (_read_mode_opt_line("SWING") or "기존 유지")
+    )
 
     def fmt_pct(v):
         """0.05 → '5%', 0 → '0'"""
@@ -403,14 +435,15 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
     doc_lines.append(f"{'SECTOR_BONUS':<20s} +{day_d['SECTOR_BONUS_PTS']:<7}+{swing_d['SECTOR_BONUS_PTS']}")
     doc_table = "\n".join(doc_lines)
 
-    def dict_block(name: str, d: dict) -> str:
-        items = []
+    def dict_block(name: str, d: dict, opt_line: str) -> str:
+        mode_label = name.lstrip("_")
         comments = {
             "TP1_MULT": "1차 익절: buy + ATR × TP1_MULT",
             "TP1_RATIO": "1차 익절 매도 비율 (1.0 = 전량)",
             "SECTOR_PENALTY_THRESHOLD": "업종지수 MA20 대비 해당값 이하",
             "SECTOR_BONUS_PTS": "업종지수 MA20 이상일 때",
         }
+        items = []
         for k, v in d.items():
             val_str = _fmt_val(k, v)
             comment = comments.get(k, "")
@@ -418,13 +451,16 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
             if comment:
                 line = f"{line}  # {comment}"
             items.append(line)
-        return f"{name} = {{\n" + "\n".join(items) + "\n}"
+        return f"# {mode_label} 최적화: {opt_line}\n{name} = {{\n" + "\n".join(items) + "\n}"
 
     content = f'''"""\n최적 파라미터 ({today} 기준, 최근 {years}년 백테스트)
 
-파라미터              DAY     SWING
-──────────────────────────────────────
+파라미터              DAY                   SWING
+──────────────────────────────────────────────────────
 {doc_table}
+
+[DAY]   {day_opt}
+[SWING] {swing_opt}
 
 실행 후 grid_search 최적값으로 자동 갱신:
   uv run python -m wye.blsh.domestic.optimize.grid_search
@@ -433,9 +469,9 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
 # ─────────────────────────────────────────
 # 모드별 factor (grid_search 최적화 결과 반영)
 # ─────────────────────────────────────────
-{dict_block("_DAY", day_d)}
+{dict_block("_DAY", day_d, day_opt)}
 
-{dict_block("_SWING", swing_d)}
+{dict_block("_SWING", swing_d, swing_opt)}
 
 # ─────────────────────────────────────────
 # 활성 factor 적용
