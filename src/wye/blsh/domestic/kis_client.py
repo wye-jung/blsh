@@ -1,3 +1,12 @@
+"""
+A module for managing stock trading through a KIS API client.
+
+This module includes functionality for rate-limited API calls, fetching
+stock prices, retrieving account balances, placing market and limit orders,
+and canceling orders. It aims to provide an organized structure for interacting
+with the KIS domestic stock trading API.
+"""
+
 import logging
 import threading
 import time
@@ -11,6 +20,7 @@ from wye.blsh.kis import kis_auth as ka
 from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
 
 log = logging.getLogger(__name__)
+
 _API_CONCURRENCY = 2
 _api_sem = threading.Semaphore(_API_CONCURRENCY)  # 동시 API 호출 수 제한
 
@@ -32,7 +42,7 @@ class _RateLimiter:
             self.last_call = time.monotonic()
 
 
-class API:
+class KISClient:
     def __init__(self, env_dv="demo", poll_sec=30):
         if env_dv == "real":
             log.warning("🚨 실전투자 모드  (KIS_ENV=real)")
@@ -208,8 +218,35 @@ class API:
             log.error(f"  매도 오류 ({ticker}): {e}")
         return False
 
-    def cancel_order(self, ticker: str, odno: str, qty: int) -> bool:
-        """주문 취소. 성공 시 True."""
+    def sell_nxt(self, ticker: str, qty: int, price: int, reason: str = "") -> bool:
+        """NXT 지정가 매도. NXT는 시장가 불가이므로 지정가만 지원. 성공 시 True."""
+        try:
+            self.rate_limiter.wait()
+            with _api_sem:
+                df = ds.order_cash(
+                    env_dv=self.env_dv,
+                    ord_dv="sell",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    pdno=ticker,
+                    ord_dvsn="00",
+                    ord_qty=str(qty),
+                    ord_unpr=str(int(price)),
+                    excg_id_dvsn_cd="NXT",
+                )
+            if df is not None and not df.empty:
+                log.info(
+                    f"  📤 NXT매도: {ticker}  수량={qty}  지정가={int(price):,}  [{reason}]"
+                )
+                return True
+        except Exception as e:
+            log.error(f"  NXT 매도 오류 ({ticker}): {e}")
+        return False
+
+    def cancel_order(
+        self, ticker: str, odno: str, qty: int, excg_id_dvsn_cd: str = "KRX"
+    ) -> bool:
+        """주문 취소. 성공 시 True. excg_id_dvsn_cd는 발주 시의 거래소와 일치해야 함."""
         try:
             self.rate_limiter.wait()
             with _api_sem:
@@ -224,10 +261,10 @@ class API:
                     ord_qty=str(qty),
                     ord_unpr="0",
                     qty_all_ord_yn="Y",
-                    excg_id_dvsn_cd="KRX",
+                    excg_id_dvsn_cd=excg_id_dvsn_cd,
                 )
-            log.info(f"  🚫 주문취소: {ticker}  no={odno}")
+            log.info(f"  🚫 주문취소: {ticker}  no={odno}  [{excg_id_dvsn_cd}]")
             return True
         except Exception as e:
-            log.warning(f"  주문 취소 실패 ({ticker}): {e}")
+            log.warning(f"  주문 취소 실패 ({ticker}, {excg_id_dvsn_cd}): {e}")
             return False

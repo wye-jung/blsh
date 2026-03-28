@@ -1,5 +1,5 @@
 import pandas as pd
-from sqlalchemy import create_engine, delete as sa_delete, select, text
+from sqlalchemy import create_engine, delete as _delete, select, text
 from sqlalchemy.orm import Session
 from wye.blsh.common.env import DB_URL
 
@@ -16,7 +16,7 @@ def select_one(sql, **params):
         return session.execute(text(sql), params).mappings().one()
 
 
-def select_first(sql, mapping=False, **params):
+def select_first(sql, **params):
     with Session(engine) as session:
         return session.execute(text(sql), params).mappings().first()
 
@@ -60,9 +60,10 @@ class ModelManager:
 
     def delete(self, **filters):
         with Session(engine) as session:
-            stmt = sa_delete(self.model).filter_by(**filters)
+            stmt = _delete(self.model).filter_by(**filters)
             result = session.execute(stmt)
             session.commit()
             print(
                 f"Deleted {result.rowcount} rows from {self.model.__tablename__} table"
             )
+            return result.rowcount

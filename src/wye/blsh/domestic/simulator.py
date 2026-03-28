@@ -1,23 +1,20 @@
 """
-백테스트
+백테스트 시뮬레이터
 
-변경 이력:
-  - entry_date OHLCV 포함 (매수일 누락 수정)
-  - buy_price 기준 SL/TP 재계산 (scanner 종가 기준 → 실제 매수가 기준)
-  - TP1 분할매도 + 트레일링 SL 반영 (실제 trader_v2 로직 일치)
-  - DAY 모드(max_hold_days=0) 지원: entry_date 당일 매수→청산
+- entry_date OHLCV 포함 (매수일 누락 수정)
+- buy_price 기준 SL/TP 재계산 (scanner 종가 기준 → 실제 매수가 기준)
+- TP1 분할매도(factor.TP1_MULT/TP1_RATIO) + 트레일링 SL 반영 (trader 로직 일치)
+- 모드별 max_hold_days 지원 (DAY max_hold=0 당일청산 포함)
+- 보수적 트레일링: 전일 high 기준으로만 SL 갱신 (일봉 한계 감안)
 """
 
 import logging
 import pandas as pd
 from wye.blsh.database import query
-from wye.blsh.domestic import _factor, _report, _tick
+from wye.blsh.domestic import reporter, Tick, factor
+from wye.blsh.domestic.trader import SELL_COST_RATE
 
 log = logging.getLogger(__name__)
-
-# 트레이더와 동일한 상수
-TP1_MULT = 1.0
-SELL_COST_RATE = 0.002
 
 
 def simulate(candidates) -> tuple | None:
@@ -30,7 +27,7 @@ def simulate(candidates) -> tuple | None:
         return None
 
     entry_date = candidates.iloc[0]["entry_date"]
-    max_hold = _factor.MAX_HOLD_DAYS
+    max_hold = factor.MAX_HOLD_DAYS
 
     log.info(f"[시뮬레이트] 목표일={entry_date}  최대 {max_hold}거래일 추적")
 
@@ -84,8 +81,8 @@ def simulate(candidates) -> tuple | None:
         t = sig["ticker"]
         entry = float(sig["entry_price"])
         atr = float(sig["atr"])
-        atr_sl_mult = float(sig.get("atr_sl_mult", _factor.ATR_SL_MULT))
-        atr_tp_mult = float(sig.get("atr_tp_mult", _factor.ATR_TP_MULT))
+        atr_sl_mult = float(sig.get("atr_sl_mult", factor.ATR_SL_MULT))
+        atr_tp_mult = float(sig.get("atr_tp_mult", factor.ATR_TP_MULT))
         days = ohlcv_idx.get(t, {})
 
         # entry_date(hold_dates[0]) 데이터 없음
@@ -103,9 +100,9 @@ def simulate(candidates) -> tuple | None:
 
         # [FIX] 실제 매수가 기준 SL/TP 재계산 (trader _make_position과 동일)
         buy_price = t1_ohv["open"]
-        sl = _tick.floor_tick(buy_price - atr_sl_mult * atr)
-        tp1 = _tick.ceil_tick(buy_price + TP1_MULT * atr)
-        tp2 = _tick.ceil_tick(buy_price + atr_tp_mult * atr)
+        sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
+        tp1 = Tick.ceil_tick(buy_price + factor.TP1_MULT * atr)
+        tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
 
         result_type = None
         exit_price = None
@@ -118,11 +115,11 @@ def simulate(candidates) -> tuple | None:
         # 모드별 최대 보유 기간
         mode = sig.get("mode", "")
         if mode == "MOM":
-            max_days = _factor.MAX_HOLD_DAYS_MOM
+            max_days = factor.MAX_HOLD_DAYS_MOM
         elif mode == "MIX":
-            max_days = _factor.MAX_HOLD_DAYS_MIX
+            max_days = factor.MAX_HOLD_DAYS_MIX
         else:
-            max_days = _factor.MAX_HOLD_DAYS
+            max_days = factor.MAX_HOLD_DAYS
 
         # DAY 모드(max_days=0): entry_date 당일만 보유
         if max_days == 0:
@@ -144,13 +141,15 @@ def simulate(candidates) -> tuple | None:
             # 당일 high로 SL을 올린 뒤 당일 low로 손절 체크하면 낙관적 편향 발생.
             # 전일 high 기준 갱신 → 당일 low 체크 순서로 보수적 시뮬레이션.
             if d != sig_hold_dates[0]:  # 매수일은 전일 고가 = 매수일 자체
-                trail_sl = _tick.floor_tick(prev_high - atr_sl_mult * atr)
+                trail_sl = Tick.floor_tick(prev_high - atr_sl_mult * atr)
                 if trail_sl > sl and trail_sl < prev_high:
                     sl = trail_sl
 
             # 손절 체크
             if ohv["low"] <= sl:
-                pnl = (sl - buy_price) * remaining_qty - sl * remaining_qty * SELL_COST_RATE
+                pnl = (
+                    sl - buy_price
+                ) * remaining_qty - sl * remaining_qty * SELL_COST_RATE
                 realized_pnl += pnl
                 result_type = "손절"
                 exit_price = sl
@@ -161,7 +160,7 @@ def simulate(candidates) -> tuple | None:
             # TODO: TP1 체결 + 같은 봉 본전 SL 도달 시나리오 (일봉 한계)
             # TP1 분할매도 (50%) — 미완료 시에만
             if not t1_done and ohv["high"] >= tp1:
-                sell_ratio = 0.5
+                sell_ratio = min(factor.TP1_RATIO, remaining_qty)
                 pnl = (tp1 - buy_price) * sell_ratio - tp1 * sell_ratio * SELL_COST_RATE
                 realized_pnl += pnl
                 remaining_qty -= sell_ratio
@@ -175,7 +174,9 @@ def simulate(candidates) -> tuple | None:
 
             # TP2 잔량 전량 청산
             if ohv["high"] >= tp2 and remaining_qty > 0:
-                pnl = (tp2 - buy_price) * remaining_qty - tp2 * remaining_qty * SELL_COST_RATE
+                pnl = (
+                    tp2 - buy_price
+                ) * remaining_qty - tp2 * remaining_qty * SELL_COST_RATE
                 realized_pnl += pnl
                 result_type = "익절" if t1_done else "익절(전량)"
                 exit_price = tp2
@@ -186,7 +187,9 @@ def simulate(candidates) -> tuple | None:
         # 최대 보유기간 후 미확정 → 마지막 거래일 종가 청산
         if result_type is None:
             close_price = last_ohv["close"]
-            pnl = (close_price - buy_price) * remaining_qty - close_price * remaining_qty * SELL_COST_RATE
+            pnl = (
+                close_price - buy_price
+            ) * remaining_qty - close_price * remaining_qty * SELL_COST_RATE
             realized_pnl += pnl
             day_label = len(sig_hold_dates)
             if max_days == 0:
@@ -197,7 +200,7 @@ def simulate(candidates) -> tuple | None:
             exit_date = sig_hold_dates[-1] if sig_hold_dates else hold_dates[0]
             remaining_qty = 0
 
-        ret_pct = (realized_pnl / abs(buy_price)) * 100 if buy_price else 0
+        ret_pct = (realized_pnl / buy_price) * 100 if buy_price else 0
         rows_ok.append(
             {
                 **sig.to_dict(),
@@ -214,7 +217,7 @@ def simulate(candidates) -> tuple | None:
             }
         )
 
-    _report.print_simul_report(
+    reporter.print_simul_report(
         entry_date,
         actual_days,
         candidates,
@@ -228,4 +231,5 @@ def simulate(candidates) -> tuple | None:
 
 if __name__ == "__main__":
     from wye.blsh.domestic import scanner
-    simulate(scanner.("20260317"))
+
+    simulate(scanner.find_candidates("20260317"))

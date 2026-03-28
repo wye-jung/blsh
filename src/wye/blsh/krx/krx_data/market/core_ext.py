@@ -68,7 +68,7 @@ class 자기주식제외시가총액(KrxWebIo):
 
 
 if __name__ == "__main__":
-    from wye.blsh.krx.krx_auth import login
+    from wye.blsh.krx.krx_auth import login_krx
 
-    login()
+    login_krx()
     print(전종목기본정보().fetch("STK"))

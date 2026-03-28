@@ -13,10 +13,10 @@ Grid Search 최적화
 
 import argparse
 import logging
-import os
 import time
 from dataclasses import dataclass
 from itertools import product
+from pathlib import Path
 
 from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import build_or_load, OptCache, CACHE_DIR
@@ -313,9 +313,155 @@ def _report(trade_mode: str, ranked: list[tuple[Params, Stats]], elapsed: float)
 
 
 # ─────────────────────────────────────────
+# factor.py 자동 갱신
+# ─────────────────────────────────────────
+_FACTOR_PATH = Path(__file__).resolve().parent.parent / "factor.py"
+
+
+def _params_to_dict(p: Params) -> dict:
+    return {
+        "INVEST_MIN_SCORE": p.invest_min_score,
+        "ATR_SL_MULT": p.atr_sl_mult,
+        "ATR_TP_MULT": p.atr_tp_mult,
+        "TP1_MULT": p.tp1_mult,
+        "TP1_RATIO": p.tp1_ratio,
+        "GAP_DOWN_LIMIT": p.gap_down_limit,
+        "MAX_HOLD_DAYS": p.max_hold_days_rev,
+        "MAX_HOLD_DAYS_MIX": p.max_hold_days_mix,
+        "MAX_HOLD_DAYS_MOM": p.max_hold_days_mom,
+        "SECTOR_PENALTY_THRESHOLD": p.sector_penalty_threshold,
+        "SECTOR_PENALTY_PTS": p.sector_penalty_pts,
+        "SECTOR_BONUS_PTS": p.sector_bonus_pts,
+    }
+
+
+def _fmt_val(key: str, val) -> str:
+    """factor.py dict 값 포매팅."""
+    if isinstance(val, float):
+        if val == int(val) and key != "SECTOR_PENALTY_THRESHOLD":
+            return str(int(val)) if val == 0 else str(val)
+        return str(val)
+    return str(val)
+
+
+def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
+    """DAY/SWING 최적 파라미터로 factor.py 재생성."""
+    day_d = _params_to_dict(best["DAY"][0]) if "DAY" in best else None
+    swing_d = _params_to_dict(best["SWING"][0]) if "SWING" in best else None
+
+    # 기존 factor.py에서 변경되지 않는 모드는 유지
+    if not day_d or not swing_d:
+        try:
+            from wye.blsh.domestic.factor import _DAY, _SWING
+            if not day_d:
+                day_d = dict(_DAY)
+            if not swing_d:
+                swing_d = dict(_SWING)
+        except ImportError:
+            log.warning("factor.py import 실패 — 두 모드 모두 최적화해야 합니다.")
+            return
+
+    today = dtutils.today()
+
+    def fmt_pct(v):
+        """0.05 → '5%', 0 → '0'"""
+        if v == 0:
+            return "0"
+        return f"{abs(v)*100:.0f}%"
+
+    def fmt_penalty(d):
+        t = d["SECTOR_PENALTY_THRESHOLD"]
+        p = d["SECTOR_PENALTY_PTS"]
+        return f"-{fmt_pct(t)}/{p:+d}"
+
+    # docstring 파라미터 테이블
+    rows = [
+        ("INVEST_MIN_SCORE", day_d, swing_d),
+        ("ATR_SL_MULT", day_d, swing_d),
+        ("ATR_TP_MULT", day_d, swing_d),
+        ("TP1_MULT", day_d, swing_d),
+        ("TP1_RATIO", day_d, swing_d),
+        ("GAP_DOWN_LIMIT", day_d, swing_d),
+    ]
+    doc_lines = []
+    for key, dd, sd in rows:
+        doc_lines.append(f"{key:<20s} {_fmt_val(key, dd[key]):<8s}{_fmt_val(key, sd[key])}")
+    doc_lines.append(f"{'MAX_HOLD_DAYS(REV)':<20s} {day_d['MAX_HOLD_DAYS']:<8}{swing_d['MAX_HOLD_DAYS']}")
+    doc_lines.append(f"{'MAX_HOLD_DAYS_MIX':<20s} {day_d['MAX_HOLD_DAYS_MIX']:<8}{swing_d['MAX_HOLD_DAYS_MIX']}")
+    doc_lines.append(f"{'MAX_HOLD_DAYS_MOM':<20s} {day_d['MAX_HOLD_DAYS_MOM']:<8}{swing_d['MAX_HOLD_DAYS_MOM']}")
+    doc_lines.append(f"{'SECTOR_PENALTY':<20s} {fmt_penalty(day_d):<8s}{fmt_penalty(swing_d)}")
+    doc_lines.append(f"{'SECTOR_BONUS':<20s} +{day_d['SECTOR_BONUS_PTS']:<7}+{swing_d['SECTOR_BONUS_PTS']}")
+    doc_table = "\n".join(doc_lines)
+
+    def dict_block(name: str, d: dict) -> str:
+        items = []
+        comments = {
+            "TP1_MULT": "1차 익절: buy + ATR × TP1_MULT",
+            "TP1_RATIO": "1차 익절 매도 비율 (1.0 = 전량)",
+            "SECTOR_PENALTY_THRESHOLD": "업종지수 MA20 대비 해당값 이하",
+            "SECTOR_BONUS_PTS": "업종지수 MA20 이상일 때",
+        }
+        for k, v in d.items():
+            val_str = _fmt_val(k, v)
+            comment = comments.get(k, "")
+            line = f'    "{k}": {val_str},'
+            if comment:
+                line = f"{line}  # {comment}"
+            items.append(line)
+        return f"{name} = {{\n" + "\n".join(items) + "\n}"
+
+    content = f'''"""\n최적 파라미터 ({today} 기준, 최근 {years}년 백테스트)
+
+파라미터              DAY     SWING
+──────────────────────────────────────
+{doc_table}
+
+실행 후 grid_search 최적값으로 자동 갱신:
+  uv run python -m wye.blsh.domestic.optimize.grid_search
+"""\nfrom wye.blsh.common.env import TRADE_FLAG
+
+# ─────────────────────────────────────────
+# 모드별 factor (grid_search 최적화 결과 반영)
+# ─────────────────────────────────────────
+{dict_block("_DAY", day_d)}
+
+{dict_block("_SWING", swing_d)}
+
+# ─────────────────────────────────────────
+# 활성 factor 적용
+# ─────────────────────────────────────────
+_active = _DAY if TRADE_FLAG == "DAY" else _SWING
+
+INVEST_MIN_SCORE = _active["INVEST_MIN_SCORE"]
+ATR_SL_MULT = _active["ATR_SL_MULT"]
+ATR_TP_MULT = _active["ATR_TP_MULT"]
+TP1_MULT = _active["TP1_MULT"]
+TP1_RATIO = _active["TP1_RATIO"]
+GAP_DOWN_LIMIT = _active["GAP_DOWN_LIMIT"]
+MAX_HOLD_DAYS = _active["MAX_HOLD_DAYS"]
+MAX_HOLD_DAYS_MIX = _active["MAX_HOLD_DAYS_MIX"]
+MAX_HOLD_DAYS_MOM = _active["MAX_HOLD_DAYS_MOM"]
+SECTOR_PENALTY_THRESHOLD = _active["SECTOR_PENALTY_THRESHOLD"]
+SECTOR_PENALTY_PTS = _active["SECTOR_PENALTY_PTS"]
+SECTOR_BONUS_PTS = _active["SECTOR_BONUS_PTS"]
+'''
+
+    _FACTOR_PATH.write_text(content, encoding="utf-8")
+    log.info(f"\n  💾 factor.py 자동 갱신: {_FACTOR_PATH}")
+    for mode_name in ["DAY", "SWING"]:
+        if mode_name in best:
+            p, s = best[mode_name]
+            log.info(
+                f"    {mode_name}: {s.trades}건  승률 {s.win_rate:.1f}%  "
+                f"평균 {s.avg_ret:+.2f}%  총 {s.total_ret:+.1f}%"
+            )
+
+
+# ─────────────────────────────────────────
 # 메인
 # ─────────────────────────────────────────
-def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool = True):
+def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool = True,
+       apply: bool = True):
     end_date = dtutils.today()
     start_date = dtutils.add_days(end_date, -years * 365)
 
@@ -329,6 +475,8 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
             log.info(f"캐시 삭제: {p}")
 
     cache = build_or_load(start_date, end_date)
+
+    best_results: dict[str, tuple[Params, Stats]] = {}
 
     for trade_mode, grid in [("DAY", DAY_GRID), ("SWING", SWING_GRID)]:
         if mode != "BOTH" and mode != trade_mode:
@@ -368,6 +516,15 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
         results.sort(key=lambda x: x[1].metric, reverse=True)
         _report(trade_mode, results, time.time() - t0)
 
+        if results and results[0][1].metric > -9999:
+            best_results[trade_mode] = results[0]
+
+    # factor.py 자동 갱신
+    if apply and best_results:
+        _update_factor_file(best_results, years)
+    elif not apply and best_results:
+        log.info("\n  ⚠️  --no-apply: factor.py 갱신 생략")
+
 
 # ─────────────────────────────────────────
 if __name__ == "__main__":
@@ -382,6 +539,13 @@ if __name__ == "__main__":
     parser.add_argument("--years", type=int, default=2, help="백테스트 기간 (년)")
     parser.add_argument("--rebuild", action="store_true", help="캐시 강제 재빌드")
     parser.add_argument("--no-sector", action="store_true", help="업종지수 패널티 비활성화 (기존 방식)")
+    parser.add_argument("--no-apply", action="store_true", help="factor.py 자동 갱신 생략")
     args = parser.parse_args()
 
-    run(mode=args.mode, years=args.years, rebuild=args.rebuild, sector=not args.no_sector)
+    run(
+        mode=args.mode,
+        years=args.years,
+        rebuild=args.rebuild,
+        sector=not args.no_sector,
+        apply=not args.no_apply,
+    )

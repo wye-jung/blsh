@@ -1,5 +1,8 @@
+"""
+쿼리
+"""
+
 import logging
-import time
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
 from wye.blsh.database import (
@@ -9,6 +12,7 @@ from wye.blsh.database import (
     select_all,
     execute_batch,
 )
+from wye.blsh.common import dtutils
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +86,7 @@ def find_next_biz_date(base_date) -> str | None:
             """,
             bd=base_date,
         )
-    return row["d"]
+    return row["d"] if row else None
 
 
 def get_biz_dates(fromdate, todate):
@@ -161,15 +165,26 @@ def get_netbid_trdvol(table, tickers, base_date):
     return result
 
 
-def get_index_clsprc(idx_nm, base_date, ma_days=20):
+def get_index_clsprc(idx_nm, base_date, ma_days=20, idx_clss=None):
+    if idx_clss:
+        return select_all(
+            """
+            SELECT clsprc_idx
+            FROM idx_stk_ohlcv
+            WHERE idx_nm = :nm AND idx_clss = :clss AND trd_dd <= :bd
+            ORDER BY trd_dd DESC
+            LIMIT :days
+            """,
+            **{"nm": idx_nm, "clss": idx_clss, "bd": base_date, "days": ma_days + 1},
+        )
     return select_all(
         """
-                SELECT clsprc_idx
-                FROM idx_stk_ohlcv
-                WHERE idx_nm = :nm AND trd_dd <= :bd
-                ORDER BY trd_dd DESC
-                LIMIT :days
-            """,
+        SELECT clsprc_idx
+        FROM idx_stk_ohlcv
+        WHERE idx_nm = :nm AND trd_dd <= :bd
+        ORDER BY trd_dd DESC
+        LIMIT :days
+        """,
         **{"nm": idx_nm, "bd": base_date, "days": ma_days + 1},
     )
 
@@ -282,7 +297,7 @@ def save_trade_history(
 
 def get_trade_history(date_str: str | None = None):
     """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘)."""
-    date_str = date_str or time.strftime("%Y%m%d")
+    date_str = date_str or dtutils.today()
     return select_all(
         """
         SELECT * FROM trade_history

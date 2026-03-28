@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR
 from wye.blsh.database.query import engine, select_all
-from wye.blsh.domestic import _factor, _tick
+from wye.blsh.domestic import sector, Tick
 from wye.blsh.domestic.scanner import (
     calc_macd,
     calc_rsi,
@@ -33,15 +33,26 @@ from wye.blsh.domestic.scanner import (
     _REVERSAL_FLAGS,
     _MOMENTUM_FLAGS,
     classify_supply,
+    # scanner 자체 상수 (_cache에서도 사용)
+    GAP_THRESHOLD,
+    RSI_OVERSOLD,
+    W52_VOL_MULT,
+    INDEX_DROP_LIMIT,
+    LOOKBACK_DAYS,
+    TRDVAL_MIN,
+    MACD_LONG,
+    MACD_SIGNAL,
+    MIN_SCORE,
+    ENRICH_SCORE,
 )
 
 
 
-# 업종코드 → DB 지수명 매핑은 _factor.py에서 참조
-_KOSPI_MID_TO_IDX = _factor.KOSPI_MID_TO_IDX
-_KOSPI_BIG_TO_IDX = _factor.KOSPI_BIG_TO_IDX
-_KOSDAQ_MID_TO_IDX = _factor.KOSDAQ_MID_TO_IDX
-_KOSDAQ_BIG_TO_IDX = _factor.KOSDAQ_BIG_TO_IDX
+# 업종코드 → DB 지수명 매핑은 factor.py에서 참조
+_KOSPI_MID_TO_IDX = sector.KOSPI_MID_TO_IDX
+_KOSPI_BIG_TO_IDX = sector.KOSPI_BIG_TO_IDX
+_KOSDAQ_MID_TO_IDX = sector.KOSDAQ_MID_TO_IDX
+_KOSDAQ_BIG_TO_IDX = sector.KOSDAQ_BIG_TO_IDX
 
 log = logging.getLogger(__name__)
 CACHE_DIR = DATA_DIR / "cache" / "optimize"
@@ -131,14 +142,14 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
         & (hist.shift(2) < hist.shift(1))
         & (hist.shift(1) < hist)
         & (hist < 0)
-        & (gap <= _factor.GAP_THRESHOLD)
+        & (gap <= GAP_THRESHOLD)
     )
 
     # 3. RBO: RSI 30 상향 돌파 (+2)
-    out["RBO"] = (r0 > _factor.RSI_OVERSOLD) & (r1 <= _factor.RSI_OVERSOLD)
+    out["RBO"] = (r0 > RSI_OVERSOLD) & (r1 <= RSI_OVERSOLD)
 
     # 4. ROV: RSI 과매도 (+1) — RBO와 상호 배타
-    out["ROV"] = ~out["RBO"].astype(bool) & (r0 < _factor.RSI_OVERSOLD)
+    out["ROV"] = ~out["RBO"].astype(bool) & (r0 < RSI_OVERSOLD)
 
     # 5. BBL: 볼린저 하단 반등 (+1)
     out["BBL"] = (l1 < bbl1) & (c0 > bbl)
@@ -160,7 +171,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     # 10. W52: 52주 신고가 돌파 (+2)
     w52_high = h.rolling(252, min_periods=200).max().shift(1)
     vol_20_avg = v.rolling(20).mean().shift(1)
-    out["W52"] = (h > w52_high) & (v > vol_20_avg * _factor.W52_VOL_MULT)
+    out["W52"] = (h > w52_high) & (v > vol_20_avg * W52_VOL_MULT)
 
     # 11. PB: 눌림목 패턴 (+2)
     out["PB"] = (
@@ -214,56 +225,67 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
 def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
     """날짜별 KOSPI/KOSDAQ 20MA 환경. {date: {'KOSPI': bool, 'KOSDAQ': bool}}"""
     result: dict[str, dict[str, bool]] = {}
-    for idx_nm, key in [("코스피", "KOSPI"), ("코스닥", "KOSDAQ")]:
+    for idx_nm, key, clss in [
+        ("코스피", "KOSPI", sector.IDX_CLSS_KOSPI),
+        ("코스닥", "KOSDAQ", sector.IDX_CLSS_KOSDAQ),
+    ]:
         rows = select_all(
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
-            "WHERE idx_nm = :nm AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, s=start, e=end,
+            "WHERE idx_nm = :nm AND idx_clss = :clss "
+            "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
+            nm=idx_nm, clss=clss, s=start, e=end,
         )
         if not rows:
             continue
         df = pd.DataFrame(rows).drop_duplicates(subset="trd_dd").set_index("trd_dd")
         price = pd.to_numeric(df["clsprc_idx"], errors="coerce")
-        ma20 = price.rolling(20).mean()
+        ma20 = price.rolling(20).mean().shift(1)  # 당일 제외 MA20
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
-                result.setdefault(d, {})[key] = v >= -_factor.INDEX_DROP_LIMIT
+                result.setdefault(d, {})[key] = v >= -INDEX_DROP_LIMIT
     return result
 
 
-def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str], float]:
-    """업종지수별 MA20 괴리율. {(idx_nm, date): gap_pct}
+def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str, str], float]:
+    """업종지수별 MA20 괴리율. {(idx_nm, idx_clss, date): gap_pct}
 
     gap_pct: (price - MA20) / MA20
     예) -0.05 = MA20 대비 -5%
     """
-    sector_names = (
-        set(_KOSPI_MID_TO_IDX.values()) | set(_KOSPI_BIG_TO_IDX.values())
-        | set(_KOSDAQ_MID_TO_IDX.values()) | set(_KOSDAQ_BIG_TO_IDX.values())
-    )
-    sector_names.add("코스닥")
-    sector_names.add("코스피")
+    # (idx_nm, idx_clss) 쌍 생성 — KOSPI/KOSDAQ 동명 업종 구분
+    sector_pairs: set[tuple[str, str]] = set()
+    for nm in _KOSPI_MID_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSPI))
+    for nm in _KOSPI_BIG_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSPI))
+    for nm in _KOSDAQ_MID_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSDAQ))
+    for nm in _KOSDAQ_BIG_TO_IDX.values():
+        sector_pairs.add((nm, sector.IDX_CLSS_KOSDAQ))
+    sector_pairs.add(("코스피", sector.IDX_CLSS_KOSPI))
+    sector_pairs.add(("코스닥", sector.IDX_CLSS_KOSDAQ))
 
-    result: dict[tuple[str, str], float] = {}
+    result: dict[tuple[str, str, str], float] = {}
 
-    for idx_nm in sector_names:
+    for idx_nm, clss in sector_pairs:
         rows = select_all(
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
-            "WHERE idx_nm = :nm AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, s=start, e=end,
+            "WHERE idx_nm = :nm AND idx_clss = :clss "
+            "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
+            nm=idx_nm, clss=clss, s=start, e=end,
         )
         if not rows:
             continue
         df = pd.DataFrame(rows).drop_duplicates(subset="trd_dd").set_index("trd_dd")
         price = pd.to_numeric(df["clsprc_idx"], errors="coerce")
-        ma20 = price.rolling(20).mean()
+        ma20 = price.rolling(20).mean().shift(1)  # 당일 제외 MA20
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
-                result[(idx_nm, d)] = float(v)
+                result[(idx_nm, clss, d)] = float(v)
 
-    log.info(f"  업종지수 환경: {len(sector_names)}업종, {len(result):,}건")
+    log.info(f"  업종지수 환경: {len(sector_pairs)}업종, {len(result):,}건")
     return result
 
 
@@ -404,7 +426,7 @@ class OptCache:
         self.name_map: dict[str, str] = {}
         self.ticker_market: dict[str, str] = {}
         self.ticker_sector: dict[str, str] = {}  # ticker → 업종지수명
-        self.sector_gaps: dict[tuple[str, str], float] = {}  # (업종지수명, date) → MA20 괴리율
+        self.sector_gaps: dict[tuple[str, str, str], float] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
 
     # ── pickle I/O
     def save(self, tag: str = ""):
@@ -456,8 +478,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     cache = OptCache()
 
     # ── 1. 영업일
-    log.info("[1/6] 영업일 로드")
-    lookback_start = dtutils.add_days(start_date, -(_factor.LOOKBACK_DAYS + 30))
+    log.info("[1/8] 영업일 로드")
+    lookback_start = dtutils.add_days(start_date, -(LOOKBACK_DAYS + 30))
     all_biz = [
         r["d"]
         for r in select_all(
@@ -482,7 +504,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     }
 
     # ── 3. OHLCV 벌크 로드
-    log.info("[2/6] OHLCV 벌크 로드")
+    log.info("[2/8] OHLCV 벌크 로드")
     ohlcv_by_ticker: dict[str, pd.DataFrame] = {}
     for table, market in [("isu_ksp_ohlcv", "KOSPI"), ("isu_ksd_ohlcv", "KOSDAQ")]:
         t0 = time.time()
@@ -533,7 +555,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     for ticker, df in ohlcv_by_ticker.items():
         avg20 = df["trdval"].rolling(20, min_periods=10).mean()
         for d in cache.scan_dates:
-            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= _factor.TRDVAL_MIN:
+            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= TRDVAL_MIN:
                 trdval_pass.setdefault(d, set()).add(ticker)
 
     # ── 6. 벡터화 신호 계산
@@ -542,7 +564,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     total = len(ohlcv_by_ticker)
     t0 = time.time()
     for i, (ticker, df) in enumerate(ohlcv_by_ticker.items()):
-        if len(df) < _factor.MACD_LONG + _factor.MACD_SIGNAL + 5:
+        if len(df) < MACD_LONG + MACD_SIGNAL + 5:
             continue
         try:
             stock_sigs[ticker] = _compute_stock_signals(df)
@@ -580,11 +602,11 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
             mode = _classify_mode(flags)
             score = _calc_score(flags, mode)
-            if score < _factor.MIN_SCORE:
+            if score < MIN_SCORE:
                 continue
 
             # 수급 보강 (score >= ENRICH_SCORE 인 경우만)
-            if score >= _factor.ENRICH_SCORE:
+            if score >= ENRICH_SCORE:
                 sup = supply.get((ticker, date))
                 if sup:
                     bonus, bonus_flags, has_pov = sup
@@ -599,11 +621,12 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             if atr_val <= 0 or close_val <= 0:
                 continue
 
-            entry_price = _tick.ceil_tick(close_val + 0.5 * atr_val)
+            entry_price = Tick.ceil_tick(close_val + 0.5 * atr_val)
 
             # 업종지수 MA20 괴리율 (없으면 0.0 = 중립)
             sec_nm = cache.ticker_sector.get(ticker, "")
-            sec_gap = cache.sector_gaps.get((sec_nm, date), 0.0) if sec_nm else 0.0
+            idx_clss = sector.get_idx_clss(mkt)
+            sec_gap = cache.sector_gaps.get((sec_nm, idx_clss, date), 0.0) if sec_nm else 0.0
 
             day_sigs.append(
                 {

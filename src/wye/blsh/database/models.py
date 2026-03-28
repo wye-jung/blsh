@@ -177,16 +177,21 @@ class TradeCandidates(Base):
     """
     거래 후보 종목
     """
-
     __tablename__ = "trade_candidates"
-    __table_args__ = ({"comment": "거래 후보 종목 (PK: base_date + ticker)"},)
+    __table_args__ = ({"comment": "거래 후보 종목 (PK: entry_date + po_type + ticker)"},)
 
     # 기본 키 (Composite Primary Key)
-    base_date = Column(
+    entry_date = Column(
         String(8),
         primary_key=True,
         nullable=False,
-        comment="매수 신호 스캔 기준일 (OHLCV 마지막 날짜)",
+        comment="매수 목표일 (base_date 다음 영업일)"
+    )
+    po_type = Column(
+        String(7),
+        primary_key=True,
+        nullable=False,
+        comment="po type (1: pre, 2: regular, 3: final)"
     )
     ticker = Column(
         String(20),
@@ -199,6 +204,8 @@ class TradeCandidates(Base):
     name = Column(String(100), comment="한글종목약명 (isu_base_info.isu_abbrv)")
     market = Column(String(20), comment="시장구분 (KOSPI/KOSDAQ)")
 
+    # 스캔 기준일
+    base_date = Column(String(8), comment="매수 신호 스캔 기준일 (OHLCV 마지막 날짜)")
     # 점수 및 모드
     buy_score = Column(
         SmallInteger,
@@ -208,17 +215,12 @@ class TradeCandidates(Base):
     mode = Column(
         String(10), comment="신호 성격: MOM(모멘텀) / REV(추세전환) / MIX(혼합) / WEAK"
     )
-    entry_date = Column(String(8), comment="매수 목표일 (base_date 다음 영업일)")
     # 가격 및 전략 지표
     entry_price = Column(
         Numeric, comment="매수 상단가 = 종가 + 0.5×ATR (이 가격 이하 매수)"
     )
-    stop_loss = Column(Numeric, comment="손절가 = 종가 - 1.5×ATR")
-    take_profit = Column(Numeric, comment="익절가 = 종가 + 3.0×ATR")
-
     # 기술적 지표 상세
     atr = Column(Numeric, comment="ATR 14일 지수이동평균")
-
     atr_sl_mult = Column(Numeric, comment="ATR_SL_MULT")
     atr_tp_mult = Column(Numeric, comment="ATR_TP_MULT")
     max_hold_days = Column(SmallInteger, comment="최대 보유 영업일수")

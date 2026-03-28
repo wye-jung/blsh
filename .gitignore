@@ -3,6 +3,7 @@ __pycache__/
 .ipynb_checkpoints/
 *.pyc
 *.pyo
+*.dat
 *.egg-info/
 dist/
 build/

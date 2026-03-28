@@ -1,5 +1,9 @@
 #!/bin/bash
+# Grid Search 최적화
 
-source /home/wye/workspace/blsh/.venv/bin/activate
-/home/wye/.local/bin/uv run python -m wye.blsh.domestic.optimize.grid_search --mode SWING 2>&1 | grep "★" -A 15 > /home/wye/.blsh/config/SWING.dat &
-/home/wye/.local/bin/uv run python -m wye.blsh.domestic.optimize.grid_search --mode DAY 2>&1 | grep "★" -A 15 > /home/wye/.blsh/config/DAY.dat &
+cd /home/wye/workspace/blsh
+
+LOG_DIR="$HOME/.blsh/logs"
+mkdir -p "$LOG_DIR"
+
+uv run python -m wye.blsh.domestic.optimize.grid_search > "$LOG_DIR/optimize.log" 2>&1
