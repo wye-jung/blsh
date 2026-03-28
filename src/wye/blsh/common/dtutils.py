@@ -61,6 +61,25 @@ def next_biz_date(date_str=None, fmt=DATE_FMT):
     return the_date
 
 
+def prev_biz_date(date_str=None, fmt=DATE_FMT):
+    date_str = date_str if date_str else today()
+    if fmt != DATE_FMT:
+        date_str = datetime.strptime(date_str, fmt).strftime(DATE_FMT)
+
+    from wye.blsh.database import query
+
+    the_date = query.find_prev_biz_date(date_str)
+    if the_date and fmt != DATE_FMT:
+        the_date = datetime.strptime(the_date, DATE_FMT).strftime(fmt)
+    return the_date
+
+
+def max_ohlcv_date():
+    from wye.blsh.database import query
+
+    return query.get_max_ohlcv_date()
+
+
 def get_latest_biz_date():
     from wye.blsh.krx.krx_auth import login_krx
     from pykrx.website import krx

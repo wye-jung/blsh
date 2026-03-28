@@ -13,8 +13,12 @@ Grid Search 최적화
 
 import argparse
 import logging
+import multiprocessing as mp
+import os
+import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import product
 from pathlib import Path
 
@@ -22,6 +26,15 @@ from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import build_or_load, OptCache, CACHE_DIR
 
 log = logging.getLogger(__name__)
+
+# fork 방식으로 캐시를 자식 프로세스에 공유 (복사 없이 CoW)
+_WORKER_CACHE: OptCache | None = None
+
+
+def _backtest_worker(args: tuple) -> tuple["Params", "Stats"]:
+    keys, combo = args
+    p = Params(**dict(zip(keys, combo)))
+    return p, backtest(_WORKER_CACHE, p)
 
 SELL_COST_RATE = 0.002
 
@@ -264,7 +277,7 @@ SWING_GRID = {
     "sector_penalty_threshold": [-0.03, -0.05],
     "sector_penalty_pts": [0, -2],
     "sector_bonus_pts": [0, 1],
-}  # 5×4×4×4×3×3×3×3×3×2×2×2 = 233,280 → --no-sector 시 25,920
+}  # 5×4×4×4×3×3×3×3×3×2×2×2 = 622,080 → --no-sector 시 77,760
 
 
 # ─────────────────────────────────────────
@@ -295,10 +308,9 @@ def _report(trade_mode: str, ranked: list[tuple[Params, Stats]], elapsed: float)
         log.info(f"    TP1_MULT         = {best_p.tp1_mult}  (매도비율 {best_p.tp1_ratio:.0%})")
         log.info(f"    ATR_TP_MULT      = {best_p.atr_tp_mult}")
         log.info(f"    GAP_DOWN_LIMIT   = {best_p.gap_down_limit:.0%}{'  (OFF)' if best_p.gap_down_limit == 0 else ''}")
-        if trade_mode == "SWING":
-            log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
-            log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
-            log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
+        log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
+        log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
+        log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
         sec_parts = []
         if best_p.sector_penalty_pts != 0:
             sec_parts.append(f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점")
@@ -344,6 +356,22 @@ def _fmt_val(key: str, val) -> str:
     return str(val)
 
 
+def _read_mode_opt_line(mode: str) -> str:
+    """기존 factor.py에서 모드별 최적화 주석 전체를 읽어 반환. 없으면 빈 문자열."""
+    if not _FACTOR_PATH.exists():
+        return ""
+    text = _FACTOR_PATH.read_text(encoding="utf-8")
+    m = re.search(rf"# {mode} 최적화: (.+)", text)
+    return m.group(1).strip() if m else ""
+
+
+def _make_opt_line(ts: str, period: str, s: Stats) -> str:
+    return (
+        f"{ts}  기간 {period}  {s.trades}건  "
+        f"승률 {s.win_rate:.1f}%  평균 {s.avg_ret:+.2f}%  총 {s.total_ret:+.1f}%"
+    )
+
+
 def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
     """DAY/SWING 최적 파라미터로 factor.py 재생성."""
     day_d = _params_to_dict(best["DAY"][0]) if "DAY" in best else None
@@ -362,6 +390,20 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
             return
 
     today = dtutils.today()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    start_date = dtutils.add_days(today, -years * 365)
+    period = f"{start_date}~{today}"
+
+    day_opt = (
+        _make_opt_line(now_str, period, best["DAY"][1])
+        if "DAY" in best
+        else (_read_mode_opt_line("DAY") or "기존 유지")
+    )
+    swing_opt = (
+        _make_opt_line(now_str, period, best["SWING"][1])
+        if "SWING" in best
+        else (_read_mode_opt_line("SWING") or "기존 유지")
+    )
 
     def fmt_pct(v):
         """0.05 → '5%', 0 → '0'"""
@@ -393,14 +435,15 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
     doc_lines.append(f"{'SECTOR_BONUS':<20s} +{day_d['SECTOR_BONUS_PTS']:<7}+{swing_d['SECTOR_BONUS_PTS']}")
     doc_table = "\n".join(doc_lines)
 
-    def dict_block(name: str, d: dict) -> str:
-        items = []
+    def dict_block(name: str, d: dict, opt_line: str) -> str:
+        mode_label = name.lstrip("_")
         comments = {
             "TP1_MULT": "1차 익절: buy + ATR × TP1_MULT",
             "TP1_RATIO": "1차 익절 매도 비율 (1.0 = 전량)",
             "SECTOR_PENALTY_THRESHOLD": "업종지수 MA20 대비 해당값 이하",
             "SECTOR_BONUS_PTS": "업종지수 MA20 이상일 때",
         }
+        items = []
         for k, v in d.items():
             val_str = _fmt_val(k, v)
             comment = comments.get(k, "")
@@ -408,13 +451,16 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
             if comment:
                 line = f"{line}  # {comment}"
             items.append(line)
-        return f"{name} = {{\n" + "\n".join(items) + "\n}"
+        return f"# {mode_label} 최적화: {opt_line}\n{name} = {{\n" + "\n".join(items) + "\n}"
 
     content = f'''"""\n최적 파라미터 ({today} 기준, 최근 {years}년 백테스트)
 
-파라미터              DAY     SWING
-──────────────────────────────────────
+파라미터              DAY                   SWING
+──────────────────────────────────────────────────────
 {doc_table}
+
+[DAY]   {day_opt}
+[SWING] {swing_opt}
 
 실행 후 grid_search 최적값으로 자동 갱신:
   uv run python -m wye.blsh.domestic.optimize.grid_search
@@ -423,9 +469,9 @@ def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
 # ─────────────────────────────────────────
 # 모드별 factor (grid_search 최적화 결과 반영)
 # ─────────────────────────────────────────
-{dict_block("_DAY", day_d)}
+{dict_block("_DAY", day_d, day_opt)}
 
-{dict_block("_SWING", swing_d)}
+{dict_block("_SWING", swing_d, swing_opt)}
 
 # ─────────────────────────────────────────
 # 활성 factor 적용
@@ -461,7 +507,9 @@ SECTOR_BONUS_PTS = _active["SECTOR_BONUS_PTS"]
 # 메인
 # ─────────────────────────────────────────
 def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool = True,
-       apply: bool = True):
+       apply: bool = True, workers: int = 0):
+    global _WORKER_CACHE
+
     end_date = dtutils.today()
     start_date = dtutils.add_days(end_date, -years * 365)
 
@@ -475,6 +523,19 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
             log.info(f"캐시 삭제: {p}")
 
     cache = build_or_load(start_date, end_date)
+
+    # fork 전에 캐시를 전역 변수로 설정 (CoW — 자식 프로세스에 복사 없이 공유)
+    _WORKER_CACHE = cache
+
+    # DB 연결 풀 해제: fork 전 SQLAlchemy 백그라운드 스레드 락 제거 (Linux hang 방지)
+    try:
+        from wye.blsh.database.query import engine as _db_engine
+        _db_engine.dispose()
+    except Exception:
+        pass
+
+    n_workers = workers if workers > 0 else os.cpu_count()
+    log.info(f"병렬 처리: {n_workers}코어")
 
     best_results: dict[str, tuple[Params, Stats]] = {}
 
@@ -499,18 +560,21 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
 
         results: list[tuple[Params, Stats]] = []
         t0 = time.time()
+        # chunksize: 너무 크면 결과 큐 누적 → OOM. 워커당 32개로 제한.
+        chunk = max(10, min(200, len(combos) // (n_workers * 32)))
 
-        for i, combo in enumerate(combos):
-            p = Params(**dict(zip(keys, combo)))
-            s = backtest(cache, p)
-            results.append((p, s))
-
-            if (i + 1) % 500 == 0 or (i + 1) == len(combos):
-                elapsed = time.time() - t0
-                log.info(
-                    f"  {i + 1:>5d}/{len(combos)}  ({elapsed:.0f}초, "
-                    f"{(i + 1) / elapsed:.0f} combo/s)"
-                )
+        with mp.Pool(processes=n_workers) as pool:
+            for i, (p, s) in enumerate(
+                pool.imap_unordered(_backtest_worker, ((keys, c) for c in combos), chunksize=chunk)
+            ):
+                results.append((p, s))
+                n = i + 1
+                if n % 5000 == 0 or n == len(combos):
+                    elapsed = time.time() - t0
+                    log.info(
+                        f"  {n:>6d}/{len(combos)}  ({elapsed:.0f}초, "
+                        f"{n / elapsed:.0f} combo/s)"
+                    )
 
         # metric 기준 정렬
         results.sort(key=lambda x: x[1].metric, reverse=True)
@@ -540,6 +604,7 @@ if __name__ == "__main__":
     parser.add_argument("--rebuild", action="store_true", help="캐시 강제 재빌드")
     parser.add_argument("--no-sector", action="store_true", help="업종지수 패널티 비활성화 (기존 방식)")
     parser.add_argument("--no-apply", action="store_true", help="factor.py 자동 갱신 생략")
+    parser.add_argument("--workers", type=int, default=0, help="병렬 프로세스 수 (0=자동)")
     args = parser.parse_args()
 
     run(
@@ -548,4 +613,5 @@ if __name__ == "__main__":
         rebuild=args.rebuild,
         sector=not args.no_sector,
         apply=not args.no_apply,
+        workers=args.workers,
     )
