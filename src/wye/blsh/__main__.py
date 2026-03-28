@@ -20,7 +20,7 @@ if __name__ == "__main__":
                 max_ohlcv_date == today
                 or max_ohlcv_date == dtutils.get_latest_biz_date()
             ):
-                df = scanner.issue_po(max_ohlcv_date)
+                scanner.issue_po(max_ohlcv_date)
 
     else:
         log.warning("invalid arguments")

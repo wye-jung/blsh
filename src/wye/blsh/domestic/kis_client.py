@@ -6,6 +6,7 @@ stock prices, retrieving account balances, placing market and limit orders,
 and canceling orders. It aims to provide an organized structure for interacting
 with the KIS domestic stock trading API.
 """
+
 import logging
 import threading
 import time
@@ -22,6 +23,8 @@ log = logging.getLogger(__name__)
 
 _API_CONCURRENCY = 2
 _api_sem = threading.Semaphore(_API_CONCURRENCY)  # 동시 API 호출 수 제한
+
+
 class _RateLimiter:
     """초당 최대 N회 호출 제한 (멀티스레드 안전)"""
 
@@ -232,14 +235,18 @@ class KISClient:
                     excg_id_dvsn_cd="NXT",
                 )
             if df is not None and not df.empty:
-                log.info(f"  📤 NXT매도: {ticker}  수량={qty}  지정가={int(price):,}  [{reason}]")
+                log.info(
+                    f"  📤 NXT매도: {ticker}  수량={qty}  지정가={int(price):,}  [{reason}]"
+                )
                 return True
         except Exception as e:
             log.error(f"  NXT 매도 오류 ({ticker}): {e}")
         return False
 
-    def cancel_order(self, ticker: str, odno: str, qty: int) -> bool:
-        """주문 취소. 성공 시 True."""
+    def cancel_order(
+        self, ticker: str, odno: str, qty: int, excg_id_dvsn_cd: str = "KRX"
+    ) -> bool:
+        """주문 취소. 성공 시 True. excg_id_dvsn_cd는 발주 시의 거래소와 일치해야 함."""
         try:
             self.rate_limiter.wait()
             with _api_sem:
@@ -254,10 +261,10 @@ class KISClient:
                     ord_qty=str(qty),
                     ord_unpr="0",
                     qty_all_ord_yn="Y",
-                    excg_id_dvsn_cd="KRX",
+                    excg_id_dvsn_cd=excg_id_dvsn_cd,
                 )
-            log.info(f"  🚫 주문취소: {ticker}  no={odno}")
+            log.info(f"  🚫 주문취소: {ticker}  no={odno}  [{excg_id_dvsn_cd}]")
             return True
         except Exception as e:
-            log.warning(f"  주문 취소 실패 ({ticker}): {e}")
+            log.warning(f"  주문 취소 실패 ({ticker}, {excg_id_dvsn_cd}): {e}")
             return False

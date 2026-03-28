@@ -239,7 +239,7 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
             continue
         df = pd.DataFrame(rows).drop_duplicates(subset="trd_dd").set_index("trd_dd")
         price = pd.to_numeric(df["clsprc_idx"], errors="coerce")
-        ma20 = price.rolling(20).mean()
+        ma20 = price.rolling(20).mean().shift(1)  # 당일 제외 MA20
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
@@ -279,7 +279,7 @@ def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str, str], flo
             continue
         df = pd.DataFrame(rows).drop_duplicates(subset="trd_dd").set_index("trd_dd")
         price = pd.to_numeric(df["clsprc_idx"], errors="coerce")
-        ma20 = price.rolling(20).mean()
+        ma20 = price.rolling(20).mean().shift(1)  # 당일 제외 MA20
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):

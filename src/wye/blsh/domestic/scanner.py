@@ -57,9 +57,7 @@ import pandas as pd
 from wye.blsh.database import query, ModelManager
 from wye.blsh.domestic import reporter, Tick, Milestone
 from wye.blsh.domestic import factor, sector
-from wye.blsh.domestic import (
-    PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO
-)
+from wye.blsh.domestic import PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO
 
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
@@ -195,11 +193,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("MGC", 2))
     # 2. MACD 예상 골든크로스 (+1) → MPGC (중립)
     elif (
-            m0 < s0
-            and len(hist) >= 3
-            and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
-            and abs(s0) > 0
-            and (s0 - m0) / abs(s0) <= GAP_THRESHOLD
+        m0 < s0
+        and len(hist) >= 3
+        and hist.iloc[-3] < hist.iloc[-2] < hist.iloc[-1] < 0
+        and abs(s0) > 0
+        and (s0 - m0) / abs(s0) <= GAP_THRESHOLD
     ):
         signals.append(("MPGC", 1))
 
@@ -651,12 +649,14 @@ def check_index_above_ma(
 ):
     """지수 환경 체크. MA 대비 -drop_limit 이하일 때만 스캔 스킵."""
     try:
-        df = pd.DataFrame(query.get_index_clsprc(idx_nm, base_date, ma_days, idx_clss=idx_clss))
+        df = pd.DataFrame(
+            query.get_index_clsprc(idx_nm, base_date, ma_days, idx_clss=idx_clss)
+        )
         if len(df) < ma_days:
             return True
         prices = df["clsprc_idx"].astype(float)
         cur = float(prices.iloc[0])  # DESC 정렬: [0]=최신
-        ma = prices.mean()
+        ma = prices.iloc[1:].mean()  # 당일 제외 MA20
         gap_pct = (cur - ma) / ma
         skip = gap_pct < -drop_limit
         if skip:
@@ -690,12 +690,16 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
 
     results = []
 
-    if check_index_above_ma("코스피", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSPI):
+    if check_index_above_ma(
+        "코스피", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSPI
+    ):
         results += scan_market("isu_ksp_ohlcv", "KOSPI", start, base_date, name_map)
     else:
         log.warning("[KOSPI] 지수 20MA 아래 → 스캔 스킵")
 
-    if check_index_above_ma("코스닥", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSDAQ):
+    if check_index_above_ma(
+        "코스닥", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSDAQ
+    ):
         results += scan_market("isu_ksd_ohlcv", "KOSDAQ", start, base_date, name_map)
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
@@ -749,7 +753,9 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
             ticker = str(row["단축코드"]).strip()
             mid = int(row.get("지수업종중분류", 0) or 0)
             big = int(row.get("지수업종대분류", 0) or 0)
-            idx_nm = sector.KOSPI_MID_TO_IDX.get(mid) or sector.KOSPI_BIG_TO_IDX.get(big)
+            idx_nm = sector.KOSPI_MID_TO_IDX.get(mid) or sector.KOSPI_BIG_TO_IDX.get(
+                big
+            )
             if idx_nm:
                 result[ticker] = idx_nm
     except Exception as e:
@@ -764,9 +770,9 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
             ticker = str(row["단축코드"]).strip()
             mid = int(row.get("지수 업종 중분류 코드", 0) or 0)
             big = int(row.get("지수업종 대분류 코드", 0) or 0)
-            idx_nm = sector.KOSDAQ_MID_TO_IDX.get(
-                mid
-            ) or sector.KOSDAQ_BIG_TO_IDX.get(big)
+            idx_nm = sector.KOSDAQ_MID_TO_IDX.get(mid) or sector.KOSDAQ_BIG_TO_IDX.get(
+                big
+            )
             if idx_nm:
                 result[ticker] = idx_nm
     except Exception as e:
@@ -785,14 +791,17 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
     return result
 
 
-def _get_sector_gap(idx_nm: str, base_date: str, ma_days: int = 20, idx_clss: str = None) -> float:
+def _get_sector_gap(
+    idx_nm: str, base_date: str, ma_days: int = 20, idx_clss: str = None
+) -> float:
     """업종지수의 MA20 괴리율. 데이터 없으면 0.0 (중립)."""
     rows = query.get_index_clsprc(idx_nm, base_date, ma_days, idx_clss=idx_clss)
     if not rows or len(rows) < ma_days:
         return 0.0
     prices = [float(r["clsprc_idx"]) for r in rows]
-    cur = prices[0]  # 최신
-    ma = sum(prices) / len(prices)
+    cur = prices[0]  # 최신 (당일)
+    prev = prices[1:]  # 당일 제외
+    ma = sum(prev) / len(prev)
     return (cur - ma) / ma if ma else 0.0
 
 
@@ -869,7 +878,9 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 
     today = dtutils.today()
     ctime = dtutils.ctime()
-    if base_date == today and ctime < dtutils.add_time(Milestone.LIQUIDATE_TIME, minutes=-3):
+    if base_date == today and ctime < dtutils.add_time(
+        Milestone.LIQUIDATE_TIME, minutes=-3
+    ):
         entry_date = today
         if ctime < Milestone.NXT_OPEN_TIME:
             po_type = PO_TYPE_PRE
@@ -903,13 +914,24 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 def issue_po(base_date=None):
     df = find_candidates(base_date, True)
     if not df.empty:
-        df = df[[
-            "base_date", "ticker", "name", "market",
-            "buy_score", "mode", "entry_price",
-            "atr", "atr_sl_mult", "atr_tp_mult",
-            "max_hold_days",
-            "po_type", "entry_date", "expiry_date"
-        ]]
+        df = df[
+            [
+                "base_date",
+                "ticker",
+                "name",
+                "market",
+                "buy_score",
+                "mode",
+                "entry_price",
+                "atr",
+                "atr_sl_mult",
+                "atr_tp_mult",
+                "max_hold_days",
+                "po_type",
+                "entry_date",
+                "expiry_date",
+            ]
+        ]
         entry_date = df.iloc[0]["entry_date"]
         po_type = df.iloc[0]["po_type"]
 
@@ -923,4 +945,4 @@ def issue_po(base_date=None):
 
 
 if __name__ == "__main__":
-    print(issue_po())
+    issue_po()

@@ -16,7 +16,7 @@ def select_one(sql, **params):
         return session.execute(text(sql), params).mappings().one()
 
 
-def select_first(sql, mapping=False, **params):
+def select_first(sql, **params):
     with Session(engine) as session:
         return session.execute(text(sql), params).mappings().first()
 

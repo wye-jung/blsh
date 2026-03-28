@@ -1,6 +1,7 @@
 """
 쿼리
 """
+
 import logging
 from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
@@ -35,6 +36,7 @@ _ALLOWED_TABLES = {
     "idx_stk_ohlcv",
     "etf_ohlcv",
 }
+
 
 def _validate_table(table: str) -> None:
     if table not in _ALLOWED_TABLES:
@@ -84,7 +86,7 @@ def find_next_biz_date(base_date) -> str | None:
             """,
             bd=base_date,
         )
-    return row["d"]
+    return row["d"] if row else None
 
 
 def get_biz_dates(fromdate, todate):
@@ -258,6 +260,7 @@ def get_max_hold_dates(target_date, max_hold_days):
         **{"start": target_date, "n": max_hold_days},
     )
 
+
 # ─────────────────────────────────────────
 # 매매 이력
 # ─────────────────────────────────────────
@@ -290,6 +293,7 @@ def save_trade_history(
             },
         )
         session.commit()
+
 
 def get_trade_history(date_str: str | None = None):
     """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘)."""

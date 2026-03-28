@@ -5,6 +5,7 @@ idx_stk_info, isu_ksp_info, isu_ksd_info
 stock_base_info, etf_base_info
 krx_holidays
 """
+
 import time
 from pykrx.website import krx
 from wye.blsh.database import ModelManager, query
@@ -40,7 +41,10 @@ def collect():
         if Milestone.NXT_OPEN_TIME < dtutils.ctime() < Milestone.NXT_CLOSE_TIME:
             _collect_idx_data(max_ohlcv_date)
             _collect_isu_data(max_ohlcv_date)
-        elif query.get_fetched_at(max_ohlcv_date).strftime(dtutils._TIME_FMT) < Milestone.NXT_CLOSE_TIME:
+        elif (
+            query.get_fetched_at(max_ohlcv_date).strftime(dtutils._TIME_FMT)
+            < Milestone.NXT_CLOSE_TIME
+        ):
             from_date = max_ohlcv_date
 
     if from_date:
@@ -109,7 +113,7 @@ def collect_holiday():
         log.info(f"krx_holiday 미보유 ({base_date} 이후) → KIS API 조회")
         log.info(f"chk_holiday로 {base_date} 기준 약 100일치 데이터 반환")
         df = ds.chk_holiday(bass_dt=base_date)
-        df["bass_dt"] = dtutils.strftime(pd.to_datetime(df["bass_dt"]).dt)
+        df["bass_dt"] = pd.to_datetime(df["bass_dt"]).dt.strftime(dtutils.DATE_FMT)
         query.save_holiday(df)
 
 

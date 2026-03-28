@@ -54,10 +54,15 @@ import json
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from wye.blsh.domestic import (
-    PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO,
-    Tick, Milestone, factor
+    PO_TYPE_PRE,
+    PO_TYPE_INI,
+    PO_TYPE_FIN,
+    PO,
+    Tick,
+    Milestone,
+    factor,
 )
 from wye.blsh.domestic.kis_client import KISClient
 from wye.blsh.common import dtutils, fileutils, messageutils
@@ -100,10 +105,6 @@ class Position:
     qty: int
     buy_price: float
     atr: float
-
-    def __setattr__(self, name, value, /):
-        super().__setattr__(name, value)
-
     atr_sl_mult: float
     atr_tp_mult: float
     sl: float
@@ -117,6 +118,7 @@ class Position:
     qty_t1: int = 0
     realized_pnl: float = 0.0
     po_type: str = ""
+    excg_cd: str = "KRX"  # 매수 시 거래소 (KRX/NXT)
 
 
 @dataclass
@@ -129,6 +131,7 @@ class PendingOrder:
     qty: int
     deadline: float
     po_type: str = ""
+    excg_cd: str = "KRX"  # 발주 거래소 (KRX/NXT) — 취소 시 일치 필요
 
 
 # ─────────────────────────────────────────
@@ -151,7 +154,6 @@ def _save_history(
     messageutils.send_message(f"{name}({ticker}) {qty}주를 {price}원에 {side}")
 
 
-
 # ─────────────────────────────────────────
 # 매도 + SL/TP
 # ─────────────────────────────────────────
@@ -169,6 +171,7 @@ def _sell_or_log(
     log.critical(f"  🚨 매도 실패: {pos.ticker} [{reason}] → 다음 틱 재시도")
     return False
 
+
 # ─────────────────────────────────────────
 # 포지션
 # ─────────────────────────────────────────
@@ -185,6 +188,7 @@ def _load_positions() -> dict[str, Position]:
             v.setdefault("atr_tp_mult", factor.ATR_TP_MULT)
             v.setdefault("expiry_date", "")
             v.setdefault("po_type", "")
+            v.setdefault("excg_cd", "KRX")
             p = Position(**v)
             if p.max_hold_days == 0 and p.entry_date != today:
                 log.warning(f"  이전 데이 포지션 무시: {t} (entry={p.entry_date})")
@@ -211,11 +215,11 @@ def _load_positions() -> dict[str, Position]:
 
 
 def _save_positions(positions: dict[str, Position], swing_only: bool = False):
-    to_save = (
-        {t: p for t, p in positions.items() if p.max_hold_days > 0}
-        if swing_only
-        else positions
-    )
+    to_save = {
+        t: asdict(p)
+        for t, p in positions.items()
+        if not swing_only or p.max_hold_days > 0
+    }
     if to_save:
         fileutils.create_json(POSITIONS_FILE, to_save)
     elif POSITIONS_FILE.exists():
@@ -229,6 +233,7 @@ def _make_position(
     entry_date: str,
     expiry_date: str = "",
     po_type: str = "",
+    excg_cd: str = "KRX",
 ) -> Position:
     """po.json dict → Position 생성."""
     atr = float(c["atr"])
@@ -288,6 +293,7 @@ def _make_position(
         t1_done=False,
         qty_t1=qty_t1,
         po_type=po_type,
+        excg_cd=excg_cd,
     )
 
 
@@ -412,6 +418,7 @@ def _submit_buy_orders(
                 qty=qty,
                 deadline=deadline,
                 po_type=po_type,
+                excg_cd=excg_id_dvsn_cd,
             )
         else:
             failed[ticker] = o
@@ -438,7 +445,7 @@ def _check_pending_orders(
     for ticker, po in pending.items():
         if ticker in positions:
             log.info(f"  [po] {ticker} 이미 보유 중 → 미체결 주문 취소")
-            kis.cancel_order(ticker, po.odno, po.qty)
+            kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd)
             done.append(ticker)
             continue
 
@@ -448,7 +455,7 @@ def _check_pending_orders(
                 log.warning(
                     f"  부분 체결: {ticker}  주문={po.qty}  체결={actual_qty} → 잔량 취소"
                 )
-                kis.cancel_order(ticker, po.odno, po.qty - actual_qty)
+                kis.cancel_order(ticker, po.odno, po.qty - actual_qty, po.excg_cd)
 
             # 실제 매입단가로 SL/TP 보정 (갭 하락 시 entry_price보다 낮을 수 있음)
             buy_price = avg_prices.get(ticker) or po.entry_price
@@ -466,6 +473,7 @@ def _check_pending_orders(
                     today,
                     po.cand.get("expiry_date") or "",
                     po_type=po.po_type,
+                    excg_cd=po.excg_cd,
                 )
             except Exception as e:
                 log.error(f"  Position 생성 실패 ({ticker}): {e}")
@@ -492,7 +500,7 @@ def _check_pending_orders(
 
         elif now_mono >= po.deadline:
             log.info(f"  [po] {PO_CANCEL_MIN}분 경과 미체결 취소: {ticker}")
-            kis.cancel_order(ticker, po.odno, po.qty)
+            kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd)
             done.append(ticker)
 
     for t in done:
@@ -503,8 +511,9 @@ def _check_pending_orders(
 
 def _cancel_all_pending(pending: dict[str, PendingOrder], kis: KISClient):
     for ticker, po in pending.items():
-        kis.cancel_order(ticker, po.odno, po.qty)
+        kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd)
     pending.clear()
+
 
 # ─────────────────────────────────────────
 # 메인
@@ -710,7 +719,7 @@ def run():
         if is_slow_tick and not krx_closed:
             if not ini_po_bought and now <= Milestone.KRX_EARLY_TIME:
                 po = PO(PO_TYPE_INI)
-                if  po.exists():
+                if po.exists():
                     orders = po.loads()
                     log.info(f"[매수] {po.path.name} {len(orders)} 종목")
                     _submit_buy_orders(
@@ -834,6 +843,7 @@ def run():
             f"  {t} {p.name}  qty={p.qty}  SL={p.sl:,.0f}  TP2={p.tp2:,.0f}"
             f"  만기={p.expiry_date}"
         )
+
 
 # ─────────────────────────────────────────
 # 진입점
