@@ -275,7 +275,7 @@ SWING_GRID = {
     "sector_penalty_threshold": [-0.03, -0.05],
     "sector_penalty_pts": [0, -2],
     "sector_bonus_pts": [0, 1],
-}  # 5×4×4×4×3×3×3×3×3×2×2×2 = 233,280 → --no-sector 시 25,920
+}  # 5×4×4×4×3×3×3×3×3×2×2×2 = 622,080 → --no-sector 시 77,760
 
 
 # ─────────────────────────────────────────
@@ -518,7 +518,8 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
 
         results: list[tuple[Params, Stats]] = []
         t0 = time.time()
-        chunk = max(50, len(combos) // (n_workers * 8))
+        # chunksize: 너무 크면 결과 큐 누적 → OOM. 워커당 32개로 제한.
+        chunk = max(10, min(200, len(combos) // (n_workers * 32)))
 
         with mp.Pool(processes=n_workers) as pool:
             for i, (p, s) in enumerate(
