@@ -262,4 +262,6 @@ if __name__ == "__main__":
         if len(sys.argv) > 1
         else dtutils.prev_biz_date(dtutils.max_ohlcv_date())
     )
-    simulate(scanner.find_candidates(dt), cash=10_000_000)
+    ca = float(sys.argv[2]) if len(sys.argv) > 2 else 10_000_000
+    print(dt, ca)
+    simulate(scanner.find_candidates(dt), cash=ca)
