@@ -736,7 +736,11 @@ def run():
             if krx_open and not orphan_done:
                 orphan_done = True
                 holdings_chk, _, _ = kis.get_balance()
-                tracked = set(positions.keys()) | set(pending_po.keys())
+                tracked = (
+                    set(positions.keys())
+                    | set(pending_po.keys())
+                    | set(session_closed.keys())
+                )
                 orphans = {
                     t: q for t, q in holdings_chk.items() if t not in tracked and q > 0
                 }
