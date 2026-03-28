@@ -55,4 +55,4 @@ if __name__ == "__main__":
     from wye.blsh.krx.krx_auth import login_krx
 
     login_krx()
-    print(Idx(nearest=True).get_fundamental().head())
+    print(Idx(nearest=True).get_ohlcv().head())

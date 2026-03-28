@@ -478,7 +478,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     cache = OptCache()
 
     # ── 1. 영업일
-    log.info("[1/6] 영업일 로드")
+    log.info("[1/8] 영업일 로드")
     lookback_start = dtutils.add_days(start_date, -(LOOKBACK_DAYS + 30))
     all_biz = [
         r["d"]
@@ -504,7 +504,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     }
 
     # ── 3. OHLCV 벌크 로드
-    log.info("[2/6] OHLCV 벌크 로드")
+    log.info("[2/8] OHLCV 벌크 로드")
     ohlcv_by_ticker: dict[str, pd.DataFrame] = {}
     for table, market in [("isu_ksp_ohlcv", "KOSPI"), ("isu_ksd_ohlcv", "KOSDAQ")]:
         t0 = time.time()

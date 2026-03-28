@@ -8,10 +8,12 @@ CONFIG_DIR: Final = BLSH_HOME / "config"
 DATA_DIR: Final = BLSH_HOME / "data"
 TEMP_DIR: Final = BLSH_HOME / "temp"
 LOG_DIR: Final = BLSH_HOME / "logs"
+BACKUP_DIR: Final = BLSH_HOME / "backup"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 KIS_DEVLP_YAML: Final = CONFIG_DIR / "kis_devlp.yaml"
 
@@ -39,6 +41,8 @@ KIS_ENV: Final = os.getenv("KIS_ENV", "demo").lower()  # KIS 모드: "demo" | "r
 TRADE_FLAG: Final = os.environ.get(
     "TRADE_FLAG", "SWING"
 ).upper()  # 트레이딩 모드: "DAY" | "SWING"
+
+USE_WEBSOCKET: Final = os.getenv("USE_WEBSOCKET", "").lower() in ("1", "true", "yes")
 
 TELEGRAM_BOT_TOKEN: Final = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID: Final = os.getenv("TELEGRAM_CHAT_ID")

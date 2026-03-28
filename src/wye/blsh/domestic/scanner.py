@@ -292,7 +292,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
     mom_score = sum(pts for f, pts in signals if f in _MOMENTUM_FLAGS)
     rev_score = sum(pts for f, pts in signals if f in _REVERSAL_FLAGS)
     neu_score = sum(
-        pts for f, pts in signals if f not in _MOMENTUM_FLAGS | _REVERSAL_FLAGS
+        pts for f, pts in signals if f not in (_MOMENTUM_FLAGS | _REVERSAL_FLAGS)
     )
 
     rev_cnt = len(flag_set & _REVERSAL_FLAGS)
@@ -656,7 +656,9 @@ def check_index_above_ma(
             return True
         prices = df["clsprc_idx"].astype(float)
         cur = float(prices.iloc[0])  # DESC 정렬: [0]=최신
-        ma = prices.iloc[1:].mean()  # 당일 제외 MA20
+        ma = prices.iloc[
+            1:
+        ].mean()  # 당일 제외 최근 N일 평균 (ma_days+1개 요청, [0]=당일 제외)
         gap_pct = (cur - ma) / ma
         skip = gap_pct < -drop_limit
         if skip:
@@ -932,16 +934,17 @@ def issue_po(base_date=None):
                 "expiry_date",
             ]
         ]
-        entry_date = df.iloc[0]["entry_date"]
         po_type = df.iloc[0]["po_type"]
+        entry_date = df.iloc[0]["entry_date"]
 
-        po = PO(po_type, entry_date)
-        if po.create(df.set_index("ticker").to_dict("index")):
-            log.info(f"{len(df)} 종목. {po.path.name} 생성.")
+        if po_type and entry_date:
+            po = PO(po_type, entry_date)
+            if po.create(df.set_index("ticker").to_dict("index")):
+                log.info(f"{len(df)} 종목. {po.path.name} 생성.")
 
-        model_manager = ModelManager(TradeCandidates)
-        model_manager.delete(entry_date=entry_date, po_type=po_type)
-        model_manager.create(df)
+            model_manager = ModelManager(TradeCandidates)
+            model_manager.delete(entry_date=entry_date, po_type=po_type)
+            model_manager.create(df)
 
 
 if __name__ == "__main__":

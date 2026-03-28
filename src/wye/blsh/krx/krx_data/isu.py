@@ -210,4 +210,4 @@ if __name__ == "__main__":
     from wye.blsh.krx.krx_auth import login_krx
 
     login_krx()
-    print(Isu("20260312").get_daily_info().head())
+    print(Isu("20260312").get_ohlcv().head())
