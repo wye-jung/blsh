@@ -68,7 +68,7 @@ from wye.blsh.domestic import (
 from wye.blsh.domestic.kis_client import KISClient
 from wye.blsh.domestic.ws_monitor import PriceMonitor
 from wye.blsh.common import dtutils, fileutils, messageutils
-from wye.blsh.common.env import DATA_DIR, LOG_DIR, KIS_ENV, USE_WEBSOCKET
+from wye.blsh.common.env import DATA_DIR, LOG_DIR, BACKUP_DIR, KIS_ENV, USE_WEBSOCKET
 from wye.blsh.database import query
 
 log = logging.getLogger(__name__)
@@ -95,6 +95,7 @@ SLOW_EVERY = 3  # po 감시·체결 확인 = TICK_SEC × SLOW_EVERY (30초)
 PO_CANCEL_MIN = 10
 
 POSITIONS_FILE = DATA_DIR / "positions.json"
+POSITIONS_BAK = BACKUP_DIR / "positions.json.bak"
 
 
 # ─────────────────────────────────────────
@@ -178,10 +179,15 @@ def _sell_or_log(
 # 포지션
 # ─────────────────────────────────────────
 def _load_positions() -> dict[str, Position]:
-    if not POSITIONS_FILE.exists():
-        return {}
+    source = POSITIONS_FILE
+    if not source.exists():
+        if POSITIONS_BAK.exists():
+            log.warning(f"positions.json 없음 → .bak에서 복원 시도")
+            source = POSITIONS_BAK
+        else:
+            return {}
     try:
-        data = json.loads(POSITIONS_FILE.read_text())
+        data = json.loads(source.read_text())
         today = dtutils.today()
         valid: dict[str, Position] = {}
         for t, v in data.items():
@@ -224,6 +230,14 @@ def _save_positions(positions: dict[str, Position], swing_only: bool = False):
         if not swing_only or p.max_hold_days > 0
     }
     if to_save:
+        # 기존 파일을 .bak으로 보관 (positions.json 유실 대비)
+        if POSITIONS_FILE.exists():
+            try:
+                import shutil
+
+                shutil.copy2(POSITIONS_FILE, POSITIONS_BAK)
+            except Exception as e:
+                log.debug(f"positions.bak 생성 실패: {e}")
         fileutils.create_json(POSITIONS_FILE, to_save)
     elif POSITIONS_FILE.exists():
         POSITIONS_FILE.unlink()
@@ -282,9 +296,7 @@ def _make_position(
 
     _ticker = ticker or c.get("ticker", "")
     if qty < 2 and tp1_ratio < 1.0:
-        log.warning(
-            f"  {_ticker} 수량={qty} → 1차 익절 시 전량 청산, 2차 익절 없음"
-        )
+        log.warning(f"  {_ticker} 수량={qty} → 1차 익절 시 전량 청산, 2차 익절 없음")
 
     return Position(
         ticker=_ticker,
@@ -582,6 +594,7 @@ def run():
     ini_po_bought = False
     liquidated = False
     krx_closed = False
+    orphan_done = False
     dirty = False
     tick_count = 0
     last_status_min = ""
@@ -716,6 +729,28 @@ def run():
                     dirty = True
                     monitor.sync_subscriptions(list(positions.keys()))
                 overdue_done = True
+
+            # ── 0-1. 추적불가 보유종목 일괄 청산 (positions에 없지만 API 잔고에 존재)
+            #   positions.json + .bak 모두 유실된 경우, SL/TP 추적이 불가능한
+            #   보유종목을 시장가 청산하여 리스크 방치 방지. KRX 개장 후 1회 실행.
+            if krx_open and not orphan_done:
+                orphan_done = True
+                holdings_chk, _, _ = kis.get_balance()
+                tracked = set(positions.keys()) | set(pending_po.keys())
+                orphans = {
+                    t: q for t, q in holdings_chk.items() if t not in tracked and q > 0
+                }
+                if orphans:
+                    log.warning(
+                        f"[추적불가 청산] positions에 없는 보유종목 {len(orphans)}건 발견 → 시장가 청산"
+                    )
+                    for ticker, qty in orphans.items():
+                        reason = "추적불가(positions 유실)"
+                        if kis.sell(ticker, qty, reason):
+                            _save_history("sell", ticker, ticker, qty, 0, reason)
+                            log.info(f"  🚨 추적불가 청산: {ticker}  수량={qty}")
+                        else:
+                            log.warning(f"  추적불가 청산 실패: {ticker}  수량={qty}")
 
             # ── 1. 현재가 조회 + SL/TP 처리 (KRX 장중 + NXT 에프터마켓)
             if (krx_open or krx_closed) and positions:

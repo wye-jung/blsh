@@ -20,7 +20,6 @@ import json
 import logging
 import queue
 import threading
-import time
 
 from wye.blsh.kis import kis_auth as ka
 from wye.blsh.kis.domestic_stock import domestic_stock_functions_ws as ws_fn
@@ -299,10 +298,7 @@ class PriceMonitor:
                     self._subscribed.add(ticker)
                     count = len(self._subscribed)
                 processed += 1
-                log.info(
-                    f"[WS] 구독 추가: {ticker}"
-                    f"  ({count}/{MAX_WS_SUBSCRIPTIONS})"
-                )
+                log.info(f"[WS] 구독 추가: {ticker}  ({count}/{MAX_WS_SUBSCRIPTIONS})")
 
             elif action == "remove":
                 with self._lock:
@@ -315,10 +311,7 @@ class PriceMonitor:
                     self._prices.pop(ticker, None)
                     count = len(self._subscribed)
                 processed += 1
-                log.info(
-                    f"[WS] 구독 해제: {ticker}"
-                    f"  ({count}/{MAX_WS_SUBSCRIPTIONS})"
-                )
+                log.info(f"[WS] 구독 해제: {ticker}  ({count}/{MAX_WS_SUBSCRIPTIONS})")
 
             # 구독 변경 간 대기 (KIS 서버 부하 방지)
             if processed > 0 and not self._cmd_queue.empty():

@@ -8,10 +8,12 @@ CONFIG_DIR: Final = BLSH_HOME / "config"
 DATA_DIR: Final = BLSH_HOME / "data"
 TEMP_DIR: Final = BLSH_HOME / "temp"
 LOG_DIR: Final = BLSH_HOME / "logs"
+BACKUP_DIR: Final = BLSH_HOME / "backup"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
+BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
 KIS_DEVLP_YAML: Final = CONFIG_DIR / "kis_devlp.yaml"
 
