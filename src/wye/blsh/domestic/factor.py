@@ -4,14 +4,14 @@
 파라미터              DAY     SWING
 ──────────────────────────────────────
 INVEST_MIN_SCORE     14      9
-ATR_SL_MULT          1.5     2.5
+ATR_SL_MULT          2.0     2.5
 ATR_TP_MULT          3.0     3.0
 TP1_MULT             1.0     1.5
 TP1_RATIO            0.3     0.3
-GAP_DOWN_LIMIT       0       0.05
-MAX_HOLD_DAYS(REV)   1       10
-MAX_HOLD_DAYS_MIX    1       5
-MAX_HOLD_DAYS_MOM    0       3
+GAP_DOWN_LIMIT       0.05    0.05
+MAX_HOLD_DAYS(REV)   0       10
+MAX_HOLD_DAYS_MIX    0       5
+MAX_HOLD_DAYS_MOM    1       3
 SECTOR_PENALTY       -5%/-2  -5%/-2
 SECTOR_BONUS         +1      +1
 
@@ -25,14 +25,14 @@ from wye.blsh.common.env import TRADE_FLAG
 # ─────────────────────────────────────────
 _DAY = {
     "INVEST_MIN_SCORE": 14,
-    "ATR_SL_MULT": 1.5,
+    "ATR_SL_MULT": 2.0,
     "ATR_TP_MULT": 3.0,
     "TP1_MULT": 1.0,  # 1차 익절: buy + ATR × TP1_MULT
     "TP1_RATIO": 0.3,  # 1차 익절 매도 비율 (1.0 = 전량)
-    "GAP_DOWN_LIMIT": 0,  # 갭하락 3% 이상 시 매수 스킵
-    "MAX_HOLD_DAYS": 1,  # 초단기 스윙 (DAY에서 오버나이트 허용)
-    "MAX_HOLD_DAYS_MIX": 1,
-    "MAX_HOLD_DAYS_MOM": 0,
+    "GAP_DOWN_LIMIT": 0.05,  # 갭하락 5% 이상 시 매수 스킵
+    "MAX_HOLD_DAYS": 0,  # REV: 당일 청산
+    "MAX_HOLD_DAYS_MIX": 0,
+    "MAX_HOLD_DAYS_MOM": 1,  # MOM: 익일 청산 허용
     "SECTOR_PENALTY_THRESHOLD": -0.05,  # 업종지수 MA20 대비 -5% 이하
     "SECTOR_PENALTY_PTS": -2,
     "SECTOR_BONUS_PTS": 1,  # 업종지수 MA20 이상일 때 +1

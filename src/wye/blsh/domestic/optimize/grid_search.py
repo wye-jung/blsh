@@ -306,10 +306,9 @@ def _report(trade_mode: str, ranked: list[tuple[Params, Stats]], elapsed: float)
         log.info(f"    TP1_MULT         = {best_p.tp1_mult}  (매도비율 {best_p.tp1_ratio:.0%})")
         log.info(f"    ATR_TP_MULT      = {best_p.atr_tp_mult}")
         log.info(f"    GAP_DOWN_LIMIT   = {best_p.gap_down_limit:.0%}{'  (OFF)' if best_p.gap_down_limit == 0 else ''}")
-        if trade_mode == "SWING":
-            log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
-            log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
-            log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
+        log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
+        log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
+        log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
         sec_parts = []
         if best_p.sector_penalty_pts != 0:
             sec_parts.append(f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점")
