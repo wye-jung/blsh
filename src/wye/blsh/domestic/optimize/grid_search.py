@@ -13,6 +13,8 @@ Grid Search 최적화
 
 import argparse
 import logging
+import multiprocessing as mp
+import os
 import time
 from dataclasses import dataclass
 from itertools import product
@@ -22,6 +24,15 @@ from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import build_or_load, OptCache, CACHE_DIR
 
 log = logging.getLogger(__name__)
+
+# fork 방식으로 캐시를 자식 프로세스에 공유 (복사 없이 CoW)
+_WORKER_CACHE: OptCache | None = None
+
+
+def _backtest_worker(args: tuple) -> tuple["Params", "Stats"]:
+    keys, combo = args
+    p = Params(**dict(zip(keys, combo)))
+    return p, backtest(_WORKER_CACHE, p)
 
 SELL_COST_RATE = 0.002
 
@@ -461,7 +472,9 @@ SECTOR_BONUS_PTS = _active["SECTOR_BONUS_PTS"]
 # 메인
 # ─────────────────────────────────────────
 def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool = True,
-       apply: bool = True):
+       apply: bool = True, workers: int = 0):
+    global _WORKER_CACHE
+
     end_date = dtutils.today()
     start_date = dtutils.add_days(end_date, -years * 365)
 
@@ -475,6 +488,12 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
             log.info(f"캐시 삭제: {p}")
 
     cache = build_or_load(start_date, end_date)
+
+    # fork 전에 캐시를 전역 변수로 설정 (CoW — 자식 프로세스에 복사 없이 공유)
+    _WORKER_CACHE = cache
+
+    n_workers = workers if workers > 0 else os.cpu_count()
+    log.info(f"병렬 처리: {n_workers}코어")
 
     best_results: dict[str, tuple[Params, Stats]] = {}
 
@@ -499,18 +518,20 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
 
         results: list[tuple[Params, Stats]] = []
         t0 = time.time()
+        chunk = max(50, len(combos) // (n_workers * 8))
 
-        for i, combo in enumerate(combos):
-            p = Params(**dict(zip(keys, combo)))
-            s = backtest(cache, p)
-            results.append((p, s))
-
-            if (i + 1) % 500 == 0 or (i + 1) == len(combos):
-                elapsed = time.time() - t0
-                log.info(
-                    f"  {i + 1:>5d}/{len(combos)}  ({elapsed:.0f}초, "
-                    f"{(i + 1) / elapsed:.0f} combo/s)"
-                )
+        with mp.Pool(processes=n_workers) as pool:
+            for i, (p, s) in enumerate(
+                pool.imap_unordered(_backtest_worker, ((keys, c) for c in combos), chunksize=chunk)
+            ):
+                results.append((p, s))
+                n = i + 1
+                if n % 5000 == 0 or n == len(combos):
+                    elapsed = time.time() - t0
+                    log.info(
+                        f"  {n:>6d}/{len(combos)}  ({elapsed:.0f}초, "
+                        f"{n / elapsed:.0f} combo/s)"
+                    )
 
         # metric 기준 정렬
         results.sort(key=lambda x: x[1].metric, reverse=True)
@@ -540,6 +561,7 @@ if __name__ == "__main__":
     parser.add_argument("--rebuild", action="store_true", help="캐시 강제 재빌드")
     parser.add_argument("--no-sector", action="store_true", help="업종지수 패널티 비활성화 (기존 방식)")
     parser.add_argument("--no-apply", action="store_true", help="factor.py 자동 갱신 생략")
+    parser.add_argument("--workers", type=int, default=0, help="병렬 프로세스 수 (0=자동)")
     args = parser.parse_args()
 
     run(
@@ -548,4 +570,5 @@ if __name__ == "__main__":
         rebuild=args.rebuild,
         sector=not args.no_sector,
         apply=not args.no_apply,
+        workers=args.workers,
     )
