@@ -32,7 +32,7 @@ def collect():
     login_krx()
     latest_biz_date = krx.get_nearest_business_day_in_a_week()
     max_ohlcv_date = query.get_max_ohlcv_date()
-    from_date: str = None
+    from_date = None
     if max_ohlcv_date is None:
         from_date = latest_biz_date
     elif max_ohlcv_date < latest_biz_date:
@@ -42,8 +42,9 @@ def collect():
             _collect_idx_data(max_ohlcv_date)
             _collect_isu_data(max_ohlcv_date)
         elif (
-            query.get_fetched_at(max_ohlcv_date).strftime(dtutils._TIME_FMT)
-            < Milestone.NXT_CLOSE_TIME
+            _fetched_at := query.get_fetched_at(max_ohlcv_date)
+        ) is not None and (
+            _fetched_at.strftime(dtutils.TIME_FMT) < Milestone.NXT_CLOSE_TIME
         ):
             from_date = max_ohlcv_date
 

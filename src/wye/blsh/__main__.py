@@ -3,7 +3,7 @@ import sys
 from wye.blsh.common import dtutils
 from wye.blsh.database import query
 from wye.blsh.domestic import scanner, collector
-from wye.blsh.domestic import trader as trader
+from wye.blsh.domestic import trader
 
 log = logging.getLogger(__name__)
 

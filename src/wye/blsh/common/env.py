@@ -40,6 +40,8 @@ TRADE_FLAG: Final = os.environ.get(
     "TRADE_FLAG", "SWING"
 ).upper()  # 트레이딩 모드: "DAY" | "SWING"
 
+USE_WEBSOCKET: Final = os.getenv("USE_WEBSOCKET", "").lower() in ("1", "true", "yes")
+
 TELEGRAM_BOT_TOKEN: Final = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID: Final = os.getenv("TELEGRAM_CHAT_ID")
 

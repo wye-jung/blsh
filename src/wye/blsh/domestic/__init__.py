@@ -72,12 +72,16 @@ class Tick:
     @classmethod
     def floor_tick(cls, price: float) -> int:
         """가격을 호가 단위 이하로 내림 (SL 등 하한 기준에 사용)"""
+        if price <= 0:
+            return 0
         tick = cls._tick_size(price)
         return int(price) // tick * tick
 
     @classmethod
     def ceil_tick(cls, price: float) -> int:
         """가격을 호가 단위 이상으로 올림 (TP 등 상한 기준에 사용)"""
+        if price <= 0:
+            return 0
         tick = cls._tick_size(price)
         floored = int(price) // tick * tick
         result = floored if floored >= price else floored + tick

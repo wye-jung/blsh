@@ -147,7 +147,9 @@ def simulate(candidates) -> tuple | None:
 
             # 손절 체크
             if ohv["low"] <= sl:
-                pnl = (sl - buy_price) * remaining_qty - sl * remaining_qty * SELL_COST_RATE
+                pnl = (
+                    sl - buy_price
+                ) * remaining_qty - sl * remaining_qty * SELL_COST_RATE
                 realized_pnl += pnl
                 result_type = "손절"
                 exit_price = sl
@@ -158,7 +160,7 @@ def simulate(candidates) -> tuple | None:
             # TODO: TP1 체결 + 같은 봉 본전 SL 도달 시나리오 (일봉 한계)
             # TP1 분할매도 (50%) — 미완료 시에만
             if not t1_done and ohv["high"] >= tp1:
-                sell_ratio = factor.TP1_RATIO
+                sell_ratio = min(factor.TP1_RATIO, remaining_qty)
                 pnl = (tp1 - buy_price) * sell_ratio - tp1 * sell_ratio * SELL_COST_RATE
                 realized_pnl += pnl
                 remaining_qty -= sell_ratio
@@ -172,7 +174,9 @@ def simulate(candidates) -> tuple | None:
 
             # TP2 잔량 전량 청산
             if ohv["high"] >= tp2 and remaining_qty > 0:
-                pnl = (tp2 - buy_price) * remaining_qty - tp2 * remaining_qty * SELL_COST_RATE
+                pnl = (
+                    tp2 - buy_price
+                ) * remaining_qty - tp2 * remaining_qty * SELL_COST_RATE
                 realized_pnl += pnl
                 result_type = "익절" if t1_done else "익절(전량)"
                 exit_price = tp2
@@ -183,7 +187,9 @@ def simulate(candidates) -> tuple | None:
         # 최대 보유기간 후 미확정 → 마지막 거래일 종가 청산
         if result_type is None:
             close_price = last_ohv["close"]
-            pnl = (close_price - buy_price) * remaining_qty - close_price * remaining_qty * SELL_COST_RATE
+            pnl = (
+                close_price - buy_price
+            ) * remaining_qty - close_price * remaining_qty * SELL_COST_RATE
             realized_pnl += pnl
             day_label = len(sig_hold_dates)
             if max_days == 0:
@@ -194,7 +200,7 @@ def simulate(candidates) -> tuple | None:
             exit_date = sig_hold_dates[-1] if sig_hold_dates else hold_dates[0]
             remaining_qty = 0
 
-        ret_pct = (realized_pnl / abs(buy_price)) * 100 if buy_price else 0
+        ret_pct = (realized_pnl / buy_price) * 100 if buy_price else 0
         rows_ok.append(
             {
                 **sig.to_dict(),
@@ -225,4 +231,5 @@ def simulate(candidates) -> tuple | None:
 
 if __name__ == "__main__":
     from wye.blsh.domestic import scanner
+
     simulate(scanner.find_candidates("20260317"))

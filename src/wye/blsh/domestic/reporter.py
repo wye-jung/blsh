@@ -82,6 +82,7 @@ def print_invest_report(df):
     for mode_label, mode_val in [
         ("MIX (추세전환 초입 ★★★)", "MIX"),
         ("MOM (모멘텀 추종  ★★ )", "MOM"),
+        ("REV (추세전환  ★  )", "REV"),
     ]:
         group = candidates[candidates["mode"] == mode_val]
         if group.empty:
@@ -167,7 +168,12 @@ def print_simul_report(
         df_ok = pd.DataFrame(rows_ok).sort_values("ret_pct", ascending=False)
         wins = df_ok[df_ok["result_type"].str.startswith("익절")]
         cuts = df_ok[df_ok["result_type"] == "손절"]
-        holds = df_ok[~(df_ok["result_type"].str.startswith("익절") | (df_ok["result_type"] == "손절"))]
+        holds = df_ok[
+            ~(
+                df_ok["result_type"].str.startswith("익절")
+                | (df_ok["result_type"] == "손절")
+            )
+        ]
 
         log.info(
             f"  ▶ 매수 성공 {len(df_ok)}종목  "
