@@ -217,7 +217,6 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("BBM", 1))
 
     # 7. 거래량 급증 + 양봉 (+1) → VS (모멘텀)
-    # 배수 2x → 3x: 단순 2배는 빈도가 높아 손실 편향, 3배 이상 급증만 유의미
     if volume is not None and len(volume) >= 20:
         vol_avg = volume.iloc[-20:-1].mean()
         if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
