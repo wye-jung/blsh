@@ -150,37 +150,46 @@ def print_invest_report(df):
 
 
 def print_simul_report(
-    target_date, actual_days, candidates, rows_ok, rows_gap, rows_miss, cash: float = 0
+    entry_date, candidates, rows_ok, rows_gap, rows_miss, cash: float = 0
 ):
-    _print_header("시뮬레이션 리포트")
+    _print_header(f"📊 수익률 리포트")
 
     cash_mode = cash > 0
-    cash_label = f"  초기잔고 {cash:,.0f}원" if cash_mode else ""
-    log.info(
-        f"  📊 수익률 리포트  |  매수일: {target_date}"
-        f"  (최대 {factor.MAX_HOLD_DAYS}거래일, 실제 {actual_days}거래일){cash_label}"
-    )
-    log.info(
-        f"  대상: 선별 종목 {len(candidates)}개  "
-        f"/ 매수 성공: {len(rows_ok)}  갭 상승(매수 불가): {len(rows_gap)}  "
-        f"데이터 없음: {len(rows_miss)}"
-    )
+    log.info(f"  ▶ 기간: 매수일({entry_date}) 이후 최대 {factor.MAX_HOLD_DAYS}거래일")
+    log.info(f"  ▶ 종목: {len(candidates)}건 (매수성공: {len(rows_ok)})")
 
     if rows_ok:
         df_ok = pd.DataFrame(rows_ok).sort_values("ret_pct", ascending=False)
-        wins = df_ok[df_ok["result_type"].str.startswith("익절")]
-        cuts = df_ok[df_ok["result_type"] == "손절"]
-        holds = df_ok[
-            ~(
-                df_ok["result_type"].str.startswith("익절")
-                | (df_ok["result_type"] == "손절")
-            )
-        ]
+        is_confirmed_win = df_ok["result_type"].str.startswith("익절")
+        is_confirmed_cut = df_ok["result_type"] == "손절"
+        is_hold = ~(is_confirmed_win | is_confirmed_cut)
 
+        wins = df_ok[is_confirmed_win | (is_hold & (df_ok["ret_pct"] > 0))]
+
+        confirmed_wins = df_ok[is_confirmed_win]
+        confirmed_cuts = df_ok[is_confirmed_cut]
+        hold_wins = df_ok[is_hold & (df_ok["ret_pct"] > 0)]
+        hold_cuts = df_ok[is_hold & (df_ok["ret_pct"] < 0)]
+
+        all_holds = df_ok[is_hold]
+        avg_ret = df_ok["ret_pct"].mean()
+        win_rate = len(wins) / len(df_ok) * 100 if len(df_ok) else 0
         log.info(
-            f"  ▶ 매수 성공 {len(df_ok)}종목  "
-            f"(익절 {len(wins)}  손절 {len(cuts)}  미확정 {len(holds)})"
+            f"  ▶ 평균 수익률: {avg_ret:+.2f}%  ▶ 승률: {win_rate:.1f}% "
+            f"(익절 {len(confirmed_wins)} / 손절 {len(confirmed_cuts)} / "
+            f"미확정 {len(all_holds)}(수익 {len(hold_wins)}, 손실 {len(hold_cuts)}))"
         )
+        if cash_mode and df_ok["pnl_amount"].notna().any():
+            total_pnl = df_ok["pnl_amount"].sum()
+            total_invested = (df_ok["buy_price"] * df_ok["qty"]).sum()
+            final_balance = cash - total_invested + total_invested + total_pnl
+            log.info(
+                f"  ▶ 초기잔고: {cash:>12,.0f}원  ▶ 총투자금: {total_invested:>12,.0f}원  ▶ 총손익: {total_pnl:>+12,.0f}원"
+            )
+            log.info(
+                f"  ▶ 최종잔고: {final_balance:>12,.0f}원 ({final_balance / cash * 100:.1f}%)"
+            )
+
         _line("─", prefix="  ")
 
         for _, r in df_ok.iterrows():
@@ -212,28 +221,6 @@ def print_simul_report(
                 f"수익률 {r['ret_pct']:>+6.2f}%{amt_str}"
             )
 
-        avg_ret = df_ok["ret_pct"].mean()
-        win_rate = len(wins) / len(df_ok) * 100 if len(df_ok) else 0
-        if cash_mode and df_ok["pnl_amount"].notna().any():
-            total_pnl = df_ok["pnl_amount"].sum()
-            total_invested = (df_ok["buy_price"] * df_ok["qty"]).sum()
-            final_balance = cash - total_invested + total_invested + total_pnl
-            log.info(
-                f"  평균 수익률: {avg_ret:+.2f}%  승률: {win_rate:.1f}%  "
-                f"(익절 {len(wins)} / 손절 {len(cuts)} / 미확정 {len(holds)})"
-            )
-            log.info(
-                f"  총투자금: {total_invested:>12,.0f}원  "
-                f"총손익: {total_pnl:>+12,.0f}원  "
-                f"최종잔고: {final_balance:>12,.0f}원  "
-                f"(초기 {cash:,.0f}원 → {final_balance / cash * 100:.1f}%)"
-            )
-        else:
-            log.info(
-                f"  평균 수익률: {avg_ret:+.2f}%  승률: {win_rate:.1f}%  "
-                f"(익절 {len(wins)} / 손절 {len(cuts)} / 미확정 {len(holds)})"
-            )
-
     if rows_gap:
         log.info(f"  ▶ 갭 상승 (매수 불가) {len(rows_gap)}종목")
         _line("-", prefix="  ")
@@ -253,7 +240,6 @@ def _line(char="═", length=110, prefix="", appendix=""):
 
 
 def _print_header(title):
-    print()
     _line()
     log.info(f"  {title}")
     _line()

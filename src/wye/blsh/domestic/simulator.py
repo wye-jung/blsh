@@ -35,7 +35,7 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
     entry_date = candidates.iloc[0]["entry_date"]
     max_hold = factor.MAX_HOLD_DAYS
 
-    log.info(f"[시뮬레이트] 목표일={entry_date}  최대 {max_hold}거래일 추적")
+    log.info(f"[시뮬레이트] 매수일({entry_date}) 이후 최대 {max_hold}거래일 추적")
 
     tickers = candidates["ticker"].tolist()
 
@@ -241,7 +241,6 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
 
     reporter.print_simul_report(
         entry_date,
-        actual_days,
         candidates,
         rows_ok,
         rows_gap,
@@ -263,5 +262,9 @@ if __name__ == "__main__":
         else dtutils.prev_biz_date(dtutils.max_ohlcv_date())
     )
     ca = float(sys.argv[2]) if len(sys.argv) > 2 else 10_000_000
-    print(dt, ca)
+
     simulate(scanner.find_candidates(dt), cash=ca)
+
+    from wye.blsh.domestic.codex import scanner_codex
+
+    simulate(scanner_codex.find_candidates(dt), cash=ca)
