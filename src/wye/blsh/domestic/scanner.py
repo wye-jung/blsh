@@ -55,7 +55,8 @@ import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
 from wye.blsh.domestic import reporter, Tick, Milestone
-from wye.blsh.domestic import factor, sector
+from wye.blsh.domestic import sector
+from wye.blsh.domestic.factor import active_factor as factor
 from wye.blsh.domestic import PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO
 
 from wye.blsh.database.models import TradeCandidates
@@ -201,9 +202,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("MPGC", 1))
 
     # 3. RSI 30 상향 돌파 (+2) → RBO (전환)
-    # ROV(단순 과매도) 제거: RSI < 30 단독은 하향 추세 중 추가 하락 가능성이 높아 손실 편향
     if r0 > RSI_OVERSOLD and r1 <= RSI_OVERSOLD:
         signals.append(("RBO", 2))
+    # 4. RSI 과매도 (+1) → ROV (전환)
+    elif r0 < RSI_OVERSOLD:
+        signals.append(("ROV", 1))
 
     # 5. 볼린저 하단 반등 (+1) → BBL (전환)
     if l1 < bbl1 and c0 > bbl0:
@@ -217,7 +220,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
     # 배수 2x → 3x: 단순 2배는 빈도가 높아 손실 편향, 3배 이상 급증만 유의미
     if volume is not None and len(volume) >= 20:
         vol_avg = volume.iloc[-20:-1].mean()
-        if volume.iloc[-1] > vol_avg * 3 and c0 > c1:
+        if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
             signals.append(("VS", 1))
 
     # 8. 이동평균 정배열 전환 (+1) → MAA (모멘텀)
@@ -261,8 +264,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
                 signals.append(("HMR", 1))
 
     # 13. 장대 양봉 (+2) → LB (모멘텀)
-    # 임계값 1.5 → 2.0 ATR: 당일 급등 후 다음날 되돌림 손실 편향 완화
-    if o0 is not None and c0 > o0 and (c0 - o0) > atr0 * 2.0:
+    if o0 is not None and c0 > o0 and (c0 - o0) > atr0 * 1.5:
         signals.append(("LB", 2))
 
     # 14. 모닝스타 (+2) → MS (전환)
@@ -320,8 +322,8 @@ def evaluate_buy(close, high, low, volume, opn=None):
 
     # ── 매수가 / 손절 / 익절 (호가 단위 보정)
     entry_price = Tick.ceil_tick(c0 + 0.5 * atr0)
-    stop_loss = Tick.floor_tick(c0 - factor.ATR_SL_MULT * atr0)
-    take_profit = Tick.ceil_tick(c0 + factor.ATR_TP_MULT * atr0)
+    stop_loss = Tick.floor_tick(c0 - factor.atr_sl_mult * atr0)
+    take_profit = Tick.ceil_tick(c0 + factor.atr_tp_mult * atr0)
 
     indicators = {
         "mode": mode,
@@ -808,7 +810,7 @@ def _get_sector_gap(
 
 def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
-    if factor.SECTOR_PENALTY_PTS == 0 and factor.SECTOR_BONUS_PTS == 0:
+    if factor.sector_penalty_pts == 0 and factor.sector_bonus_pts == 0:
         return df
 
     sector_map = _load_ticker_sector_map(base_date)
@@ -830,10 +832,10 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     for _, row in df.iterrows():
         gap = get_gap(row["ticker"], row["market"])
         adj = 0
-        if factor.SECTOR_PENALTY_PTS != 0 and gap < factor.SECTOR_PENALTY_THRESHOLD:
-            adj = factor.SECTOR_PENALTY_PTS
-        elif factor.SECTOR_BONUS_PTS != 0 and gap >= 0:
-            adj = factor.SECTOR_BONUS_PTS
+        if factor.sector_penalty_pts != 0 and gap < factor.sector_penalty_threshold:
+            adj = factor.sector_penalty_pts
+        elif factor.sector_bonus_pts != 0 and gap >= 0:
+            adj = factor.sector_bonus_pts
         adjustments.append(adj)
 
     df = df.copy()
@@ -855,17 +857,10 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     # 업종 패널티/보너스 적용
     sdf = _apply_sector_penalty(sdf, base_date)
 
-    # 당일 급등 신호(LB·VS·W52): 다음날 되돌림 손실 편향 → 수급 확인 없으면 제외
-    _surge_pat = r"\bLB\b|\bVS\b|\bW52\b"
-    _supply_pat = r"F_TRN|I_TRN|F_C3|I_C3|F_1|I_1"
-    has_surge = sdf["buy_flags"].str.contains(_surge_pat, na=False, regex=True)
-    has_supply = sdf["buy_flags"].str.contains(_supply_pat, na=False, regex=True)
-
     cand_mask = (
-        (sdf["buy_score"] >= factor.INVEST_MIN_SCORE)
+        (sdf["buy_score"] >= factor.invest_min_score)
         & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
-        & (~has_surge | has_supply)  # 급등 신호 있으면 수급 필수
     )
     df = sdf[cand_mask].copy()
     if report:
@@ -874,15 +869,15 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["atr_sl_mult"] = factor.ATR_SL_MULT
-    df["atr_tp_mult"] = factor.ATR_TP_MULT
+    df["atr_sl_mult"] = factor.atr_sl_mult
+    df["atr_tp_mult"] = factor.atr_tp_mult
     conditions = [
         df["mode"] == "MIX",
         df["mode"] == "MOM",
         df["mode"] == "REV",
     ]
-    days = [factor.MAX_HOLD_DAYS_MIX, factor.MAX_HOLD_DAYS_MOM, factor.MAX_HOLD_DAYS]
-    df["max_hold_days"] = np.select(conditions, days, default=factor.MAX_HOLD_DAYS)
+    days = [factor.max_hold_days_mix, factor.max_hold_days_mom, factor.max_hold_days]
+    df["max_hold_days"] = np.select(conditions, days, default=factor.max_hold_days)
 
     today = dtutils.today()
     ctime = dtutils.ctime()

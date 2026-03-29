@@ -5,7 +5,7 @@
 import logging
 import pandas as pd
 import numpy as np
-from wye.blsh.domestic import factor
+from wye.blsh.domestic.factor import active_factor as factor
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def print_invest_report(df):
     )
 
     log.info(
-        f"  선별 기준: score≥{factor.INVEST_MIN_SCORE}  mode=MIX/MOM  수급(외인or기관)>0  P_OV 제외"
+        f"  선별 기준: score≥{factor.invest_min_score}  mode=MIX/MOM  수급(외인or기관)>0  P_OV 제외"
     )
 
     _line("=")
@@ -155,7 +155,7 @@ def print_simul_report(
     _print_header(f"📊 수익률 리포트")
 
     cash_mode = cash > 0
-    log.info(f"  ▶ 기간: 매수일({entry_date}) 이후 최대 {factor.MAX_HOLD_DAYS}거래일")
+    log.info(f"  ▶ 기간: 매수일({entry_date}) 이후 최대 {factor.max_hold_days}거래일")
     log.info(f"  ▶ 종목: {len(candidates)}건 (매수성공: {len(rows_ok)})")
 
     if rows_ok:

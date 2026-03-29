@@ -10,6 +10,7 @@ import logging
 import json
 import time
 from typing import Final
+from dataclasses import dataclass
 from wye.blsh.common.env import DATA_DIR
 from wye.blsh.common import dtutils, fileutils
 
@@ -105,3 +106,33 @@ class Milestone:
     LIQUIDATE_TIME: Final = "151500"  # 청산시간
     KRX_CLOSE_TIME: Final = "153000"  # KRX 마감
     NXT_CLOSE_TIME: Final = "200000"  # NTX 마감
+
+
+@dataclass
+class Factor:
+    invest_min_score: int
+    atr_sl_mult: float
+    atr_tp_mult: float
+    tp1_mult: float
+    tp1_ratio: float
+    gap_down_limit: float
+    max_hold_days: int
+    max_hold_days_mix: int
+    max_hold_days_mom: int
+    sector_penalty_threshold: float
+    sector_penalty_pts: int
+    sector_bonus_pts: int
+
+    def __init__(self, d: dict):
+        self.invest_min_score = d["INVEST_MIN_SCORE"]
+        self.atr_sl_mult = d["ATR_SL_MULT"]
+        self.atr_tp_mult = d["ATR_TP_MULT"]
+        self.tp1_mult = d["TP1_MULT"]
+        self.tp1_ratio = d["TP1_RATIO"]
+        self.gap_down_limit = d["GAP_DOWN_LIMIT"]
+        self.max_hold_days = d["MAX_HOLD_DAYS"]
+        self.max_hold_days_mix = d["MAX_HOLD_DAYS_MIX"]
+        self.max_hold_days_mom = d["MAX_HOLD_DAYS_MOM"]
+        self.sector_penalty_threshold = d["SECTOR_PENALTY_THRESHOLD"]
+        self.sector_penalty_pts = d["SECTOR_PENALTY_PTS"]
+        self.sector_bonus_pts = d["SECTOR_BONUS_PTS"]

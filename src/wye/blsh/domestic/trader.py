@@ -63,8 +63,8 @@ from wye.blsh.domestic import (
     PO,
     Tick,
     Milestone,
-    factor,
 )
+from wye.blsh.domestic.factor import active_factor as factor
 from wye.blsh.domestic.kis_client import KISClient
 from wye.blsh.domestic.ws_monitor import PriceMonitor
 from wye.blsh.common import dtutils, fileutils, messageutils
@@ -192,8 +192,8 @@ def _load_positions() -> dict[str, Position]:
         valid: dict[str, Position] = {}
         for t, v in data.items():
             v.setdefault("realized_pnl", 0.0)
-            v.setdefault("atr_sl_mult", factor.ATR_SL_MULT)
-            v.setdefault("atr_tp_mult", factor.ATR_TP_MULT)
+            v.setdefault("atr_sl_mult", factor.atr_sl_mult)
+            v.setdefault("atr_tp_mult", factor.atr_tp_mult)
             v.setdefault("expiry_date", "")
             v.setdefault("po_type", "")
             v.setdefault("excg_cd", "KRX")
@@ -261,10 +261,10 @@ def _make_position(
     """
     atr = float(c["atr"])
     atr_sl_mult = float(
-        c["atr_sl_mult"] if c.get("atr_sl_mult") is not None else factor.ATR_SL_MULT
+        c["atr_sl_mult"] if c.get("atr_sl_mult") is not None else factor.atr_sl_mult
     )
     atr_tp_mult = float(
-        c["atr_tp_mult"] if c.get("atr_tp_mult") is not None else factor.ATR_TP_MULT
+        c["atr_tp_mult"] if c.get("atr_tp_mult") is not None else factor.atr_tp_mult
     )
 
     if c.get("max_hold_days") is not None:
@@ -282,10 +282,10 @@ def _make_position(
             expiry_date = entry_date
 
     tp1_mult = float(
-        c["tp1_mult"] if c.get("tp1_mult") is not None else factor.TP1_MULT
+        c["tp1_mult"] if c.get("tp1_mult") is not None else factor.tp1_mult
     )
     tp1_ratio = float(
-        c["tp1_ratio"] if c.get("tp1_ratio") is not None else factor.TP1_RATIO
+        c["tp1_ratio"] if c.get("tp1_ratio") is not None else factor.tp1_ratio
     )
     sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
     tp1 = Tick.ceil_tick(buy_price + tp1_mult * atr)
