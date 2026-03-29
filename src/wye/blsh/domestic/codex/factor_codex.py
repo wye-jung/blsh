@@ -1,48 +1,51 @@
 """
-scanner_codex / simulator_codex 최적 파라미터
+Codex strategy factors optimized by grid_search_codex.
 
-최적화 대상
-  - scanner_codex 종목 선정 임계값
-  - trader.py 와 동일하게 사용되는 ATR / TP1 / 보유기간 파라미터
+Optimization window
+  - period: 20240327 ~ 20260327
+  - updated: 2026-03-29 10:51
 
-최적화 스크립트
+[DAY]   2026-03-29 10:48  period 20240327~20260327  2366 trades  win 3.6%  avg +0.04%  total +94.7%
+[SWING] 2026-03-29 10:51  period 20240327~20260327  7927 trades  win 9.9%  avg +0.14%  total +1074.7%
+
+Run again:
   uv run python -m wye.blsh.domestic.codex.grid_search_codex
 """
 
 from wye.blsh.common.env import TRADE_FLAG
 
-# DAY 기본값
+# DAY optimized: 2026-03-29 10:48  period 20240327~20260327  2366 trades  win 3.6%  avg +0.04%  total +94.7%
 _DAY = {
-    "INVEST_MIN_SCORE": 9,
-    "AVG_TRDVAL_MIN": 2_000_000_000,
-    "RECENT_HIGH_DAYS": 20,
-    "PULLBACK_MARGIN": 0.015,
-    "ENTRY_ATR_MULT": 0.15,
+    "INVEST_MIN_SCORE": 12,
+    "AVG_TRDVAL_MIN": 5000000000,
+    "RECENT_HIGH_DAYS": 30,
+    "PULLBACK_MARGIN": 0.025,
+    "ENTRY_ATR_MULT": 0,
     "ATR_SL_MULT": 1.6,
-    "ATR_TP_MULT": 2.4,
-    "TP1_MULT": 1.0,
-    "TP1_RATIO": 0.5,
-    "MAX_HOLD_DAYS": 0,
-    "MAX_HOLD_DAYS_MIX": 1,
+    "ATR_TP_MULT": 3.4,
+    "TP1_MULT": 1,  # 1st partial take-profit ATR multiple
+    "TP1_RATIO": 0.3,  # fraction to sell at TP1
+    "MAX_HOLD_DAYS": 1,
+    "MAX_HOLD_DAYS_MIX": 2,
     "MAX_HOLD_DAYS_MOM": 1,
-    "MAX_CANDIDATES_PER_MARKET": 8,
+    "MAX_CANDIDATES_PER_MARKET": 12,
 }
 
-# SWING 기본값
+# SWING optimized: 2026-03-29 10:51  period 20240327~20260327  7927 trades  win 9.9%  avg +0.14%  total +1074.7%
 _SWING = {
-    "INVEST_MIN_SCORE": 8,
-    "AVG_TRDVAL_MIN": 1_000_000_000,
-    "RECENT_HIGH_DAYS": 55,
+    "INVEST_MIN_SCORE": 11,
+    "AVG_TRDVAL_MIN": 2000000000,
+    "RECENT_HIGH_DAYS": 90,
     "PULLBACK_MARGIN": 0.025,
-    "ENTRY_ATR_MULT": 0.30,
-    "ATR_SL_MULT": 2.2,
-    "ATR_TP_MULT": 3.2,
-    "TP1_MULT": 1.5,
-    "TP1_RATIO": 0.3,
+    "ENTRY_ATR_MULT": 0.4,
+    "ATR_SL_MULT": 2.6,
+    "ATR_TP_MULT": 4.4,
+    "TP1_MULT": 2,  # 1st partial take-profit ATR multiple
+    "TP1_RATIO": 0.2,  # fraction to sell at TP1
     "MAX_HOLD_DAYS": 7,
-    "MAX_HOLD_DAYS_MIX": 5,
-    "MAX_HOLD_DAYS_MOM": 3,
-    "MAX_CANDIDATES_PER_MARKET": 12,
+    "MAX_HOLD_DAYS_MIX": 3,
+    "MAX_HOLD_DAYS_MOM": 7,
+    "MAX_CANDIDATES_PER_MARKET": 15,
 }
 
 DAY_FACTORS = _DAY
