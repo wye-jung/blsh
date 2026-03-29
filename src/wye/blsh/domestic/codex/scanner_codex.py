@@ -28,7 +28,15 @@ import pandas as pd
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR, LOG_DIR, TRADE_FLAG
 from wye.blsh.database import query
-from wye.blsh.domestic import Tick, sector
+from wye.blsh.domestic import (
+    Milestone,
+    PO_TYPE_FIN,
+    PO_TYPE_INI,
+    PO_TYPE_PRE,
+    Tick,
+    sector,
+)
+from wye.blsh.domestic.codex import factor
 
 log = logging.getLogger(__name__)
 _fh = TimedRotatingFileHandler(
@@ -46,6 +54,38 @@ MIN_HISTORY = 90
 UNIVERSE_FILTER_DAYS = 20
 MARKET_MA_DAYS = 60
 REPORT_DIR = DATA_DIR / "reports"
+COMPAT_COLUMNS = [
+    "base_date",
+    "entry_date",
+    "ticker",
+    "name",
+    "market",
+    "buy_score",
+    "buy_flags",
+    "foreign_netbuy",
+    "inst_netbuy",
+    "indi_netbuy",
+    "mode",
+    "close",
+    "atr",
+    "rsi",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+    "stoch_k",
+    "stoch_d",
+    "entry_price",
+    "stop_loss",
+    "take_profit",
+    "atr_sl_mult",
+    "atr_tp_mult",
+    "max_hold_days",
+    "po_type",
+    "expiry_date",
+]
 
 
 @dataclass(frozen=True)
@@ -58,31 +98,49 @@ class StrategyConfig:
     entry_atr_mult: float
     stop_atr_mult: float
     target_atr_mult: float
+    tp1_mult: float
+    tp1_ratio: float
+    max_hold_days_rev: int
+    max_hold_days_mix: int
+    max_hold_days_mom: int
     max_candidates_per_market: int
 
+
+_DAY_F = factor_codex.DAY_FACTORS
+_SWING_F = factor_codex.SWING_FACTORS
 
 CONFIGS = {
     "DAY": StrategyConfig(
         label="DAY",
-        avg_trdval_min=2_000_000_000,
-        score_threshold=9,
-        recent_high_days=20,
-        pullback_margin=0.015,
-        entry_atr_mult=0.15,
-        stop_atr_mult=1.6,
-        target_atr_mult=2.4,
-        max_candidates_per_market=8,
+        avg_trdval_min=_DAY_F["AVG_TRDVAL_MIN"],
+        score_threshold=_DAY_F["INVEST_MIN_SCORE"],
+        recent_high_days=_DAY_F["RECENT_HIGH_DAYS"],
+        pullback_margin=_DAY_F["PULLBACK_MARGIN"],
+        entry_atr_mult=_DAY_F["ENTRY_ATR_MULT"],
+        stop_atr_mult=_DAY_F["ATR_SL_MULT"],
+        target_atr_mult=_DAY_F["ATR_TP_MULT"],
+        tp1_mult=_DAY_F["TP1_MULT"],
+        tp1_ratio=_DAY_F["TP1_RATIO"],
+        max_hold_days_rev=_DAY_F["MAX_HOLD_DAYS"],
+        max_hold_days_mix=_DAY_F["MAX_HOLD_DAYS_MIX"],
+        max_hold_days_mom=_DAY_F["MAX_HOLD_DAYS_MOM"],
+        max_candidates_per_market=_DAY_F["MAX_CANDIDATES_PER_MARKET"],
     ),
     "SWING": StrategyConfig(
         label="SWING",
-        avg_trdval_min=1_000_000_000,
-        score_threshold=8,
-        recent_high_days=55,
-        pullback_margin=0.025,
-        entry_atr_mult=0.30,
-        stop_atr_mult=2.2,
-        target_atr_mult=3.2,
-        max_candidates_per_market=12,
+        avg_trdval_min=_SWING_F["AVG_TRDVAL_MIN"],
+        score_threshold=_SWING_F["INVEST_MIN_SCORE"],
+        recent_high_days=_SWING_F["RECENT_HIGH_DAYS"],
+        pullback_margin=_SWING_F["PULLBACK_MARGIN"],
+        entry_atr_mult=_SWING_F["ENTRY_ATR_MULT"],
+        stop_atr_mult=_SWING_F["ATR_SL_MULT"],
+        target_atr_mult=_SWING_F["ATR_TP_MULT"],
+        tp1_mult=_SWING_F["TP1_MULT"],
+        tp1_ratio=_SWING_F["TP1_RATIO"],
+        max_hold_days_rev=_SWING_F["MAX_HOLD_DAYS"],
+        max_hold_days_mix=_SWING_F["MAX_HOLD_DAYS_MIX"],
+        max_hold_days_mom=_SWING_F["MAX_HOLD_DAYS_MOM"],
+        max_candidates_per_market=_SWING_F["MAX_CANDIDATES_PER_MARKET"],
     ),
 }
 CFG = CONFIGS.get(TRADE_FLAG, CONFIGS["SWING"])
@@ -236,6 +294,106 @@ def _build_trade_levels(
     )
     take_profit = Tick.ceil_tick(target_seed)
     return entry_price, stop_loss, take_profit
+
+
+def _mode_from_setup(setup: str) -> str:
+    if setup == "BREAKOUT":
+        return "MOM"
+    if setup == "PULLBACK":
+        return "REV"
+    return "MIX"
+
+
+def _hold_days_from_mode(mode: str) -> int:
+    mapping = {
+        "REV": CFG.max_hold_days_rev,
+        "MIX": CFG.max_hold_days_mix,
+        "MOM": CFG.max_hold_days_mom,
+    }
+    return mapping.get(mode, max(mapping.values()))
+
+
+def _empty_candidates() -> pd.DataFrame:
+    extra_cols = [
+        "strategy",
+        "setup",
+        "market_regime",
+        "rr",
+        "atr_pct",
+        "ret5_pct",
+        "ret20_pct",
+        "vol_ratio",
+        "avg_trdval20",
+    ]
+    return pd.DataFrame(columns=COMPAT_COLUMNS + extra_cols)
+
+
+def _apply_entry_schedule(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
+    if df.empty:
+        return _empty_candidates()
+
+    df = df.copy()
+    df["atr_sl_mult"] = CFG.stop_atr_mult
+    df["atr_tp_mult"] = CFG.target_atr_mult
+    df["tp1_mult"] = CFG.tp1_mult
+    df["tp1_ratio"] = CFG.tp1_ratio
+    df["max_hold_days"] = df["mode"].apply(_hold_days_from_mode).astype(int)
+
+    today = dtutils.today()
+    ctime = dtutils.ctime()
+    if base_date == today and ctime < dtutils.add_time(
+        Milestone.LIQUIDATE_TIME, minutes=-3
+    ):
+        entry_date = today
+        if ctime < Milestone.NXT_OPEN_TIME:
+            po_type = PO_TYPE_PRE
+        elif ctime < dtutils.add_time(Milestone.KRX_EARLY_TIME, minutes=-3):
+            po_type = PO_TYPE_INI
+        elif ctime > dtutils.add_time(Milestone.LIQUIDATE_TIME, hours=-1):
+            df["max_hold_days"] = df["max_hold_days"] + 1
+            po_type = PO_TYPE_FIN
+        else:
+            po_type = ""
+    else:
+        entry_date = dtutils.next_biz_date(base_date)
+        po_type = PO_TYPE_PRE
+
+    expiry_cache: dict[tuple[str, int], str | None] = {}
+
+    def _get_expiry(ed: str, mhd: int):
+        key = (ed, int(mhd))
+        if key not in expiry_cache:
+            expiry_cache[key] = dtutils.add_biz_days(ed, int(mhd))
+        return expiry_cache[key]
+
+    df["entry_date"] = entry_date
+    df["po_type"] = po_type
+    df["expiry_date"] = df["max_hold_days"].apply(lambda mhd: _get_expiry(entry_date, int(mhd)))
+    return df
+
+
+def _ensure_compat_schema(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
+    if df.empty:
+        return _empty_candidates()
+
+    df = df.copy()
+    df["mode"] = df["setup"].apply(_mode_from_setup)
+    df["foreign_netbuy"] = np.nan
+    df["inst_netbuy"] = np.nan
+    df["indi_netbuy"] = np.nan
+
+    for col in ["rsi", "macd", "macd_signal", "macd_hist", "bb_upper", "bb_middle", "bb_lower", "stoch_k", "stoch_d"]:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    df = _apply_entry_schedule(df, base_date)
+
+    for col in COMPAT_COLUMNS:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    extra_cols = [c for c in df.columns if c not in COMPAT_COLUMNS]
+    return df[COMPAT_COLUMNS + extra_cols]
 
 
 def _analyze_stock(
@@ -432,7 +590,6 @@ def _analyze_stock(
 
     return {
         "base_date": base_date,
-        "entry_date": dtutils.next_biz_date(base_date),
         "ticker": ticker,
         "name": name,
         "market": market,
@@ -504,7 +661,7 @@ def find_candidates(base_date: str | None = None, report: bool = False, save_rep
 
     if not query.has_ohlcv_data(base_date):
         log.warning("%s - ohlcv 데이터가 없습니다", base_date)
-        return pd.DataFrame()
+        return _empty_candidates()
 
     name_map = query.get_ticker_name_map()
     market_regimes = _load_market_regimes(base_date)
@@ -530,6 +687,7 @@ def find_candidates(base_date: str | None = None, report: bool = False, save_rep
 
     df = pd.DataFrame(results)
     if df.empty:
+        df = _empty_candidates()
         if report:
             print_report(df, base_date, market_regimes)
         return df
@@ -538,6 +696,7 @@ def find_candidates(base_date: str | None = None, report: bool = False, save_rep
         ["buy_score", "rr", "avg_trdval20"],
         ascending=[False, False, False],
     ).reset_index(drop=True)
+    df = _ensure_compat_schema(df, base_date)
 
     if report:
         print_report(df, base_date, market_regimes)
@@ -591,7 +750,7 @@ def print_report(df: pd.DataFrame, base_date: str, market_regimes: dict[str, dic
         print(f"  [{market}]")
         for _, row in subset.iterrows():
             print(
-                f"  [{row['buy_score']:2d}pt/{row['setup']:<8s}]"
+                f"  [{row['buy_score']:2d}pt/{row['mode']:<3s}/{row['setup']:<8s}]"
                 f" {row['ticker']} {row['name'][:14]:<14s}"
                 f" 종가 {row['close']:>8,}"
                 f" 진입≤{row['entry_price']:>8,}"
