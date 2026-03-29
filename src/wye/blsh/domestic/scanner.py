@@ -12,10 +12,9 @@
   │ MACD 골든크로스                          │  +2  │ MGC    │  모멘텀│
   │ MACD 예상 골든크로스                     │  +1  │ MPGC   │  중립  │
   │ RSI 30 상향 돌파                         │  +2  │ RBO    │  전환  │
-  │ RSI 과매도 (< 30)                        │  +1  │ ROV    │  전환  │
   │ 볼린저 하단 반등                         │  +1  │ BBL    │  전환  │
   │ 볼린저 중간선 상향 돌파                  │  +1  │ BBM    │  중립  │
-  │ 거래량 급증 + 양봉 (2배)                 │  +1  │ VS     │  모멘텀│
+  │ 거래량 급증 + 양봉 (3배)                 │  +1  │ VS     │  모멘텀│
   │ 이동평균 정배열 전환 (5>20>60)           │  +1  │ MAA    │  모멘텀│
   │ 스토캐스틱 과매도 교차                   │  +1  │ SGC    │  중립  │
   │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배) │  +2  │ W52    │  모멘텀│
@@ -202,11 +201,9 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("MPGC", 1))
 
     # 3. RSI 30 상향 돌파 (+2) → RBO (전환)
+    # ROV(단순 과매도) 제거: RSI < 30 단독은 하향 추세 중 추가 하락 가능성이 높아 손실 편향
     if r0 > RSI_OVERSOLD and r1 <= RSI_OVERSOLD:
         signals.append(("RBO", 2))
-    # 4. RSI 과매도 (+1) → ROV (전환)
-    elif r0 < RSI_OVERSOLD:
-        signals.append(("ROV", 1))
 
     # 5. 볼린저 하단 반등 (+1) → BBL (전환)
     if l1 < bbl1 and c0 > bbl0:
@@ -217,9 +214,10 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(("BBM", 1))
 
     # 7. 거래량 급증 + 양봉 (+1) → VS (모멘텀)
+    # 배수 2x → 3x: 단순 2배는 빈도가 높아 손실 편향, 3배 이상 급증만 유의미
     if volume is not None and len(volume) >= 20:
         vol_avg = volume.iloc[-20:-1].mean()
-        if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
+        if volume.iloc[-1] > vol_avg * 3 and c0 > c1:
             signals.append(("VS", 1))
 
     # 8. 이동평균 정배열 전환 (+1) → MAA (모멘텀)
@@ -263,7 +261,8 @@ def evaluate_buy(close, high, low, volume, opn=None):
                 signals.append(("HMR", 1))
 
     # 13. 장대 양봉 (+2) → LB (모멘텀)
-    if o0 is not None and c0 > o0 and (c0 - o0) > atr0 * 1.5:
+    # 임계값 1.5 → 2.0 ATR: 당일 급등 후 다음날 되돌림 손실 편향 완화
+    if o0 is not None and c0 > o0 and (c0 - o0) > atr0 * 2.0:
         signals.append(("LB", 2))
 
     # 14. 모닝스타 (+2) → MS (전환)
@@ -856,10 +855,17 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     # 업종 패널티/보너스 적용
     sdf = _apply_sector_penalty(sdf, base_date)
 
+    # 당일 급등 신호(LB·VS·W52): 다음날 되돌림 손실 편향 → 수급 확인 없으면 제외
+    _surge_pat = r"\bLB\b|\bVS\b|\bW52\b"
+    _supply_pat = r"F_TRN|I_TRN|F_C3|I_C3|F_1|I_1"
+    has_surge = sdf["buy_flags"].str.contains(_surge_pat, na=False, regex=True)
+    has_supply = sdf["buy_flags"].str.contains(_supply_pat, na=False, regex=True)
+
     cand_mask = (
         (sdf["buy_score"] >= factor.INVEST_MIN_SCORE)
         & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
+        & (~has_surge | has_supply)  # 급등 신호 있으면 수급 필수
     )
     df = sdf[cand_mask].copy()
     if report:

@@ -221,6 +221,8 @@ def print_simul_report(
                 f"수익률 {r['ret_pct']:>+6.2f}%{amt_str}"
             )
 
+        _print_loss_stats(df_ok, wins, confirmed_cuts, hold_cuts)
+
     if rows_gap:
         log.info(f"  ▶ 갭 상승 (매수 불가) {len(rows_gap)}종목")
         _line("-", prefix="  ")
@@ -233,6 +235,68 @@ def print_simul_report(
             )
 
     _line()
+
+
+_SUPPLY_FLAGS = {"F_TRN", "I_TRN", "F_C3", "I_C3", "F_1", "I_1"}
+
+
+def _print_loss_stats(df_ok, wins, confirmed_cuts, hold_cuts):
+    losers = pd.concat([confirmed_cuts, hold_cuts], ignore_index=True)
+    if losers.empty:
+        return
+
+    _line("─", prefix="  ")
+    log.info(f"  [ 손실 종목 분석 ]  손절 {len(confirmed_cuts)} + 미확정손실 {len(hold_cuts)} = {len(losers)}건")
+    _line("─", prefix="  ")
+
+    # mode 분포 비교
+    def mode_dist(df):
+        vc = df["mode"].value_counts()
+        total = len(df)
+        return "  ".join(f"{k} {v}건({v/total*100:.0f}%)" for k, v in vc.items()) if total else "-"
+
+    log.info(f"  mode | 손실: {mode_dist(losers)}")
+    log.info(f"       | 승리: {mode_dist(wins)}")
+
+    # flag 출현 빈도 비교 (상위 10)
+    def flag_counts(df):
+        counts: dict[str, int] = {}
+        for flags_str in df["buy_flags"].dropna():
+            for f in str(flags_str).split():
+                counts[f] = counts.get(f, 0) + 1
+        total = len(df) or 1
+        return {k: (v, v / total * 100) for k, v in sorted(counts.items(), key=lambda x: -x[1])}
+
+    loss_fc = flag_counts(losers)
+    win_fc = flag_counts(wins)
+    all_flags = list(dict.fromkeys(list(loss_fc)[:10] + list(win_fc)[:10]))
+
+    log.info(f"  {'flag':<8s}  {'손실':>10s}  {'승리':>10s}  차이")
+    for f in all_flags:
+        lv, lp = loss_fc.get(f, (0, 0.0))
+        wv, wp = win_fc.get(f, (0, 0.0))
+        diff = lp - wp
+        marker = " ◀ 손실편향" if diff > 15 else (" ▶ 승리편향" if diff < -15 else "")
+        log.info(f"  {f:<8s}  {lv:3d}건({lp:4.0f}%)  {wv:3d}건({wp:4.0f}%)  {diff:+.0f}%{marker}")
+
+    # 수급 flag 유무 비교
+    def supply_rate(df):
+        if df.empty:
+            return 0.0
+        has = df["buy_flags"].dropna().apply(
+            lambda s: any(f in str(s).split() for f in _SUPPLY_FLAGS)
+        )
+        return has.mean() * 100
+
+    log.info(
+        f"  수급보유 비율 | 손실: {supply_rate(losers):.0f}%  승리: {supply_rate(wins):.0f}%"
+    )
+
+    # 평균 점수 비교
+    log.info(
+        f"  평균 점수    | 손실: {losers['buy_score'].mean():.1f}점  "
+        f"승리: {wins['buy_score'].mean():.1f}점"
+    )
 
 
 def _line(char="═", length=110, prefix="", appendix=""):

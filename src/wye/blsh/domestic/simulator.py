@@ -265,6 +265,6 @@ if __name__ == "__main__":
 
     simulate(scanner.find_candidates(dt), cash=ca)
 
-    from wye.blsh.domestic.codex import scanner_codex
+    # from wye.blsh.domestic.codex import scanner_codex
 
-    simulate(scanner_codex.find_candidates(dt), cash=ca)
+    # simulate(scanner_codex.find_candidates(dt), cash=ca)

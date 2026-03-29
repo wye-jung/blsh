@@ -1,17 +1,9 @@
 """
-독립형 투자대상 스캐너
+Standalone codex scanner.
 
-기존 scanner.py 의 후보선정 로직은 사용하지 않고, 일별 OHLCV 기반으로
-추세/돌파/눌림목/변동성 확장 패턴을 독립적으로 평가해 투자대상을 리포팅한다.
-
-핵심 개념
-  - 시장 레짐: KOSPI/KOSDAQ 지수의 20/60일 위치와 기울기 평가
-  - 종목 유니버스: 최근 평균 거래대금 기준 유동성 필터
-  - 종목 선정: 추세 정렬, 박스 상단 근접/돌파, MA20 눌림목 회복,
-               변동성 수축 후 확장(ignition) 패턴을 점수화
-  - 전략 분기: TRADE_FLAG=DAY / SWING 에 따라 임계값과 리스크 파라미터 분리
-
-주문 파일 생성이나 DB 저장은 수행하지 않는다.
+The selection logic is independent from the legacy scanner and keeps both
+`setup` and compatible `mode` columns so the returned DataFrame can still flow
+through the existing candidate pipeline shape.
 """
 
 from __future__ import annotations
@@ -106,42 +98,28 @@ class StrategyConfig:
     max_candidates_per_market: int
 
 
-_DAY_F = factor_codex.DAY_FACTORS
-_SWING_F = factor_codex.SWING_FACTORS
+def _to_config(label: str, values: dict[str, int | float]) -> StrategyConfig:
+    return StrategyConfig(
+        label=label,
+        avg_trdval_min=int(values["AVG_TRDVAL_MIN"]),
+        score_threshold=int(values["INVEST_MIN_SCORE"]),
+        recent_high_days=int(values["RECENT_HIGH_DAYS"]),
+        pullback_margin=float(values["PULLBACK_MARGIN"]),
+        entry_atr_mult=float(values["ENTRY_ATR_MULT"]),
+        stop_atr_mult=float(values["ATR_SL_MULT"]),
+        target_atr_mult=float(values["ATR_TP_MULT"]),
+        tp1_mult=float(values["TP1_MULT"]),
+        tp1_ratio=float(values["TP1_RATIO"]),
+        max_hold_days_rev=int(values["MAX_HOLD_DAYS"]),
+        max_hold_days_mix=int(values["MAX_HOLD_DAYS_MIX"]),
+        max_hold_days_mom=int(values["MAX_HOLD_DAYS_MOM"]),
+        max_candidates_per_market=int(values["MAX_CANDIDATES_PER_MARKET"]),
+    )
+
 
 CONFIGS = {
-    "DAY": StrategyConfig(
-        label="DAY",
-        avg_trdval_min=_DAY_F["AVG_TRDVAL_MIN"],
-        score_threshold=_DAY_F["INVEST_MIN_SCORE"],
-        recent_high_days=_DAY_F["RECENT_HIGH_DAYS"],
-        pullback_margin=_DAY_F["PULLBACK_MARGIN"],
-        entry_atr_mult=_DAY_F["ENTRY_ATR_MULT"],
-        stop_atr_mult=_DAY_F["ATR_SL_MULT"],
-        target_atr_mult=_DAY_F["ATR_TP_MULT"],
-        tp1_mult=_DAY_F["TP1_MULT"],
-        tp1_ratio=_DAY_F["TP1_RATIO"],
-        max_hold_days_rev=_DAY_F["MAX_HOLD_DAYS"],
-        max_hold_days_mix=_DAY_F["MAX_HOLD_DAYS_MIX"],
-        max_hold_days_mom=_DAY_F["MAX_HOLD_DAYS_MOM"],
-        max_candidates_per_market=_DAY_F["MAX_CANDIDATES_PER_MARKET"],
-    ),
-    "SWING": StrategyConfig(
-        label="SWING",
-        avg_trdval_min=_SWING_F["AVG_TRDVAL_MIN"],
-        score_threshold=_SWING_F["INVEST_MIN_SCORE"],
-        recent_high_days=_SWING_F["RECENT_HIGH_DAYS"],
-        pullback_margin=_SWING_F["PULLBACK_MARGIN"],
-        entry_atr_mult=_SWING_F["ENTRY_ATR_MULT"],
-        stop_atr_mult=_SWING_F["ATR_SL_MULT"],
-        target_atr_mult=_SWING_F["ATR_TP_MULT"],
-        tp1_mult=_SWING_F["TP1_MULT"],
-        tp1_ratio=_SWING_F["TP1_RATIO"],
-        max_hold_days_rev=_SWING_F["MAX_HOLD_DAYS"],
-        max_hold_days_mix=_SWING_F["MAX_HOLD_DAYS_MIX"],
-        max_hold_days_mom=_SWING_F["MAX_HOLD_DAYS_MOM"],
-        max_candidates_per_market=_SWING_F["MAX_CANDIDATES_PER_MARKET"],
-    ),
+    "DAY": _to_config("DAY", factor_codex.DAY_FACTORS),
+    "SWING": _to_config("SWING", factor_codex.SWING_FACTORS),
 }
 CFG = CONFIGS.get(TRADE_FLAG, CONFIGS["SWING"])
 
@@ -186,28 +164,15 @@ def _get_market_regime(idx_nm: str, idx_clss: str, base_date: str) -> dict:
 
     prices = pd.Series([float(r["clsprc_idx"]) for r in rows], dtype="float64")
     close0 = float(prices.iloc[0])
-    ma20 = (
-        float(prices.iloc[1:21].mean()) if len(prices) >= 21 else float(prices.mean())
-    )
-    ma60 = (
-        float(prices.iloc[1:61].mean()) if len(prices) >= 61 else float(prices.mean())
-    )
+    ma20 = float(prices.iloc[1:21].mean()) if len(prices) >= 21 else float(prices.mean())
+    ma60 = float(prices.iloc[1:61].mean()) if len(prices) >= 61 else float(prices.mean())
     prev_ma20 = float(prices.iloc[2:22].mean()) if len(prices) >= 22 else ma20
     ret5 = _safe_pct(close0, float(prices.iloc[5])) if len(prices) > 5 else 0.0
 
     score = 0
-    if close0 >= ma20:
-        score += 2
-    else:
-        score -= 2
-    if ma20 >= ma60:
-        score += 1
-    else:
-        score -= 1
-    if ma20 >= prev_ma20:
-        score += 1
-    else:
-        score -= 1
+    score += 2 if close0 >= ma20 else -2
+    score += 1 if ma20 >= ma60 else -1
+    score += 1 if ma20 >= prev_ma20 else -1
     if ret5 >= 0.01:
         score += 1
     elif ret5 <= -0.03:
@@ -263,10 +228,7 @@ def _fetch_market_ohlcv(table: str, base_date: str) -> pd.DataFrame:
 
 def _classify_setup(setup_scores: dict[str, int]) -> str:
     priority = {"BREAKOUT": 3, "PULLBACK": 2, "IGNITION": 1}
-    return max(
-        setup_scores.items(),
-        key=lambda item: (item[1], priority[item[0]]),
-    )[0]
+    return max(setup_scores.items(), key=lambda item: (item[1], priority[item[0]]))[0]
 
 
 def _build_trade_levels(
@@ -286,7 +248,6 @@ def _build_trade_levels(
     entry_price = Tick.ceil_tick(entry_anchor + atr0 * CFG.entry_atr_mult)
     stop_seed = min(ma20_0, close0 - atr0 * CFG.stop_atr_mult)
     stop_loss = Tick.floor_tick(stop_seed)
-
     if stop_loss <= 0 or stop_loss >= entry_price:
         stop_loss = Tick.floor_tick(close0 - max(atr0, close0 * 0.03))
 
@@ -343,9 +304,7 @@ def _apply_entry_schedule(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
 
     today = dtutils.today()
     ctime = dtutils.ctime()
-    if base_date == today and ctime < dtutils.add_time(
-        Milestone.LIQUIDATE_TIME, minutes=-3
-    ):
+    if base_date == today and ctime < dtutils.add_time(Milestone.LIQUIDATE_TIME, minutes=-3):
         entry_date = today
         if ctime < Milestone.NXT_OPEN_TIME:
             po_type = PO_TYPE_PRE
@@ -401,7 +360,6 @@ def _ensure_compat_schema(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
             df[col] = np.nan
 
     df = _apply_entry_schedule(df, base_date)
-
     for col in COMPAT_COLUMNS:
         if col not in df.columns:
             df[col] = np.nan
@@ -422,9 +380,7 @@ def _analyze_stock(
         return None
 
     frame = df.copy()
-    frame = (
-        frame[frame["trd_dd"] <= base_date].sort_values("trd_dd").set_index("trd_dd")
-    )
+    frame = frame[frame["trd_dd"] <= base_date].sort_values("trd_dd").set_index("trd_dd")
     for col in [
         "tdd_opnprc",
         "tdd_hgprc",
@@ -465,13 +421,11 @@ def _analyze_stock(
     if any(pd.isna(v) for v in [atr0, ma5_0, ma20_0, ma60_0]) or atr0 <= 0:
         return None
 
-    recent_high = float(high.iloc[-CFG.recent_high_days - 1 : -1].max())
+    recent_high = float(high.iloc[-CFG.recent_high_days - 1:-1].max())
     recent_close_high10 = float(close.iloc[-11:-1].max())
     range20 = _safe_mean(range_.iloc[-21:-1], default=max(h0 - l0, 1.0))
     range5_prev = _safe_mean(range_.iloc[-6:-1], default=range20)
-    vol20_prev = _safe_mean(
-        volume.iloc[-21:-1], default=max(float(volume.iloc[-1]), 1.0)
-    )
+    vol20_prev = _safe_mean(volume.iloc[-21:-1], default=max(float(volume.iloc[-1]), 1.0))
     trdval20 = _safe_mean(turnover.iloc[-20:], default=0.0)
     vol_ratio = float(volume.iloc[-1]) / vol20_prev if vol20_prev > 0 else 1.0
     atr_pct = atr0 / c0 if c0 > 0 else 0.0
@@ -581,10 +535,7 @@ def _analyze_stock(
             score -= 1
             flags.append("RET5_BAD")
     else:
-        if (
-            close.iloc[-10:].min() >= ma20.iloc[-10:].min() * 0.97
-            and c0 >= recent_close_high10
-        ):
+        if close.iloc[-10:].min() >= ma20.iloc[-10:].min() * 0.97 and c0 >= recent_close_high10:
             score += 2
             flags.append("BASE10")
             setup_scores["PULLBACK"] += 1
@@ -593,9 +544,7 @@ def _analyze_stock(
             score -= 1
             flags.append("GAP_RISK")
 
-    if max(setup_scores.values()) < 2:
-        return None
-    if score < CFG.score_threshold:
+    if max(setup_scores.values()) < 2 or score < CFG.score_threshold:
         return None
 
     setup = _classify_setup(setup_scores)
@@ -642,7 +591,7 @@ def _scan_market(
 ) -> list[dict]:
     df_all = _fetch_market_ohlcv(table, base_date)
     if df_all.empty:
-        log.warning("[%s] OHLCV 데이터 없음", market)
+        log.warning("[%s] no OHLCV data", market)
         return []
 
     results: list[dict] = []
@@ -667,7 +616,7 @@ def _scan_market(
     )
     limited = frame.head(CFG.max_candidates_per_market)
     log.info(
-        "[%s] 시장레짐=%s, 후보=%s건, 상위=%s건 채택",
+        "[%s] regime=%s candidates=%s selected=%s",
         market,
         market_regime["label"],
         len(frame),
@@ -677,35 +626,25 @@ def _scan_market(
 
 
 def find_candidates(
-    base_date: str | None = None, report: bool = False, save_report: bool = False
+    base_date: str | None = None,
+    report: bool = False,
+    save_report: bool = False,
 ) -> pd.DataFrame:
     if base_date is None:
         base_date = dtutils.get_latest_biz_date()
 
     if not query.has_ohlcv_data(base_date):
-        log.warning("%s - ohlcv 데이터가 없습니다", base_date)
+        log.warning("%s - no OHLCV data", base_date)
         return _empty_candidates()
 
     name_map = query.get_ticker_name_map()
     market_regimes = _load_market_regimes(base_date)
     results: list[dict] = []
     results.extend(
-        _scan_market(
-            "isu_ksp_ohlcv",
-            "KOSPI",
-            base_date,
-            name_map,
-            market_regimes["KOSPI"],
-        )
+        _scan_market("isu_ksp_ohlcv", "KOSPI", base_date, name_map, market_regimes["KOSPI"])
     )
     results.extend(
-        _scan_market(
-            "isu_ksd_ohlcv",
-            "KOSDAQ",
-            base_date,
-            name_map,
-            market_regimes["KOSDAQ"],
-        )
+        _scan_market("isu_ksd_ohlcv", "KOSDAQ", base_date, name_map, market_regimes["KOSDAQ"])
     )
 
     df = pd.DataFrame(results)
@@ -746,7 +685,7 @@ def print_report(df: pd.DataFrame, base_date: str, market_regimes: dict[str, dic
     print("-" * 120)
 
     if df.empty:
-        print("  투자 대상 없음")
+        print("  no candidates")
         print("=" * 120)
         return
 
@@ -755,10 +694,10 @@ def print_report(df: pd.DataFrame, base_date: str, market_regimes: dict[str, dic
     summary = (
         df.groupby(["market", "setup"])
         .agg(
-            종목수=("ticker", "count"),
-            평균점수=("buy_score", "mean"),
-            평균RR=("rr", "mean"),
-            평균거래대금20=("avg_trdval20", "mean"),
+            count=("ticker", "count"),
+            avg_score=("buy_score", "mean"),
+            avg_rr=("rr", "mean"),
+            avg_trdval20=("avg_trdval20", "mean"),
         )
         .round(2)
         .reset_index()
@@ -775,12 +714,12 @@ def print_report(df: pd.DataFrame, base_date: str, market_regimes: dict[str, dic
             print(
                 f"  [{row['buy_score']:2d}pt/{row['mode']:<3s}/{row['setup']:<8s}]"
                 f" {row['ticker']} {row['name'][:14]:<14s}"
-                f" 종가 {row['close']:>8,}"
-                f" 진입≤{row['entry_price']:>8,}"
-                f" 손절 {row['stop_loss']:>8,}"
-                f" 익절 {row['take_profit']:>8,}"
-                f" RR {row['rr'] if pd.notna(row['rr']) else 'N/A':>4}"
-                f" 거래대금20 {row['avg_trdval20']:>12,}"
+                f" close {row['close']:>8,}"
+                f" entry<={row['entry_price']:>8,}"
+                f" stop {row['stop_loss']:>8,}"
+                f" tp {row['take_profit']:>8,}"
+                f" rr {row['rr'] if pd.notna(row['rr']) else 'N/A':>4}"
+                f" trdval20 {row['avg_trdval20']:>12,}"
                 f" vol {row['vol_ratio']:>4.2f}"
                 f" r20 {row['ret20_pct']:>+6.2f}%"
                 f" flags: {row['buy_flags']}"
@@ -794,15 +733,13 @@ def save_candidates(df: pd.DataFrame, base_date: str) -> Path:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORT_DIR / f"scanner_codex_{CFG.label.lower()}_{base_date}.csv"
     df.to_csv(path, index=False, encoding="utf-8-sig")
-    log.info("리포트 저장: %s", path)
+    log.info("saved report: %s", path)
     return path
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     base_date = argv[0] if argv else None
     save_report = "--save" in argv
