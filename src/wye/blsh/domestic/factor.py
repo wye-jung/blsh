@@ -21,6 +21,8 @@ SECTOR_BONUS         +0      +1
 실행 후 grid_search 최적값으로 자동 갱신:
   uv run python -m wye.blsh.domestic.optimize.grid_search
 """
+
+from wye.blsh.domestic import Factor
 from wye.blsh.common.env import TRADE_FLAG
 
 # ─────────────────────────────────────────
@@ -61,17 +63,4 @@ _SWING = {
 # ─────────────────────────────────────────
 # 활성 factor 적용
 # ─────────────────────────────────────────
-_active = _DAY if TRADE_FLAG == "DAY" else _SWING
-
-INVEST_MIN_SCORE = _active["INVEST_MIN_SCORE"]
-ATR_SL_MULT = _active["ATR_SL_MULT"]
-ATR_TP_MULT = _active["ATR_TP_MULT"]
-TP1_MULT = _active["TP1_MULT"]
-TP1_RATIO = _active["TP1_RATIO"]
-GAP_DOWN_LIMIT = _active["GAP_DOWN_LIMIT"]
-MAX_HOLD_DAYS = _active["MAX_HOLD_DAYS"]
-MAX_HOLD_DAYS_MIX = _active["MAX_HOLD_DAYS_MIX"]
-MAX_HOLD_DAYS_MOM = _active["MAX_HOLD_DAYS_MOM"]
-SECTOR_PENALTY_THRESHOLD = _active["SECTOR_PENALTY_THRESHOLD"]
-SECTOR_PENALTY_PTS = _active["SECTOR_PENALTY_PTS"]
-SECTOR_BONUS_PTS = _active["SECTOR_BONUS_PTS"]
+active_factor = Factor(_DAY if TRADE_FLAG == "DAY" else _SWING)
