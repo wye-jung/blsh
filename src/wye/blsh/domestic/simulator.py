@@ -11,16 +11,13 @@
 import logging
 import pandas as pd
 from wye.blsh.database import query
-from wye.blsh.domestic import reporter, Tick, Factor
-from wye.blsh.domestic.factor import active_factor
+from wye.blsh.domestic import reporter, Tick, factor
 from wye.blsh.domestic.trader import SELL_COST_RATE, MIN_ALLOC, CASH_USAGE
 
 log = logging.getLogger(__name__)
 
 
-def simulate(
-    candidates, cash: float = 0, factor: Factor = active_factor
-) -> tuple | None:
+def simulate(candidates, cash: float = 0) -> tuple | None:
     """
     수익률 시뮬레이트.
 
@@ -36,7 +33,7 @@ def simulate(
         return None
 
     entry_date = candidates.iloc[0]["entry_date"]
-    max_hold = factor.max_hold_days
+    max_hold = factor.MAX_HOLD_DAYS
 
     log.info(f"[시뮬레이트] 매수일({entry_date}) 이후 최대 {max_hold}거래일 추적")
 
@@ -102,8 +99,8 @@ def simulate(
         t = sig["ticker"]
         entry = float(sig["entry_price"])
         atr = float(sig["atr"])
-        atr_sl_mult = float(sig.get("atr_sl_mult", factor.atr_sl_mult))
-        atr_tp_mult = float(sig.get("atr_tp_mult", factor.atr_tp_mult))
+        atr_sl_mult = float(sig.get("atr_sl_mult", factor.ATR_SL_MULT))
+        atr_tp_mult = float(sig.get("atr_tp_mult", factor.ATR_TP_MULT))
         days = ohlcv_idx.get(t, {})
 
         # entry_date(hold_dates[0]) 데이터 없음
@@ -122,7 +119,7 @@ def simulate(
         # [FIX] 실제 매수가 기준 SL/TP 재계산 (trader _make_position과 동일)
         buy_price = t1_ohv["open"]
         sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
-        tp1 = Tick.ceil_tick(buy_price + factor.tp1_mult * atr)
+        tp1 = Tick.ceil_tick(buy_price + factor.TP1_MULT * atr)
         tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
 
         result_type = None
@@ -136,11 +133,11 @@ def simulate(
         # 모드별 최대 보유 기간
         mode = sig.get("mode", "")
         if mode == "MOM":
-            max_days = factor.max_hold_days_mom
+            max_days = factor.MAX_HOLD_DAYS_MOM
         elif mode == "MIX":
-            max_days = factor.max_hold_days_mix
+            max_days = factor.MAX_HOLD_DAYS_MIX
         else:
-            max_days = factor.max_hold_days
+            max_days = factor.MAX_HOLD_DAYS
 
         # DAY 모드(max_days=0): entry_date 당일만 보유
         if max_days == 0:
@@ -181,7 +178,7 @@ def simulate(
             # TODO: TP1 체결 + 같은 봉 본전 SL 도달 시나리오 (일봉 한계)
             # TP1 분할매도 (50%) — 미완료 시에만
             if not t1_done and ohv["high"] >= tp1:
-                sell_ratio = min(factor.tp1_ratio, remaining_qty)
+                sell_ratio = min(factor.TP1_RATIO, remaining_qty)
                 pnl = (tp1 - buy_price) * sell_ratio - tp1 * sell_ratio * SELL_COST_RATE
                 realized_pnl += pnl
                 remaining_qty -= sell_ratio

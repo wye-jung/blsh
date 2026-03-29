@@ -5,7 +5,7 @@
 import logging
 import pandas as pd
 import numpy as np
-from wye.blsh.domestic.factor import active_factor as factor
+from wye.blsh.domestic import factor
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def print_invest_report(df):
     )
 
     log.info(
-        f"  선별 기준: score≥{factor.invest_min_score}  mode=MIX/MOM  수급(외인or기관)>0  P_OV 제외"
+        f"  선별 기준: score≥{factor.INVEST_MIN_SCORE}  mode=MIX/MOM  수급(외인or기관)>0  P_OV 제외"
     )
 
     _line("=")
@@ -155,7 +155,7 @@ def print_simul_report(
     _print_header(f"📊 수익률 리포트")
 
     cash_mode = cash > 0
-    log.info(f"  ▶ 기간: 매수일({entry_date}) 이후 최대 {factor.max_hold_days}거래일")
+    log.info(f"  ▶ 기간: 매수일({entry_date}) 이후 최대 {factor.MAX_HOLD_DAYS}거래일")
     log.info(f"  ▶ 종목: {len(candidates)}건 (매수성공: {len(rows_ok)})")
 
     if rows_ok:
@@ -246,14 +246,20 @@ def _print_loss_stats(df_ok, wins, confirmed_cuts, hold_cuts):
         return
 
     _line("─", prefix="  ")
-    log.info(f"  [ 손실 종목 분석 ]  손절 {len(confirmed_cuts)} + 미확정손실 {len(hold_cuts)} = {len(losers)}건")
+    log.info(
+        f"  [ 손실 종목 분석 ]  손절 {len(confirmed_cuts)} + 미확정손실 {len(hold_cuts)} = {len(losers)}건"
+    )
     _line("─", prefix="  ")
 
     # mode 분포 비교
     def mode_dist(df):
         vc = df["mode"].value_counts()
         total = len(df)
-        return "  ".join(f"{k} {v}건({v/total*100:.0f}%)" for k, v in vc.items()) if total else "-"
+        return (
+            "  ".join(f"{k} {v}건({v / total * 100:.0f}%)" for k, v in vc.items())
+            if total
+            else "-"
+        )
 
     log.info(f"  mode | 손실: {mode_dist(losers)}")
     log.info(f"       | 승리: {mode_dist(wins)}")
@@ -265,7 +271,10 @@ def _print_loss_stats(df_ok, wins, confirmed_cuts, hold_cuts):
             for f in str(flags_str).split():
                 counts[f] = counts.get(f, 0) + 1
         total = len(df) or 1
-        return {k: (v, v / total * 100) for k, v in sorted(counts.items(), key=lambda x: -x[1])}
+        return {
+            k: (v, v / total * 100)
+            for k, v in sorted(counts.items(), key=lambda x: -x[1])
+        }
 
     loss_fc = flag_counts(losers)
     win_fc = flag_counts(wins)
@@ -277,14 +286,18 @@ def _print_loss_stats(df_ok, wins, confirmed_cuts, hold_cuts):
         wv, wp = win_fc.get(f, (0, 0.0))
         diff = lp - wp
         marker = " ◀ 손실편향" if diff > 15 else (" ▶ 승리편향" if diff < -15 else "")
-        log.info(f"  {f:<8s}  {lv:3d}건({lp:4.0f}%)  {wv:3d}건({wp:4.0f}%)  {diff:+.0f}%{marker}")
+        log.info(
+            f"  {f:<8s}  {lv:3d}건({lp:4.0f}%)  {wv:3d}건({wp:4.0f}%)  {diff:+.0f}%{marker}"
+        )
 
     # 수급 flag 유무 비교
     def supply_rate(df):
         if df.empty:
             return 0.0
-        has = df["buy_flags"].dropna().apply(
-            lambda s: any(f in str(s).split() for f in _SUPPLY_FLAGS)
+        has = (
+            df["buy_flags"]
+            .dropna()
+            .apply(lambda s: any(f in str(s).split() for f in _SUPPLY_FLAGS))
         )
         return has.mean() * 100
 

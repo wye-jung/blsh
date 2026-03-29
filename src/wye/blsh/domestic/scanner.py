@@ -54,9 +54,8 @@ from logging.handlers import TimedRotatingFileHandler
 import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
-from wye.blsh.domestic import reporter, Tick, Milestone
+from wye.blsh.domestic import reporter, factor, Tick, Milestone
 from wye.blsh.domestic import sector
-from wye.blsh.domestic.factor import active_factor as factor
 from wye.blsh.domestic import PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO
 
 from wye.blsh.database.models import TradeCandidates
@@ -98,6 +97,10 @@ TRDVAL_DAYS = 20
 INDEX_MA_DAYS = 20  # 지수 환경 체크 이동평균 기간
 INDEX_DROP_LIMIT = (
     0.05  # MA 대비 괴리율 -5% 이하일 때만 시장 전체 스캔 스킵 (재앙 수준)
+)
+
+ENTRY_ATR_MULT = (
+    0.5  # 엔트리 가격 산출 시 ATR 곱하는 계수 (grid_search 대상 아님, 고정값)
 )
 
 # ─────────────────────────────────────────
@@ -320,9 +323,9 @@ def evaluate_buy(close, high, low, volume, opn=None):
         score = mom_score + rev_score + neu_score
 
     # ── 매수가 / 손절 / 익절 (호가 단위 보정)
-    entry_price = Tick.ceil_tick(c0 + 0.5 * atr0)
-    stop_loss = Tick.floor_tick(c0 - factor.atr_sl_mult * atr0)
-    take_profit = Tick.ceil_tick(c0 + factor.atr_tp_mult * atr0)
+    entry_price = Tick.ceil_tick(c0 + ENTRY_ATR_MULT * atr0)
+    stop_loss = Tick.floor_tick(c0 - factor.ATR_SL_MULT * atr0)
+    take_profit = Tick.ceil_tick(c0 + factor.ATR_TP_MULT * atr0)
 
     indicators = {
         "mode": mode,
@@ -390,7 +393,9 @@ def scan_dataframe(
         return None
 
     icon = "🔴" if score >= 5 else "🟡" if score >= 3 else "🔵"
-    log.debug(f"  {icon} [{score:2d}pt] {ticker:10s} {name[:18]:18s} ({market}) {flags}")
+    log.debug(
+        f"  {icon} [{score:2d}pt] {ticker:10s} {name[:18]:18s} ({market}) {flags}"
+    )
 
     return {
         "base_date": base_date,
@@ -809,7 +814,7 @@ def _get_sector_gap(
 
 def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
-    if factor.sector_penalty_pts == 0 and factor.sector_bonus_pts == 0:
+    if factor.SECTOR_PENALTY_PTS == 0 and factor.SECTOR_BONUS_PTS == 0:
         return df
 
     sector_map = _load_ticker_sector_map(base_date)
@@ -831,10 +836,10 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     for _, row in df.iterrows():
         gap = get_gap(row["ticker"], row["market"])
         adj = 0
-        if factor.sector_penalty_pts != 0 and gap < factor.sector_penalty_threshold:
-            adj = factor.sector_penalty_pts
-        elif factor.sector_bonus_pts != 0 and gap >= 0:
-            adj = factor.sector_bonus_pts
+        if factor.SECTOR_PENALTY_PTS != 0 and gap < factor.SECTOR_PENALTY_THRESHOLD:
+            adj = factor.SECTOR_PENALTY_PTS
+        elif factor.SECTOR_BONUS_PTS != 0 and gap >= 0:
+            adj = factor.SECTOR_BONUS_PTS
         adjustments.append(adj)
 
     df = df.copy()
@@ -857,7 +862,7 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     sdf = _apply_sector_penalty(sdf, base_date)
 
     cand_mask = (
-        (sdf["buy_score"] >= factor.invest_min_score)
+        (sdf["buy_score"] >= factor.INVEST_MIN_SCORE)
         & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
     )
@@ -868,15 +873,15 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["atr_sl_mult"] = factor.atr_sl_mult
-    df["atr_tp_mult"] = factor.atr_tp_mult
+    df["atr_sl_mult"] = factor.ATR_SL_MULT
+    df["atr_tp_mult"] = factor.ATR_TP_MULT
     conditions = [
         df["mode"] == "MIX",
         df["mode"] == "MOM",
         df["mode"] == "REV",
     ]
-    days = [factor.max_hold_days_mix, factor.max_hold_days_mom, factor.max_hold_days]
-    df["max_hold_days"] = np.select(conditions, days, default=factor.max_hold_days)
+    days = [factor.MAX_HOLD_DAYS_MIX, factor.MAX_HOLD_DAYS_MOM, factor.MAX_HOLD_DAYS]
+    df["max_hold_days"] = np.select(conditions, days, default=factor.MAX_HOLD_DAYS)
 
     today = dtutils.today()
     ctime = dtutils.ctime()
