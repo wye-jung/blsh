@@ -36,7 +36,7 @@ from wye.blsh.domestic import (
     Tick,
     sector,
 )
-from wye.blsh.domestic.codex import factor
+from wye.blsh.domestic.codex import factor_codex
 
 log = logging.getLogger(__name__)
 _fh = TimedRotatingFileHandler(
@@ -169,7 +169,9 @@ def _safe_pct(cur: float, prev: float) -> float:
 
 
 def _get_market_regime(idx_nm: str, idx_clss: str, base_date: str) -> dict:
-    rows = query.get_index_clsprc(idx_nm, base_date, ma_days=MARKET_MA_DAYS, idx_clss=idx_clss)
+    rows = query.get_index_clsprc(
+        idx_nm, base_date, ma_days=MARKET_MA_DAYS, idx_clss=idx_clss
+    )
     if not rows or len(rows) < 30:
         return {
             "index": idx_nm,
@@ -184,13 +186,13 @@ def _get_market_regime(idx_nm: str, idx_clss: str, base_date: str) -> dict:
 
     prices = pd.Series([float(r["clsprc_idx"]) for r in rows], dtype="float64")
     close0 = float(prices.iloc[0])
-    ma20 = float(prices.iloc[1:21].mean()) if len(prices) >= 21 else float(prices.mean())
-    ma60 = float(prices.iloc[1:61].mean()) if len(prices) >= 61 else float(prices.mean())
-    prev_ma20 = (
-        float(prices.iloc[2:22].mean())
-        if len(prices) >= 22
-        else ma20
+    ma20 = (
+        float(prices.iloc[1:21].mean()) if len(prices) >= 21 else float(prices.mean())
     )
+    ma60 = (
+        float(prices.iloc[1:61].mean()) if len(prices) >= 61 else float(prices.mean())
+    )
+    prev_ma20 = float(prices.iloc[2:22].mean()) if len(prices) >= 22 else ma20
     ret5 = _safe_pct(close0, float(prices.iloc[5])) if len(prices) > 5 else 0.0
 
     score = 0
@@ -368,7 +370,9 @@ def _apply_entry_schedule(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
 
     df["entry_date"] = entry_date
     df["po_type"] = po_type
-    df["expiry_date"] = df["max_hold_days"].apply(lambda mhd: _get_expiry(entry_date, int(mhd)))
+    df["expiry_date"] = df["max_hold_days"].apply(
+        lambda mhd: _get_expiry(entry_date, int(mhd))
+    )
     return df
 
 
@@ -382,7 +386,17 @@ def _ensure_compat_schema(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     df["inst_netbuy"] = np.nan
     df["indi_netbuy"] = np.nan
 
-    for col in ["rsi", "macd", "macd_signal", "macd_hist", "bb_upper", "bb_middle", "bb_lower", "stoch_k", "stoch_d"]:
+    for col in [
+        "rsi",
+        "macd",
+        "macd_signal",
+        "macd_hist",
+        "bb_upper",
+        "bb_middle",
+        "bb_lower",
+        "stoch_k",
+        "stoch_d",
+    ]:
         if col not in df.columns:
             df[col] = np.nan
 
@@ -408,7 +422,9 @@ def _analyze_stock(
         return None
 
     frame = df.copy()
-    frame = frame[frame["trd_dd"] <= base_date].sort_values("trd_dd").set_index("trd_dd")
+    frame = (
+        frame[frame["trd_dd"] <= base_date].sort_values("trd_dd").set_index("trd_dd")
+    )
     for col in [
         "tdd_opnprc",
         "tdd_hgprc",
@@ -449,11 +465,13 @@ def _analyze_stock(
     if any(pd.isna(v) for v in [atr0, ma5_0, ma20_0, ma60_0]) or atr0 <= 0:
         return None
 
-    recent_high = float(high.iloc[-CFG.recent_high_days - 1:-1].max())
+    recent_high = float(high.iloc[-CFG.recent_high_days - 1 : -1].max())
     recent_close_high10 = float(close.iloc[-11:-1].max())
     range20 = _safe_mean(range_.iloc[-21:-1], default=max(h0 - l0, 1.0))
     range5_prev = _safe_mean(range_.iloc[-6:-1], default=range20)
-    vol20_prev = _safe_mean(volume.iloc[-21:-1], default=max(float(volume.iloc[-1]), 1.0))
+    vol20_prev = _safe_mean(
+        volume.iloc[-21:-1], default=max(float(volume.iloc[-1]), 1.0)
+    )
     trdval20 = _safe_mean(turnover.iloc[-20:], default=0.0)
     vol_ratio = float(volume.iloc[-1]) / vol20_prev if vol20_prev > 0 else 1.0
     atr_pct = atr0 / c0 if c0 > 0 else 0.0
@@ -563,7 +581,10 @@ def _analyze_stock(
             score -= 1
             flags.append("RET5_BAD")
     else:
-        if close.iloc[-10:].min() >= ma20.iloc[-10:].min() * 0.97 and c0 >= recent_close_high10:
+        if (
+            close.iloc[-10:].min() >= ma20.iloc[-10:].min() * 0.97
+            and c0 >= recent_close_high10
+        ):
             score += 2
             flags.append("BASE10")
             setup_scores["PULLBACK"] += 1
@@ -655,7 +676,9 @@ def _scan_market(
     return limited.to_dict("records")
 
 
-def find_candidates(base_date: str | None = None, report: bool = False, save_report: bool = False) -> pd.DataFrame:
+def find_candidates(
+    base_date: str | None = None, report: bool = False, save_report: bool = False
+) -> pd.DataFrame:
     if base_date is None:
         base_date = dtutils.get_latest_biz_date()
 
@@ -777,7 +800,9 @@ def save_candidates(df: pd.DataFrame, base_date: str) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+    )
 
     base_date = argv[0] if argv else None
     save_report = "--save" in argv

@@ -46,6 +46,3 @@ USE_WEBSOCKET: Final = os.getenv("USE_WEBSOCKET", "").lower() in ("1", "true", "
 
 TELEGRAM_BOT_TOKEN: Final = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID: Final = os.getenv("TELEGRAM_CHAT_ID")
-
-if __name__ == "__main__":
-    print(TELEGRAM_BOT_TOKEN)
