@@ -40,5 +40,13 @@ KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
 KIS_ENV: Final = os.getenv("KIS_ENV", "demo").lower()  # KIS 모드: "demo" | "real"
 USE_WEBSOCKET: Final = os.getenv("USE_WEBSOCKET", "").lower() in ("1", "true", "yes")
 
+_missing = [k for k, v in {
+    "DB_USER": DB_USER, "DB_PASSWORD": DB_PASSWORD, "DB_NAME": DB_NAME,
+    "DB_HOST": DB_HOST, "DB_PORT": DB_PORT,
+    "KIS_APP_KEY": KIS_APP_KEY, "KIS_APP_SECRET": KIS_APP_SECRET,
+}.items() if not v]
+if _missing:
+    raise RuntimeError(f"필수 환경변수 누락: {', '.join(_missing)}")
+
 TELEGRAM_BOT_TOKEN: Final = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID: Final = os.getenv("TELEGRAM_CHAT_ID")

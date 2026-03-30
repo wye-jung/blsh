@@ -5,48 +5,70 @@
 
 [0단계] 종목 필터 (scan_market SQL)
   - 최근 20일 평균 거래대금(acc_trdval) 10억 이상
-  - 지수 환경 체크: KOSPI/KOSDAQ 20MA 아래이면 해당 시장 스킵
+  - 지수 환경 체크: KOSPI/KOSDAQ MA20 아래이면 해당 시장 스킵 (config.INDEX_DROP_LIMIT 이하만)
 
-[1단계] DB 기반 OHLCV 지표 스캔                              flag   성격    점수
-  ┌─────────────────────────────────────────┬──────┬────────┬──────┐
-  │ MACD 골든크로스                          │  +2  │ MGC    │  모멘텀│
-  │ MACD 예상 골든크로스                     │  +1  │ MPGC   │  중립  │
-  │ RSI 30 상향 돌파                         │  +2  │ RBO    │  전환  │
-  │ 볼린저 하단 반등                         │  +1  │ BBL    │  전환  │
-  │ 볼린저 중간선 상향 돌파                  │  +1  │ BBM    │  중립  │
-  │ 거래량 급증 + 양봉 (3배)                 │  +1  │ VS     │  모멘텀│
-  │ 이동평균 정배열 전환 (5>20>60)           │  +1  │ MAA    │  모멘텀│
-  │ 스토캐스틱 과매도 교차                   │  +1  │ SGC    │  중립  │
-  │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배) │  +2  │ W52    │  모멘텀│
-  │ 눌림목 패턴 (5MA 종가/저가 이탈 후 복귀) │  +2  │ PB     │  모멘텀│
-  │ 망치형 캔들                              │  +1  │ HMR    │  전환  │
-  │ 장대 양봉                                │  +2  │ LB     │  모멘텀│
-  │ 모닝스타 (3일 반전 패턴)                 │  +2  │ MS     │  전환  │
-  │ OBV 상승 추세 (3일 연속)                 │  +1  │ OBV    │  모멘텀│
-  └─────────────────────────────────────────┴──────┴────────┴──────┘
+[1단계] DB 기반 OHLCV 지표 스캔 (15개 플래그)
+  ┌──────────────────────────────────────────────────────┬──────┬────────┬──────┐
+  │ MACD 골든크로스                                       │  MGC │  모멘텀│  +2  │
+  │ MACD 예상 골든크로스 (히스토그램 상승 + 직전 음수)    │  MPGC│  중립  │  +1  │
+  │ RSI 30 상향 돌파                                      │  RBO │  전환  │  +2  │
+  │ RSI 과매도 상태 (30 미만)                             │  ROV │  전환  │  +1  │
+  │ 볼린저 하단 반등 (전일 하단 이탈 → 당일 회복)         │  BBL │  전환  │  +1  │
+  │ 볼린저 중간선 상향 돌파                               │  BBM │  중립  │  +1  │
+  │ 거래량 급증 + 양봉 (20일 평균의 2배 이상)             │  VS  │  모멘텀│  +1  │
+  │ 이동평균 정배열 전환 (5>20>60, 전일 미성립)           │  MAA │  모멘텀│  +1  │
+  │ 스토캐스틱 과매도 골든크로스 (K>D, 50 미만)           │  SGC │  중립  │  +1  │
+  │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배 이상)      │  W52 │  모멘텀│  +2  │
+  │ 눌림목 패턴 (MA20 상승 중, 5MA 이탈 후 복귀)          │  PB  │  모멘텀│  +2  │
+  │ 망치형 캔들 (하단 꼬리 50%↑, 상단 꼬리 10%↓)        │  HMR │  전환  │  +1  │
+  │ 장대 양봉 (양봉 크기 > ATR × 1.5)                    │  LB  │  모멘텀│  +2  │
+  │ 모닝스타 (3일 반전 패턴)                              │  MS  │  전환  │  +2  │
+  │ OBV 상승 추세 (3일 연속)                              │  OBV │  모멘텀│  +1  │
+  └──────────────────────────────────────────────────────┴──────┴────────┴──────┘
+
+  RBO / ROV는 elif 관계 (RSI 30 상향 돌파 시 ROV 미적용).
 
   점수 산출 (분리 트랙):
     - 모멘텀 점수(mom), 전환 점수(rev), 중립 점수(neu) 별도 집계
-    - MOM/REV: 해당 트랙 점수 + neu
-    - MIX: max(mom, rev) + neu  (약한 쪽 증거는 flag에만 보존, 점수 불포함)
-    - WEAK: mom + rev + neu (둘 다 약하므로 합산)
+    - MOM: mom_cnt ≥ 2 and mom_cnt > rev_cnt → mom + neu
+    - REV: rev_cnt ≥ 2 and rev_cnt > mom_cnt → rev + neu
+    - MIX: mom_cnt > 0 and rev_cnt > 0 → max(mom, rev) + neu
+    - WEAK: 그 외 (둘 다 약함) → mom + rev + neu
 
   → mode 컬럼: MOM(모멘텀) / REV(추세전환) / MIX(혼합) / WEAK
 
-[2단계] DB 수급 보강 (1단계 점수 2점 이상 종목만)
-  isu_ksp_info / isu_ksd_info 최근 5일 수급 추이 판별
-  DB 미보유 종목은 KIS API(investor_trade_by_stock_daily) fallback
+[2단계] 수급 보강 (1단계 점수 2점 이상 종목만)
+  isu_ksp_info / isu_ksd_info 최근 5일 수급 추이 판별.
+  DB 미보유 종목은 KIS API(investor_trade_by_stock_daily) fallback.
 
   ┌──────────────────────────────────────────┬──────┬──────┐
-  │ 외국인 순매수 전환 (N일 매도→오늘 매수)  │  +3  │ F_TRN│
-  │ 기관   순매수 전환 (N일 매도→오늘 매수)  │  +3  │ I_TRN│
-  │ 외국인 3일 이상 연속 순매수              │  +2  │ F_C3 │
-  │ 기관   3일 이상 연속 순매수              │  +2  │ I_C3 │
-  │ 외국인 오늘만 순매수                     │  +1  │ F_1  │
-  │ 기관   오늘만 순매수                     │  +1  │ I_1  │
-  │ 외국인+기관 동시 해당                    │  +1  │ FI   │
-  │ 개인만 대량 순매수 (외인·기관 없을 때)   │  -1  │ P_OV │
+  │ 외국인 순매수 전환 (N일 매도→오늘 매수)  │ F_TRN│  +3  │
+  │ 기관   순매수 전환 (N일 매도→오늘 매수)  │ I_TRN│  +3  │
+  │ 외국인 3일 이상 연속 순매수              │ F_C3 │  +2  │
+  │ 기관   3일 이상 연속 순매수              │ I_C3 │  +2  │
+  │ 외국인 오늘만 순매수                     │ F_1  │  +1  │
+  │ 기관   오늘만 순매수                     │ I_1  │  +1  │
+  │ 외국인+기관 동시 해당 (위 조건 중 하나씩) │ FI   │  +1  │
+  │ 개인만 대량 순매수 (외인·기관 없을 때)   │ P_OV │  -1  │
   └──────────────────────────────────────────┴──────┴──────┘
+
+  수급 가산 상한: SUPPLY_CAP = +3 (기술 점수 대비 초과분 제거, 백테스트 검증).
+  P_OV 종목은 [4단계]에서 PO 후보 제외.
+
+[3단계] 업종 환경 조정
+  업종지수 MA20 대비 괴리율(gap)로 패널티/보너스 적용.
+  미매핑 종목: KOSPI → "코스피" / KOSDAQ → "코스닥" 전체 지수로 대체.
+
+  gap < SECTOR_PENALTY_THRESHOLD (-5%) → SECTOR_PENALTY_PTS (-2점)
+  gap ≥ 0%                             → SECTOR_BONUS_PTS   (현재 0점)
+
+[4단계] PO 후보 선별 및 파일 생성
+  조건: buy_score ≥ INVEST_MIN_SCORE, mode ∈ {MOM, MIX, REV}, P_OV 없음
+  entry_price = ceil_tick(close + 0.5 × ATR)
+
+  po-{date}-pre.json — 전일 스캔 (NXT 08:00 매수, 30%)
+  po-{date}-ini.json — 오전 스캔 (KRX ~10:10 매수, 15%)
+  po-{date}-fin.json — 청산 후 스캔 (NXT 15:30 매수, 55%, max_hold_days +1)
 """
 
 import logging
@@ -54,10 +76,44 @@ from logging.handlers import TimedRotatingFileHandler
 import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
-from wye.blsh.domestic import reporter, factor, Tick, Milestone
+from wye.blsh.domestic import reporter, Tick, Milestone
 from wye.blsh.domestic import sector
 from wye.blsh.domestic import PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO
-
+from wye.blsh.domestic.config import (
+    MACD_SHORT,
+    MACD_LONG,
+    MACD_SIGNAL,
+    RSI_PERIOD,
+    RSI_OVERSOLD,
+    BB_PERIOD,
+    BB_STD,
+    STOCH_K,
+    STOCH_D,
+    STOCH_SMOOTH,
+    MA_PERIODS,
+    ATR_PERIOD,
+    GAP_THRESHOLD,
+    W52_VOL_MULT,
+    LOOKBACK_DAYS,
+    MIN_SCORE,
+    ENRICH_SCORE,
+    SUPPLY_CAP,
+    TRDVAL_MIN,
+    TRDVAL_DAYS,
+    INDEX_MA_DAYS,
+    INDEX_DROP_LIMIT,
+    INVEST_MIN_SCORE,
+    SECTOR_PENALTY_THRESHOLD,
+    SECTOR_PENALTY_PTS,
+    SECTOR_BONUS_PTS,
+    ATR_SL_MULT,
+    ATR_TP_MULT,
+    MAX_HOLD_DAYS,
+    MAX_HOLD_DAYS_MIX,
+    MAX_HOLD_DAYS_MOM,
+    signal_score,
+    supply_score,
+)
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR, LOG_DIR, KIS_ENV
@@ -73,39 +129,6 @@ _fh.suffix = "%Y-%m-%d"
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 log.addHandler(_fh)
 
-# ─────────────────────────────────────────
-# 설정
-# ─────────────────────────────────────────
-MACD_SHORT = 12
-MACD_LONG = 26
-MACD_SIGNAL = 9
-RSI_PERIOD = 14
-RSI_OVERSOLD = 30
-BB_PERIOD = 20
-BB_STD = 2.0
-STOCH_K = 14
-STOCH_D = 3
-STOCH_SMOOTH = 3
-MA_PERIODS = [5, 20, 60]  # 120은 미사용이므로 제거
-ATR_PERIOD = 14
-GAP_THRESHOLD = 0.02
-W52_VOL_MULT = 1.5  # 52주 신고가 거래량 조건: 20일 평균의 N배
-LOOKBACK_DAYS = 365  # 52주(252거래일) 신고가 계산을 위해 365일 이상 필요
-MIN_SCORE = 1  # 저장 최소 점수
-ENRICH_SCORE = 2  # 수급 보강 최소 점수
-_SUPPLY_CAP = 3  # 수급 가산 상한 (백테스트 검증, 2026-03-29)
-
-# 0단계 필터
-TRDVAL_MIN = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (10억)
-TRDVAL_DAYS = 20
-INDEX_MA_DAYS = 20  # 지수 환경 체크 이동평균 기간
-INDEX_DROP_LIMIT = (
-    0.05  # MA 대비 괴리율 -5% 이하일 때만 시장 전체 스캔 스킵 (재앙 수준)
-)
-
-ENTRY_ATR_MULT = (
-    0.5  # 엔트리 가격 산출 시 ATR 곱하는 계수 (grid_search 대상 아님, 고정값)
-)
 
 # ─────────────────────────────────────────
 # 신호 분류 맵 (flag → 성격)
@@ -197,7 +220,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
 
     # 1. MACD 골든크로스 (+2) → MGC (모멘텀)
     if m0 > s0 and m1 < s1:
-        signals.append(("MGC", 2))
+        signals.append(signal_score("MGC"))
     # 2. MACD 예상 골든크로스 (+1) → MPGC (중립)
     elif (
         m0 < s0
@@ -206,45 +229,45 @@ def evaluate_buy(close, high, low, volume, opn=None):
         and abs(s0) > 0
         and (s0 - m0) / abs(s0) <= GAP_THRESHOLD
     ):
-        signals.append(("MPGC", 1))
+        signals.append(signal_score("MPGC"))
 
     # 3. RSI 30 상향 돌파 (+2) → RBO (전환)
     if r0 > RSI_OVERSOLD and r1 <= RSI_OVERSOLD:
-        signals.append(("RBO", 2))
+        signals.append(signal_score("RBO"))
     # 4. RSI 과매도 (+1) → ROV (전환)
     elif r0 < RSI_OVERSOLD:
-        signals.append(("ROV", 1))
+        signals.append(signal_score("ROV"))
 
     # 5. 볼린저 하단 반등 (+1) → BBL (전환)
     if l1 < bbl1 and c0 > bbl0:
-        signals.append(("BBL", 1))
+        signals.append(signal_score("BBL"))
 
     # 6. 볼린저 중간선 상향 돌파 (+1) → BBM (중립)
     if c0 > bbm0 and c1 <= bbm1:
-        signals.append(("BBM", 1))
+        signals.append(signal_score("BBM"))
 
     # 7. 거래량 급증 + 양봉 (+1) → VS (모멘텀)
     if volume is not None and len(volume) >= 20:
         vol_avg = volume.iloc[-20:-1].mean()
         if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
-            signals.append(("VS", 1))
+            signals.append(signal_score("VS"))
 
     # 8. 이동평균 정배열 전환 (+1) → MAA (모멘텀)
     if ma5.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1] and not (
         ma5.iloc[-2] > ma20.iloc[-2] > ma60.iloc[-2]
     ):
-        signals.append(("MAA", 1))
+        signals.append(signal_score("MAA"))
 
     # 9. 스토캐스틱 과매도 교차 (+1) → SGC (중립)
     if sk0 > sd0 and sk1 < sd1 and sk0 < 50:
-        signals.append(("SGC", 1))
+        signals.append(signal_score("SGC"))
 
     # 10. 52주 신고가 돌파 (+2) → W52 (모멘텀)
     if len(close) >= 252 and volume is not None and len(volume) >= 21:
         w52_high = high.iloc[-252:-1].max()
         vol_20_avg = volume.iloc[-21:-1].mean()
         if h0 > w52_high and volume.iloc[-1] > vol_20_avg * W52_VOL_MULT:
-            signals.append(("W52", 2))
+            signals.append(signal_score("W52"))
 
     # 11. 눌림목 패턴 (+2) → PB (모멘텀)
     if (
@@ -253,7 +276,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
         and c0 > ma5.iloc[-1]
         and c0 > ma20.iloc[-1]
     ):
-        signals.append(("PB", 2))
+        signals.append(signal_score("PB"))
 
     # 12. 망치형 캔들 (+1) → HMR (전환)
     if o0 is not None:
@@ -267,11 +290,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
                 and upper_wick < candle_range * 0.1
                 and body < candle_range * 0.3
             ):
-                signals.append(("HMR", 1))
+                signals.append(signal_score("HMR"))
 
     # 13. 장대 양봉 (+2) → LB (모멘텀)
     if o0 is not None and c0 > o0 and (c0 - o0) > atr0 * 1.5:
-        signals.append(("LB", 2))
+        signals.append(signal_score("LB"))
 
     # 14. 모닝스타 (+2) → MS (전환)
     if has_opn and len(close) >= 3:
@@ -286,12 +309,12 @@ def evaluate_buy(close, high, low, volume, opn=None):
             and body_d3 > atr0 * 0.7
             and c_0 > (o_2 + c_2) / 2
         ):
-            signals.append(("MS", 2))
+            signals.append(signal_score("MS"))
 
     # 15. OBV 상승 추세 (+1) → OBV (모멘텀)
     if obv is not None and len(obv) >= 3:
         if obv.iloc[-3] < obv.iloc[-2] < obv.iloc[-1]:
-            signals.append(("OBV", 1))
+            signals.append(signal_score("OBV"))
 
     # ── 분리 트랙 점수 집계
     flags = [f for f, _ in signals]
@@ -327,9 +350,9 @@ def evaluate_buy(close, high, low, volume, opn=None):
         score = mom_score + rev_score + neu_score
 
     # ── 매수가 / 손절 / 익절 (호가 단위 보정)
-    entry_price = Tick.ceil_tick(c0 + ENTRY_ATR_MULT * atr0)
-    stop_loss = Tick.floor_tick(c0 - factor.ATR_SL_MULT * atr0)
-    take_profit = Tick.ceil_tick(c0 + factor.ATR_TP_MULT * atr0)
+    entry_price = Tick.ceil_tick(c0 + 0.5 * atr0)
+    stop_loss = Tick.floor_tick(c0 - ATR_SL_MULT * atr0)
+    take_profit = Tick.ceil_tick(c0 + ATR_TP_MULT * atr0)
 
     indicators = {
         "mode": mode,
@@ -531,7 +554,7 @@ def classify_supply(qty_list):
         return None, 0
     # TRN: 최소 2일 이상 매도/0 후 전환이어야 의미 있음
     if len(history) >= 2 and all(q <= 0 for q in history):
-        return "TRN", 3
+        return supply_score("TRN")
     consec = 1
     for q in reversed(history):
         if q > 0:
@@ -539,8 +562,8 @@ def classify_supply(qty_list):
         else:
             break
     if consec >= 3:
-        return "C3", 2
-    return "1", 1
+        return supply_score("C3")
+    return supply_score("1")
 
 
 def enrich_with_db(results: list, base_date: str) -> list:
@@ -644,8 +667,8 @@ def enrich_with_db(results: list, base_date: str) -> list:
         # 수급 가산 상한: 기술 점수 보호 (백테스트 검증, 2026-03-29)
         tech_score = results[idx]["_tech_score"]
         supply_bonus = results[idx]["buy_score"] - tech_score
-        if supply_bonus > _SUPPLY_CAP:
-            results[idx]["buy_score"] = tech_score + _SUPPLY_CAP
+        if supply_bonus > SUPPLY_CAP:
+            results[idx]["buy_score"] = tech_score + SUPPLY_CAP
 
         indi = sup.get("today_indi") or 0
         frgn = sup["today_frgn"] or 0
@@ -825,7 +848,7 @@ def _get_sector_gap(
 
 def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
-    if factor.SECTOR_PENALTY_PTS == 0 and factor.SECTOR_BONUS_PTS == 0:
+    if SECTOR_PENALTY_PTS == 0 and SECTOR_BONUS_PTS == 0:
         return df
 
     sector_map = _load_ticker_sector_map(base_date)
@@ -847,10 +870,10 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     for _, row in df.iterrows():
         gap = get_gap(row["ticker"], row["market"])
         adj = 0
-        if factor.SECTOR_PENALTY_PTS != 0 and gap < factor.SECTOR_PENALTY_THRESHOLD:
-            adj = factor.SECTOR_PENALTY_PTS
-        elif factor.SECTOR_BONUS_PTS != 0 and gap >= 0:
-            adj = factor.SECTOR_BONUS_PTS
+        if SECTOR_PENALTY_PTS != 0 and gap < SECTOR_PENALTY_THRESHOLD:
+            adj = SECTOR_PENALTY_PTS
+        elif SECTOR_BONUS_PTS != 0 and gap >= 0:
+            adj = SECTOR_BONUS_PTS
         adjustments.append(adj)
 
     df = df.copy()
@@ -873,7 +896,7 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     sdf = _apply_sector_penalty(sdf, base_date)
 
     cand_mask = (
-        (sdf["buy_score"] >= factor.INVEST_MIN_SCORE)
+        (sdf["buy_score"] >= INVEST_MIN_SCORE)
         & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
     )
@@ -884,15 +907,15 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df["atr_sl_mult"] = factor.ATR_SL_MULT
-    df["atr_tp_mult"] = factor.ATR_TP_MULT
+    df["atr_sl_mult"] = ATR_SL_MULT
+    df["atr_tp_mult"] = ATR_TP_MULT
     conditions = [
         df["mode"] == "MIX",
         df["mode"] == "MOM",
         df["mode"] == "REV",
     ]
-    days = [factor.MAX_HOLD_DAYS_MIX, factor.MAX_HOLD_DAYS_MOM, factor.MAX_HOLD_DAYS]
-    df["max_hold_days"] = np.select(conditions, days, default=factor.MAX_HOLD_DAYS)
+    days = [MAX_HOLD_DAYS_MIX, MAX_HOLD_DAYS_MOM, MAX_HOLD_DAYS]
+    df["max_hold_days"] = np.select(conditions, days, default=MAX_HOLD_DAYS)
 
     today = dtutils.today()
     ctime = dtutils.ctime()

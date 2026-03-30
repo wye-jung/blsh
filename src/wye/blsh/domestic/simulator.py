@@ -3,7 +3,7 @@
 
 - entry_date OHLCV 포함 (매수일 누락 수정)
 - buy_price 기준 SL/TP 재계산 (scanner 종가 기준 → 실제 매수가 기준)
-- TP1 분할매도(factor.TP1_MULT/TP1_RATIO) + 트레일링 SL 반영 (trader 로직 일치)
+- TP1 분할매도(TP1_MULT/TP1_RATIO) + 트레일링 SL 반영 (trader 로직 일치)
 - 모드별 max_hold_days 지원 (DAY max_hold=0 당일청산 포함)
 - 보수적 트레일링: 전일 high 기준으로만 SL 갱신 (일봉 한계 감안)
 """
@@ -11,9 +11,19 @@
 import logging
 import pandas as pd
 from wye.blsh.database import query
-from wye.blsh.domestic import reporter, Tick, factor
-from wye.blsh.domestic._sim_core import sim_one, SELL_COST_RATE
-from wye.blsh.domestic.trader import MIN_ALLOC, CASH_USAGE
+from wye.blsh.domestic import reporter, Tick
+from wye.blsh.domestic._sim_core import sim_one
+from wye.blsh.domestic.config import (
+    ATR_SL_MULT,
+    ATR_TP_MULT,
+    TP1_MULT,
+    TP1_RATIO,
+    MAX_HOLD_DAYS,
+    MAX_HOLD_DAYS_MOM,
+    MAX_HOLD_DAYS_MIX,
+    CASH_USAGE,
+    MIN_ALLOC,
+)
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +44,7 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
         return None
 
     entry_date = candidates.iloc[0]["entry_date"]
-    max_hold = factor.MAX_HOLD_DAYS
+    max_hold = MAX_HOLD_DAYS
 
     log.info(f"[시뮬레이트] 매수일({entry_date}) 이후 최대 {max_hold}거래일 추적")
 
@@ -100,8 +110,8 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
         t = sig["ticker"]
         entry = float(sig["entry_price"])
         atr = float(sig["atr"])
-        atr_sl_mult = float(sig.get("atr_sl_mult", factor.ATR_SL_MULT))
-        atr_tp_mult = float(sig.get("atr_tp_mult", factor.ATR_TP_MULT))
+        atr_sl_mult = float(sig.get("atr_sl_mult", ATR_SL_MULT))
+        atr_tp_mult = float(sig.get("atr_tp_mult", ATR_TP_MULT))
         days = ohlcv_idx.get(t, {})
 
         # entry_date(hold_dates[0]) 데이터 없음
@@ -120,17 +130,17 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
         # [FIX] 실제 매수가 기준 SL/TP 재계산 (trader _make_position과 동일)
         buy_price = t1_ohv["open"]
         sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
-        tp1 = Tick.ceil_tick(buy_price + factor.TP1_MULT * atr)
+        tp1 = Tick.ceil_tick(buy_price + TP1_MULT * atr)
         tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
 
         # 모드별 최대 보유 기간
         mode = sig.get("mode", "")
         if mode == "MOM":
-            max_days = factor.MAX_HOLD_DAYS_MOM
+            max_days = MAX_HOLD_DAYS_MOM
         elif mode == "MIX":
-            max_days = factor.MAX_HOLD_DAYS_MIX
+            max_days = MAX_HOLD_DAYS_MIX
         else:
-            max_days = factor.MAX_HOLD_DAYS
+            max_days = MAX_HOLD_DAYS
 
         # DAY 모드(max_days=0): entry_date 당일만 보유
         if max_days == 0:
@@ -143,7 +153,7 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
             sl=sl,
             tp1=tp1,
             tp2=tp2,
-            tp1_ratio=factor.TP1_RATIO,
+            tp1_ratio=TP1_RATIO,
             atr_sl_mult=atr_sl_mult,
             atr=atr,
             dates=sig_hold_dates,

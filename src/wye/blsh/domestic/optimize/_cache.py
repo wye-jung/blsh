@@ -44,12 +44,11 @@ from wye.blsh.domestic.scanner import (
     MACD_SIGNAL,
     MIN_SCORE,
     ENRICH_SCORE,
-    _SUPPLY_CAP,
+    SUPPLY_CAP,
 )
 
 
-
-# 업종코드 → DB 지수명 매핑은 factor.py에서 참조
+# 업종코드 → DB 지수명 매핑은 sector.py에서 참조
 _KOSPI_MID_TO_IDX = sector.KOSPI_MID_TO_IDX
 _KOSPI_BIG_TO_IDX = sector.KOSPI_BIG_TO_IDX
 _KOSDAQ_MID_TO_IDX = sector.KOSDAQ_MID_TO_IDX
@@ -60,9 +59,21 @@ CACHE_DIR = DATA_DIR / "cache" / "optimize"
 
 # scanner.evaluate_buy 와 동일한 점수표
 _SCORES = {
-    "MGC": 2, "MPGC": 1, "RBO": 2, "ROV": 1, "BBL": 1,
-    "BBM": 1, "VS": 1, "MAA": 1, "SGC": 1, "W52": 2,
-    "PB": 2, "HMR": 1, "LB": 2, "MS": 2, "OBV": 1,
+    "MGC": 2,
+    "MPGC": 1,
+    "RBO": 2,
+    "ROV": 1,
+    "BBL": 1,
+    "BBM": 1,
+    "VS": 1,
+    "MAA": 0,
+    "SGC": 1,
+    "W52": 3,
+    "PB": 2,
+    "HMR": 1,
+    "LB": 2,
+    "MS": 2,
+    "OBV": 1,
 }
 _SIGNAL_COLS = list(_SCORES.keys())
 _ALL_FLAGS = _MOMENTUM_FLAGS | _REVERSAL_FLAGS  # 중립 = 전체 - 이 집합
@@ -234,7 +245,10 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
             "WHERE idx_nm = :nm AND idx_clss = :clss "
             "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, clss=clss, s=start, e=end,
+            nm=idx_nm,
+            clss=clss,
+            s=start,
+            e=end,
         )
         if not rows:
             continue
@@ -274,7 +288,10 @@ def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str, str], flo
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
             "WHERE idx_nm = :nm AND idx_clss = :clss "
             "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, clss=clss, s=start, e=end,
+            nm=idx_nm,
+            clss=clss,
+            s=start,
+            e=end,
         )
         if not rows:
             continue
@@ -297,7 +314,8 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
     KOSDAQ: 중분류 우선, 대분류 fallback, 미매핑 → "코스닥"
     """
     from wye.blsh.kis.domestic_stock.domestic_stock_info import (
-        get_kospi_info, get_kosdaq_info,
+        get_kospi_info,
+        get_kosdaq_info,
     )
 
     result: dict[str, str] = {}
@@ -316,7 +334,9 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
             idx_nm = _KOSPI_MID_TO_IDX.get(mid) or _KOSPI_BIG_TO_IDX.get(big)
             result[ticker] = idx_nm or "코스피"  # 미매핑 → 전체 지수
         kp_mapped = sum(1 for t in kospi_tickers if result.get(t, "코스피") != "코스피")
-        log.info(f"  KOSPI 업종매핑: {kp_mapped}/{len(kospi_tickers)}종목 (미매핑→코스피)")
+        log.info(
+            f"  KOSPI 업종매핑: {kp_mapped}/{len(kospi_tickers)}종목 (미매핑→코스피)"
+        )
 
         # KOSDAQ
         kd = get_kosdaq_info()
@@ -328,8 +348,12 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
             big = int(row.get("지수업종 대분류 코드", 0) or 0)
             idx_nm = _KOSDAQ_MID_TO_IDX.get(mid) or _KOSDAQ_BIG_TO_IDX.get(big)
             result[ticker] = idx_nm or "코스닥"  # 미매핑 → 전체 지수
-        kd_mapped = sum(1 for t in kosdaq_tickers if result.get(t, "코스닥") != "코스닥")
-        log.info(f"  KOSDAQ 업종매핑: {kd_mapped}/{len(kosdaq_tickers)}종목 (미매핑→코스닥)")
+        kd_mapped = sum(
+            1 for t in kosdaq_tickers if result.get(t, "코스닥") != "코스닥"
+        )
+        log.info(
+            f"  KOSDAQ 업종매핑: {kd_mapped}/{len(kosdaq_tickers)}종목 (미매핑→코스닥)"
+        )
     except Exception as e:
         log.warning(f"  마스터 로드 실패: {e}")
         # fallback: 미매핑 종목 전체 지수
@@ -358,7 +382,8 @@ def _bulk_supply(start: str, end: str, scan_dates: list[str]) -> dict:
                 f"indi_netbid_trdvol AS indi "
                 f"FROM {table} WHERE trd_dd >= :s AND trd_dd <= :e "
                 f"ORDER BY isu_srt_cd, trd_dd",
-                s=pad_start, e=end,
+                s=pad_start,
+                e=end,
             )
         except Exception as e:
             log.warning(f"수급 로드 실패 ({table}): {e}")
@@ -426,7 +451,9 @@ class OptCache:
         self.name_map: dict[str, str] = {}
         self.ticker_market: dict[str, str] = {}
         self.ticker_sector: dict[str, str] = {}  # ticker → 업종지수명
-        self.sector_gaps: dict[tuple[str, str, str], float] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
+        self.sector_gaps: dict[
+            tuple[str, str, str], float
+        ] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
 
     # ── pickle I/O
     def save(self, tag: str = ""):
@@ -443,7 +470,9 @@ class OptCache:
         t0 = time.time()
         obj = cls()
         obj.__dict__.update(pickle.loads(path.read_bytes()))
-        log.info(f"캐시 로드: {path} ({len(obj.scan_dates)}일, {time.time() - t0:.1f}초)")
+        log.info(
+            f"캐시 로드: {path} ({len(obj.scan_dates)}일, {time.time() - t0:.1f}초)"
+        )
         return obj
 
 
@@ -485,7 +514,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
         for r in select_all(
             "SELECT DISTINCT trd_dd AS d FROM idx_stk_ohlcv "
             "WHERE trd_dd >= :s AND trd_dd <= :e ORDER BY 1",
-            s=lookback_start, e=end_date,
+            s=lookback_start,
+            e=end_date,
         )
     ]
     cache.scan_dates = [d for d in all_biz if start_date <= d <= end_date]
@@ -495,7 +525,9 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     # forward_dates: 각 날짜 이후 20 영업일
     for i, d in enumerate(all_biz):
         cache.forward_dates[d] = all_biz[i : i + 21]
-    log.info(f"  스캔 대상 {len(cache.scan_dates)}일  ({cache.scan_dates[0]} ~ {cache.scan_dates[-1]})")
+    log.info(
+        f"  스캔 대상 {len(cache.scan_dates)}일  ({cache.scan_dates[0]} ~ {cache.scan_dates[-1]})"
+    )
 
     # ── 2. 종목명
     cache.name_map = {
@@ -514,7 +546,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             f"tdd_clsprc AS close, acc_trdvol AS volume, acc_trdval AS trdval "
             f"FROM {table} "
             f"WHERE trd_dd >= :s AND trd_dd <= :e ORDER BY isu_srt_cd, trd_dd",
-            s=lookback_start, e=end_date,
+            s=lookback_start,
+            e=end_date,
         )
         df = pd.DataFrame(rows)
         if df.empty:
@@ -555,7 +588,11 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     for ticker, df in ohlcv_by_ticker.items():
         avg20 = df["trdval"].rolling(20, min_periods=10).mean()
         for d in cache.scan_dates:
-            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= TRDVAL_MIN:
+            if (
+                d in avg20.index
+                and pd.notna(avg20.loc[d])
+                and avg20.loc[d] >= TRDVAL_MIN
+            ):
                 trdval_pass.setdefault(d, set()).add(ticker)
 
     # ── 6. 벡터화 신호 계산
@@ -613,7 +650,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                 if sup:
                     bonus, bonus_flags, has_pov = sup
                     raw_supply_bonus = bonus
-                    score += min(bonus, _SUPPLY_CAP)  # scanner.py와 동일한 수급 상한
+                    score += min(bonus, SUPPLY_CAP)  # scanner.py와 동일한 수급 상한
                     flags |= bonus_flags
                     if has_pov:
                         flags.add("P_OV")
@@ -629,7 +666,9 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             # 업종지수 MA20 괴리율 (없으면 0.0 = 중립)
             sec_nm = cache.ticker_sector.get(ticker, "")
             idx_clss = sector.get_idx_clss(mkt)
-            sec_gap = cache.sector_gaps.get((sec_nm, idx_clss, date), 0.0) if sec_nm else 0.0
+            sec_gap = (
+                cache.sector_gaps.get((sec_nm, idx_clss, date), 0.0) if sec_nm else 0.0
+            )
 
             day_sigs.append(
                 {
@@ -637,7 +676,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                     "name": cache.name_map.get(ticker, ticker),
                     "market": mkt,
                     "score": score,
-                    "tech_score": tech_score,          # 기술 점수만 (수급 제외)
+                    "tech_score": tech_score,  # 기술 점수만 (수급 제외)
                     "raw_supply_bonus": raw_supply_bonus,  # 캡 미적용 수급 점수 원본
                     "flags": ",".join(sorted(flags)),
                     "mode": mode,

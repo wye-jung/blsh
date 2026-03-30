@@ -64,7 +64,19 @@ from wye.blsh.domestic import (
     Tick,
     Milestone,
 )
-from wye.blsh.domestic import factor
+from wye.blsh.domestic.config import (
+    ATR_SL_MULT,
+    ATR_TP_MULT,
+    TP1_MULT,
+    TP1_RATIO,
+    MAX_HOLD_DAYS,
+    CASH_USAGE,
+    MIN_ALLOC,
+    SELL_COST_RATE,
+    PRE_CASH_RATIO,
+    INI_CASH_RATIO,
+    FIN_CASH_RATIO,
+)
 from wye.blsh.domestic.kis_client import KISClient
 from wye.blsh.domestic.ws_monitor import PriceMonitor
 from wye.blsh.common import dtutils, fileutils, messageutils
@@ -82,13 +94,7 @@ log.addHandler(_fh)
 # ─────────────────────────────────────────
 # 설정
 # ─────────────────────────────────────────
-CASH_USAGE = 0.9  # 가용 현금의 90% 사용
-PRE_CASH_RATIO = 0.30  # PO① 전일 스캔: 가용 현금의 30% (확정 일봉, 갭 리스크 있음)
-INI_CASH_RATIO = 0.15  # PO② 오전 스캔: 가용 현금의 15% (장중 미확정 데이터 → 탐색적)
-FIN_CASH_RATIO = 0.55  # PO③ 오후 스캔: 청산 후 현금의 55% (확정에 가까운 데이터 → 주력)
-MIN_ALLOC = 10_000  # 종목당 최소 배분액 (1만원)
-# TP1_MULT, TP1_RATIO → factor.py 에서 로드
-SELL_COST_RATE = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)
+
 TICK_SEC = 10  # 메인 루프 주기 (현재가 조회 간격)
 FETCH_TIMEOUT = 30  # _fetch_prices as_completed 타임아웃 (종목 많아도 안전)
 SLOW_EVERY = 3  # po 감시·체결 확인 = TICK_SEC × SLOW_EVERY (30초)
@@ -156,7 +162,10 @@ def _save_history(
     try:
         query.save_trade_history(side, ticker, name, qty, price, reason, po_type)
     except Exception as e:
-        log.warning(f"이력 저장 실패 ({ticker}): {e}")
+        if KIS_ENV == "real":
+            log.critical(f"🚨 이력 저장 실패 [{KIS_ENV}] ({ticker}): {e}")
+        else:
+            log.warning(f"이력 저장 실패 ({ticker}): {e}")
 
     messageutils.send_message(f"{name}({ticker}) {qty}주를 {price}원에 {side}")
 
@@ -197,9 +206,8 @@ def _sell_market(
             break
         log.debug(f"  체결가 조회 대기 중: {ticker} odno={odno} (대기={wait}s)")
     if fill_price is None:
-        msg = f"  ⚠️ 체결가 조회 실패: {name}({ticker}) odno={odno} → DB에 NULL 저장"
-        log.warning(msg)
-        messageutils.send_message(msg)
+        log.warning(f"  ⚠️ 체결가 조회 실패: {name}({ticker}) odno={odno} → 현재가로 대체")
+        fill_price = kis.get_price(ticker)  # 최후 수단: 현재가 사용
     _save_history("sell", ticker, name, qty, fill_price, reason, po_type)
     return True
 
@@ -244,8 +252,8 @@ def _load_positions() -> dict[str, Position]:
         valid: dict[str, Position] = {}
         for t, v in data.items():
             v.setdefault("realized_pnl", 0.0)
-            v.setdefault("atr_sl_mult", factor.ATR_SL_MULT)
-            v.setdefault("atr_tp_mult", factor.ATR_TP_MULT)
+            v.setdefault("atr_sl_mult", ATR_SL_MULT)
+            v.setdefault("atr_tp_mult", ATR_TP_MULT)
             v.setdefault("expiry_date", "")
             v.setdefault("po_type", "")
             v.setdefault("excg_cd", "KRX")
@@ -340,11 +348,11 @@ def _restore_positions_from_db(
             atr = buy_price * 0.02
             log.warning(f"  [복원] {ticker} ATR 계산 불가 → 매수가×2% = {atr:.0f}")
 
-        atr_sl_mult = factor.ATR_SL_MULT
-        atr_tp_mult = factor.ATR_TP_MULT
-        tp1_mult = factor.TP1_MULT
-        tp1_ratio = factor.TP1_RATIO
-        max_hold = factor.MAX_HOLD_DAYS
+        atr_sl_mult = ATR_SL_MULT
+        atr_tp_mult = ATR_TP_MULT
+        tp1_mult = TP1_MULT
+        tp1_ratio = TP1_RATIO
+        max_hold = MAX_HOLD_DAYS
 
         sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
         tp1 = Tick.ceil_tick(buy_price + tp1_mult * atr)
@@ -426,10 +434,10 @@ def _make_position(
     """
     atr = float(c["atr"])
     atr_sl_mult = float(
-        c["atr_sl_mult"] if c.get("atr_sl_mult") is not None else factor.ATR_SL_MULT
+        c["atr_sl_mult"] if c.get("atr_sl_mult") is not None else ATR_SL_MULT
     )
     atr_tp_mult = float(
-        c["atr_tp_mult"] if c.get("atr_tp_mult") is not None else factor.ATR_TP_MULT
+        c["atr_tp_mult"] if c.get("atr_tp_mult") is not None else ATR_TP_MULT
     )
 
     if c.get("max_hold_days") is not None:
@@ -446,12 +454,8 @@ def _make_position(
             log.warning(f"  expiry_date 계산 실패 ({c.get('ticker')}): {e}")
             expiry_date = entry_date
 
-    tp1_mult = float(
-        c["tp1_mult"] if c.get("tp1_mult") is not None else factor.TP1_MULT
-    )
-    tp1_ratio = float(
-        c["tp1_ratio"] if c.get("tp1_ratio") is not None else factor.TP1_RATIO
-    )
+    tp1_mult = float(c["tp1_mult"] if c.get("tp1_mult") is not None else TP1_MULT)
+    tp1_ratio = float(c["tp1_ratio"] if c.get("tp1_ratio") is not None else TP1_RATIO)
     sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
     tp1 = Tick.ceil_tick(buy_price + tp1_mult * atr)
     tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
@@ -528,7 +532,7 @@ def _process_position(
         return False, changed
 
     if not pos.t1_done and current >= pos.tp1:
-        qty_sell = pos.qty_t1
+        qty_sell = min(pos.qty_t1, pos.qty)  # DB 복원 포지션 qty 불일치 방어
         reason = f"1차익절 {ret_pct:+.2f}% (TP1={pos.tp1:,.0f})"
         if _sell_or_log(kis, pos, qty_sell, reason, nxt_price=sell_price, today=today):
             pos.realized_pnl += (
@@ -603,7 +607,12 @@ def _submit_buy_orders(
         if entry_price <= 0:
             log.warning(f"[po] entry_price 없음 ({ticker}) → 스킵")
             continue
-        qty = max(1, int(alloc // entry_price))
+        qty = int(alloc // entry_price)
+        if qty < 1:
+            log.warning(
+                f"[po] 배분액 부족: {ticker}  alloc={alloc:,.0f} < price={entry_price:,.0f} → 스킵"
+            )
+            continue
         odno = kis.buy(ticker, qty, entry_price, excg_id_dvsn_cd)
         if odno:
             pending[ticker] = PendingOrder(

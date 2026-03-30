@@ -37,9 +37,14 @@ class _LazyEngine:
 
 engine = _LazyEngine()
 
+import atexit
+atexit.register(lambda: engine.dispose())
+
 
 def create(table_name, df, if_exists="append"):
-    df.to_sql(table_name, con=engine, if_exists=if_exists, index=False)
+    with engine.connect() as conn:
+        df.to_sql(table_name, con=conn, if_exists=if_exists, index=False)
+        conn.commit()
     print(f"Inserted {len(df)} rows into {table_name} table")
 
 

@@ -298,7 +298,7 @@ def run(years: int = 2):
 
     cache = build_or_load(start_date, end_date)
 
-    from wye.blsh.domestic import factor as _f
+    from wye.blsh.domestic import config as _f
     params = Params(
         invest_min_score=_f.INVEST_MIN_SCORE,
         atr_sl_mult=_f.ATR_SL_MULT,
@@ -308,7 +308,6 @@ def run(years: int = 2):
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
-        gap_down_limit=_f.GAP_DOWN_LIMIT,
         sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
         sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
         sector_bonus_pts=_f.SECTOR_BONUS_PTS,

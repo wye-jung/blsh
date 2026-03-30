@@ -8,13 +8,13 @@ simulator.py 와 grid_search._simulate_one 의 공용 루프.
   - 트레일링 SL: 전일 high 기준으로만 갱신 (당일 high 사용 시 낙관적 편향)
   - TP1 체결 후 같은 봉에서 본전 SL 도달 → 잔량 즉시 본전 청산 (가장 불리한 시나리오)
 """
+
 from __future__ import annotations
 
 from typing import Callable
 
 from wye.blsh.domestic import Tick
-
-SELL_COST_RATE = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)
+from wye.blsh.domestic.config import SELL_COST_RATE
 
 
 def sim_one(

@@ -38,23 +38,26 @@ class PO:
 
     def loads(self) -> dict[str, dict]:
         try:
-            orders = json.loads(self.path.read_text())
-            self._done_dir.mkdir(parents=True, exist_ok=True)
-            dest = self._done_dir / self.path.name
-            if dest.exists():
-                dest = (
-                    self._done_dir
-                    / f"{self.path.stem}_{int(time.time())}{self.path.suffix}"
-                )
-            try:
-                # shutil.move(str(self.path), str(dest))
-                self.path.rename(dest)
-            except Exception as e:
-                log.warning(e)
+            text = self.path.read_text()
+        except FileNotFoundError:
+            return {}
+        try:
+            orders = json.loads(text)
+        except json.JSONDecodeError as e:
+            log.error(f"PO 파일 손상 ({self.path}): {e}")
+            return {}
+
+        self._done_dir.mkdir(parents=True, exist_ok=True)
+        dest = self._done_dir / self.path.name
+        if dest.exists():
+            dest = (
+                self._done_dir
+                / f"{self.path.stem}_{int(time.time())}{self.path.suffix}"
+            )
+        try:
+            self.path.rename(dest)
         except Exception as e:
             log.warning(e)
-            orders = {}
-
         return orders
 
 

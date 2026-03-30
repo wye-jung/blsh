@@ -49,7 +49,6 @@ class Params:
     max_hold_days_mom: int
     tp1_mult: float  # 1차 익절 ATR 배수 (e.g. 0.7, 1.0, 1.5)
     tp1_ratio: float  # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
-    gap_down_limit: float  # 갭하락 한계 (e.g. 0.03 = entry 대비 3% 이상 하락 시 스킵)
     sector_penalty_threshold: float  # 업종지수 MA20 괴리율 패널티 임계값 (e.g. -0.03)
     sector_penalty_pts: int  # 임계값 이하 시 점수 패널티 (e.g. -2)
     sector_bonus_pts: int  # 업종지수 MA20 이상일 때 보너스 (e.g. +1)
@@ -63,13 +62,12 @@ class Params:
         if self.sector_bonus_pts != 0:
             parts.append(f"bon=+0%/{self.sector_bonus_pts:+d}")
         sec = " ".join(parts) if parts else "sec=off"
-        gap = f"gap={self.gap_down_limit:.0%}" if self.gap_down_limit > 0 else ""
         return (
             f"score≥{self.invest_min_score} "
             f"SL={self.atr_sl_mult:.1f} TP1={self.tp1_mult:.1f}({self.tp1_ratio:.0%}) "
             f"TP2={self.atr_tp_mult:.1f} "
             f"REV={self.max_hold_days_rev}d MIX={self.max_hold_days_mix}d "
-            f"MOM={self.max_hold_days_mom}d {gap} {sec}".rstrip()
+            f"MOM={self.max_hold_days_mom}d {sec}".rstrip()
         )
 
 
@@ -119,13 +117,7 @@ def _simulate_one(
     if t1["open"] > sig["entry_price"]:
         return None
 
-    # 갭 하락 필터: entry 대비 gap_down_limit 이상 하락 시 스킵
     buy = t1["open"]
-    if params.gap_down_limit > 0:
-        gap_floor = sig["entry_price"] * (1 - params.gap_down_limit)
-        if buy < gap_floor:
-            return None
-
     sl = Tick.floor_tick(buy - params.atr_sl_mult * atr)
     tp1 = Tick.ceil_tick(buy + params.tp1_mult * atr)
     tp2 = Tick.ceil_tick(buy + params.atr_tp_mult * atr)
@@ -217,18 +209,17 @@ def backtest(cache: OptCache, params: Params) -> Stats:
 # ─────────────────────────────────────────
 GRID = {
     "invest_min_score": [9, 10, 11, 12, 13],
-    "atr_sl_mult": [1.5, 2.0, 2.5, 3.0],
-    "atr_tp_mult": [1.5, 2.0, 2.5, 3.0],
+    "atr_sl_mult": [1.0, 1.5, 2.0, 2.5, 3.0],
+    "atr_tp_mult": [1.5, 2.0, 2.5, 3.0, 4.0, 5.0],
     "max_hold_days_rev": [3, 5, 7, 10],
     "max_hold_days_mix": [2, 3, 5],
     "max_hold_days_mom": [1, 2, 3],
     "tp1_mult": [0.7, 1.0, 1.5],
-    "tp1_ratio": [0.3, 0.5, 0.7],
-    "gap_down_limit": [0.0, 0.03, 0.05],
+    "tp1_ratio": [0.3, 0.5, 0.7, 1.0],
     "sector_penalty_threshold": [-0.03, -0.05],
     "sector_penalty_pts": [0, -2],
     "sector_bonus_pts": [0, 1],
-}  # 5×4×4×4×3×3×3×3×3×2×2×2 = 622,080 → --no-sector 시 77,760
+}  # 5×5×6×4×3×3×3×4×2×2×2 = 518,400 → --no-sector 시 64,800
 
 
 # ─────────────────────────────────────────
@@ -260,9 +251,6 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
             f"    TP1_MULT         = {best_p.tp1_mult}  (매도비율 {best_p.tp1_ratio:.0%})"
         )
         log.info(f"    ATR_TP_MULT      = {best_p.atr_tp_mult}")
-        log.info(
-            f"    GAP_DOWN_LIMIT   = {best_p.gap_down_limit:.0%}{'  (OFF)' if best_p.gap_down_limit == 0 else ''}"
-        )
         log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
         log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
         log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
@@ -284,9 +272,9 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
 
 
 # ─────────────────────────────────────────
-# factor.py 자동 갱신
+# config.py 자동 갱신
 # ─────────────────────────────────────────
-_FACTOR_PATH = Path(__file__).resolve().parent.parent / "factor.py"
+_FACTOR_PATH = Path(__file__).resolve().parent.parent / "config.py"
 
 
 def _params_to_dict(p: Params) -> dict:
@@ -296,7 +284,6 @@ def _params_to_dict(p: Params) -> dict:
         "ATR_TP_MULT": p.atr_tp_mult,
         "TP1_MULT": p.tp1_mult,
         "TP1_RATIO": p.tp1_ratio,
-        "GAP_DOWN_LIMIT": p.gap_down_limit,
         "MAX_HOLD_DAYS": p.max_hold_days_rev,
         "MAX_HOLD_DAYS_MIX": p.max_hold_days_mix,
         "MAX_HOLD_DAYS_MOM": p.max_hold_days_mom,
@@ -307,7 +294,6 @@ def _params_to_dict(p: Params) -> dict:
 
 
 def _fmt_val(key: str, val) -> str:
-    """factor.py dict 값 포매팅."""
     if isinstance(val, float):
         if val == int(val) and key != "SECTOR_PENALTY_THRESHOLD":
             return str(int(val)) if val == 0 else str(val)
@@ -322,36 +308,27 @@ def _make_opt_line(ts: str, period: str, s: Stats) -> str:
     )
 
 
-def _update_factor_file(best_p: Params, best_s: Stats, years: int):
-    """최적 파라미터로 factor.py 재생성."""
+def _update_config_file(best_p: Params, best_s: Stats, years: int):
+    """최적 파라미터로 config.py의 Optimized 클래스 속성 갱신."""
+    import re
+
     d = _params_to_dict(best_p)
+    content = _FACTOR_PATH.read_text(encoding="utf-8")
 
-    today = dtutils.today()
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    start_date = dtutils.add_days(today, -years * 365)
-    period = f"{start_date}~{today}"
-    opt_line = _make_opt_line(now_str, period, best_s)
-
-    comments = {
-        "TP1_MULT": "1차 익절: buy + ATR × TP1_MULT",
-        "TP1_RATIO": "1차 익절 매도 비율 (1.0 = 전량)",
-        "SECTOR_PENALTY_THRESHOLD": "업종지수 MA20 대비 해당값 이하",
-        "SECTOR_BONUS_PTS": "업종지수 MA20 이상일 때",
-    }
-    const_lines = []
     for k, v in d.items():
         val_str = _fmt_val(k, v)
-        comment = comments.get(k, "")
-        line = f"{k} = {val_str}"
-        if comment:
-            line = f"{line}  # {comment}"
-        const_lines.append(line)
-    const_block = "\n".join(const_lines)
-
-    content = f'"""\n최적 파라미터 ({today} 기준, 최근 {years}년 백테스트)\n{opt_line}\n\ncommand:\n  uv run python -m wye.blsh.domestic.optimize.grid_search\n"""\n\n{const_block}\n'
+        type_hint = "int" if isinstance(v, int) else "float"
+        content = re.sub(
+            rf"^(    {k}: \w+ = )\S+(  # .*)?$",
+            lambda m, vs=val_str, th=type_hint, key=k: (
+                f"    {key}: {th} = {vs}{m.group(2) or ''}"
+            ),
+            content,
+            flags=re.MULTILINE,
+        )
 
     _FACTOR_PATH.write_text(content, encoding="utf-8")
-    log.info(f"\n  💾 factor.py 자동 갱신: {_FACTOR_PATH}")
+    log.info(f"\n  💾 config.py (Optimized) 자동 갱신: {_FACTOR_PATH}")
     log.info(
         f"    {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
         f"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%"
@@ -440,9 +417,9 @@ def run(
     if results and results[0][1].metric > -9999:
         best_p, best_s = results[0]
         if apply:
-            _update_factor_file(best_p, best_s, years)
+            _update_config_file(best_p, best_s, years)
         else:
-            log.info("\n  ⚠️  --no-apply: factor.py 갱신 생략")
+            log.info("\n  ⚠️  --no-apply: config.py 갱신 생략")
 
 
 # ─────────────────────────────────────────
@@ -460,7 +437,7 @@ if __name__ == "__main__":
         "--no-sector", action="store_true", help="업종지수 패널티 비활성화"
     )
     parser.add_argument(
-        "--no-apply", action="store_true", help="factor.py 자동 갱신 생략"
+        "--no-apply", action="store_true", help="config.py 자동 갱신 생략"
     )
     parser.add_argument(
         "--workers", type=int, default=0, help="병렬 프로세스 수 (0=자동)"

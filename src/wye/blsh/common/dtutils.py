@@ -1,15 +1,18 @@
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_KST = ZoneInfo("Asia/Seoul")
 
 DATE_FMT = "%Y%m%d"
 TIME_FMT = "%H%M%S"
 
 
 def ctime(fmt: str = TIME_FMT) -> str:
-    return datetime.now().strftime(fmt)
+    return datetime.now(_KST).strftime(fmt)
 
 
 def today(fmt: str = DATE_FMT) -> str:
-    return date.today().strftime(fmt)
+    return datetime.now(_KST).date().strftime(fmt)
 
 
 def add_time(time_str, fmt: str = TIME_FMT, **kwargs):

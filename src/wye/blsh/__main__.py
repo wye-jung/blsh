@@ -14,7 +14,9 @@ if __name__ == "__main__":
         collector.collect_holiday()
         today = dtutils.today()
         kh = query.get_krx_holiday(today)
-        if kh is not None and kh["opnd_yn"] == "Y":
+        if kh is None:
+            log.error(f"오늘({today}) KRX 휴장일 정보 없음 → po 생성 불가. collect_holiday() 재실행 필요.")
+        elif kh["opnd_yn"] == "Y":
             collected, max_ohlcv_date = collector.collect()
             if collected:
                 scanner.issue_po(max_ohlcv_date)
