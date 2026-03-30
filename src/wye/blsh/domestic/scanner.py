@@ -60,11 +60,14 @@ from wye.blsh.domestic import PO_TYPE_PRE, PO_TYPE_INI, PO_TYPE_FIN, PO
 
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import DATA_DIR, LOG_DIR
+from wye.blsh.common.env import DATA_DIR, LOG_DIR, KIS_ENV
 
 log = logging.getLogger(__name__)
 _fh = TimedRotatingFileHandler(
-    LOG_DIR / "scanner.log", when="midnight", backupCount=30, encoding="utf-8"
+    LOG_DIR / f"scanner-{KIS_ENV}.log",
+    when="midnight",
+    backupCount=30,
+    encoding="utf-8",
 )
 _fh.suffix = "%Y-%m-%d"
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -90,6 +93,7 @@ W52_VOL_MULT = 1.5  # 52주 신고가 거래량 조건: 20일 평균의 N배
 LOOKBACK_DAYS = 365  # 52주(252거래일) 신고가 계산을 위해 365일 이상 필요
 MIN_SCORE = 1  # 저장 최소 점수
 ENRICH_SCORE = 2  # 수급 보강 최소 점수
+_SUPPLY_CAP = 3  # 수급 가산 상한 (백테스트 검증, 2026-03-29)
 
 # 0단계 필터
 TRDVAL_MIN = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (10억)
@@ -404,6 +408,7 @@ def scan_dataframe(
         "name": name,
         "market": market,
         "buy_score": score,
+        "_tech_score": score,  # 수급 가산 전 기술 점수 (캡 계산용)
         "buy_flags": ",".join(flags),
         "foreign_netbuy": None,
         "inst_netbuy": None,
@@ -635,6 +640,12 @@ def enrich_with_db(results: list, base_date: str) -> list:
             results[idx]["buy_score"] += 1
             results[idx]["buy_flags"] += ",FI"
             log.debug(f"  ⭐ 외국인+기관 동시: {t} {row['name']}")
+
+        # 수급 가산 상한: 기술 점수 보호 (백테스트 검증, 2026-03-29)
+        tech_score = results[idx]["_tech_score"]
+        supply_bonus = results[idx]["buy_score"] - tech_score
+        if supply_bonus > _SUPPLY_CAP:
+            results[idx]["buy_score"] = tech_score + _SUPPLY_CAP
 
         indi = sup.get("today_indi") or 0
         frgn = sup["today_frgn"] or 0
@@ -953,4 +964,5 @@ def issue_po(base_date=None):
 
 
 if __name__ == "__main__":
+    log.setLevel(logging.DEBUG)
     find_candidates(report=True)

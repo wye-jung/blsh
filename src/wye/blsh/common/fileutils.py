@@ -19,7 +19,7 @@ def create_file(path: Path, contents) -> bool:
 
 
 def create_json(path: Path, data, **kwargs) -> bool:
-    if data:
+    if data is not None:
         json_dumps = json.dumps(data, ensure_ascii=False, indent=2, **kwargs)
         return create_file(path, json_dumps)
     return False

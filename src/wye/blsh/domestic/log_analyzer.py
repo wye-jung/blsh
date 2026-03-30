@@ -22,7 +22,7 @@ from collections import Counter
 from pathlib import Path
 
 from wye.blsh.common import dtutils, messageutils
-from wye.blsh.common.env import LOG_DIR
+from wye.blsh.common.env import LOG_DIR, KIS_ENV
 from wye.blsh.database import query
 
 log = logging.getLogger(__name__)
@@ -237,7 +237,8 @@ def _analyze_db(date_str: str) -> dict:
 def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
     """분석 결과 → 텔레그램 리포트 문자열."""
     d = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-    parts = [f"📊 일일 리포트 ({d})", "━" * 24]
+    env_label = "🚨real" if KIS_ENV == "real" else "📋demo"
+    parts = [f"📊 일일 리포트 ({d}) [{env_label}]", "━" * 24]
 
     total_closed = trader["sl_count"] + trader["tp1_count"] + trader["tp2_count"] + trader["expire_count"]
     parts.append("【거래】")
@@ -330,14 +331,14 @@ def analyze(date_str: str | None = None):
     date_str = date_str or dtutils.today()
 
     date_suffix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-    trader_log = LOG_DIR / f"trader.log.{date_suffix}"
-    scanner_log = LOG_DIR / f"scanner.log.{date_suffix}"
+    trader_log = LOG_DIR / f"trader-{KIS_ENV}.log.{date_suffix}"
+    scanner_log = LOG_DIR / f"scanner-{KIS_ENV}.log.{date_suffix}"
 
     if date_str == dtutils.today():
         if not trader_log.exists():
-            trader_log = LOG_DIR / "trader.log"
+            trader_log = LOG_DIR / f"trader-{KIS_ENV}.log"
         if not scanner_log.exists():
-            scanner_log = LOG_DIR / "scanner.log"
+            scanner_log = LOG_DIR / f"scanner-{KIS_ENV}.log"
 
     log.info(f"[로그 분석] 날짜={date_str}")
     log.info(f"  trader: {trader_log}  (존재: {trader_log.exists()})")

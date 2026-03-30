@@ -62,7 +62,7 @@ def _collect(from_date, to_date):
     log.info(f"_collect from {from_date} to {to_date}")
     for d in query.get_biz_dates(fromdate=from_date, todate=to_date):
         date = d["d"]
-        print(date)
+        log.info(f"Collecting data for {date}")
         _collect_idx_data(date)
         _collect_isu_data(date)
         _collect_etx_data(date)

@@ -20,6 +20,8 @@ from itertools import product
 from pathlib import Path
 
 from wye.blsh.common import dtutils
+from wye.blsh.domestic import Tick
+from wye.blsh.domestic._sim_core import sim_one, SELL_COST_RATE
 from wye.blsh.domestic.optimize._cache import build_or_load, OptCache, CACHE_DIR
 
 log = logging.getLogger(__name__)
@@ -33,8 +35,6 @@ def _backtest_worker(args: tuple) -> tuple["Params", "Stats"]:
     p = Params(**dict(zip(keys, combo)))
     return p, backtest(_WORKER_CACHE, p)
 
-SELL_COST_RATE = 0.002
-
 
 # ─────────────────────────────────────────
 # 파라미터 + 결과
@@ -47,20 +47,22 @@ class Params:
     max_hold_days_rev: int
     max_hold_days_mix: int
     max_hold_days_mom: int
-    tp1_mult: float                  # 1차 익절 ATR 배수 (e.g. 0.7, 1.0, 1.5)
-    tp1_ratio: float                 # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
-    gap_down_limit: float            # 갭하락 한계 (e.g. 0.03 = entry 대비 3% 이상 하락 시 스킵)
+    tp1_mult: float  # 1차 익절 ATR 배수 (e.g. 0.7, 1.0, 1.5)
+    tp1_ratio: float  # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
+    gap_down_limit: float  # 갭하락 한계 (e.g. 0.03 = entry 대비 3% 이상 하락 시 스킵)
     sector_penalty_threshold: float  # 업종지수 MA20 괴리율 패널티 임계값 (e.g. -0.03)
-    sector_penalty_pts: int          # 임계값 이하 시 점수 패널티 (e.g. -2)
-    sector_bonus_pts: int            # 업종지수 MA20 이상일 때 보너스 (e.g. +1)
+    sector_penalty_pts: int  # 임계값 이하 시 점수 패널티 (e.g. -2)
+    sector_bonus_pts: int  # 업종지수 MA20 이상일 때 보너스 (e.g. +1)
 
     def label(self) -> str:
         parts = []
         if self.sector_penalty_pts != 0:
-            parts.append(f"pen={self.sector_penalty_threshold:.0%}/{self.sector_penalty_pts:+d}")
+            parts.append(
+                f"pen={self.sector_penalty_threshold:.0%}/{self.sector_penalty_pts:+d}"
+            )
         if self.sector_bonus_pts != 0:
             parts.append(f"bon=+0%/{self.sector_bonus_pts:+d}")
-        sec = ' '.join(parts) if parts else "sec=off"
+        sec = " ".join(parts) if parts else "sec=off"
         gap = f"gap={self.gap_down_limit:.0%}" if self.gap_down_limit > 0 else ""
         return (
             f"score≥{self.invest_min_score} "
@@ -124,9 +126,9 @@ def _simulate_one(
         if buy < gap_floor:
             return None
 
-    sl = buy - params.atr_sl_mult * atr
-    tp1 = buy + params.tp1_mult * atr
-    tp2 = buy + params.atr_tp_mult * atr
+    sl = Tick.floor_tick(buy - params.atr_sl_mult * atr)
+    tp1 = Tick.ceil_tick(buy + params.tp1_mult * atr)
+    tp2 = Tick.ceil_tick(buy + params.atr_tp_mult * atr)
 
     mode = sig["mode"]
     if mode == "MOM":
@@ -141,56 +143,21 @@ def _simulate_one(
     if not dates:
         return None
 
-    remaining = 1.0
-    pnl = 0.0
-    t1_done = False
-    result_type = None
-    prev_high = t1["high"]
-    last_close = t1["close"]
+    result_type, ret, _, _, _ = sim_one(
+        buy=buy,
+        sl=sl,
+        tp1=tp1,
+        tp2=tp2,
+        tp1_ratio=params.tp1_ratio,
+        atr_sl_mult=params.atr_sl_mult,
+        atr=atr,
+        dates=dates,
+        get_ohv=lambda d: ohlcv_idx.get((ticker, d)),
+    )
 
-    for d in dates:
-        ohv = ohlcv_idx.get((ticker, d))
-        if ohv is None:
-            continue
-        last_close = ohv["close"]
+    if result_type == "미확정" and max_d == 0:
+        result_type = "데이청산"
 
-        # 트레일링 SL (전일 high 기준 — 보수적)
-        if d != dates[0]:
-            trail = prev_high - params.atr_sl_mult * atr
-            if trail > sl and trail < prev_high:
-                sl = trail
-
-        # 손절
-        if ohv["low"] <= sl:
-            pnl += (sl - buy) * remaining - sl * remaining * SELL_COST_RATE
-            result_type = "손절"
-            remaining = 0
-            break
-
-        # TP1 (분할 매도)
-        if not t1_done and ohv["high"] >= tp1:
-            sell_r = params.tp1_ratio
-            pnl += (tp1 - buy) * sell_r - tp1 * sell_r * SELL_COST_RATE
-            remaining -= sell_r
-            t1_done = True
-            if buy > sl:
-                sl = buy
-
-        prev_high = max(prev_high, ohv["high"])
-
-        # TP2 (잔량)
-        if ohv["high"] >= tp2 and remaining > 0:
-            pnl += (tp2 - buy) * remaining - tp2 * remaining * SELL_COST_RATE
-            result_type = "익절"
-            remaining = 0
-            break
-
-    # 미확정 → 종가 청산
-    if result_type is None:
-        pnl += (last_close - buy) * remaining - last_close * remaining * SELL_COST_RATE
-        result_type = "데이청산" if max_d == 0 else "미확정"
-
-    ret = (pnl / buy) * 100 if buy else 0
     return result_type, ret
 
 
@@ -213,7 +180,10 @@ def backtest(cache: OptCache, params: Params) -> Stats:
             # 업종 패널티/보너스 적용
             effective_score = sig["score"]
             sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
+            if (
+                params.sector_penalty_pts != 0
+                and sec_gap < params.sector_penalty_threshold
+            ):
                 effective_score += params.sector_penalty_pts
             elif params.sector_bonus_pts != 0 and sec_gap >= 0:
                 effective_score += params.sector_bonus_pts
@@ -242,8 +212,6 @@ def backtest(cache: OptCache, params: Params) -> Stats:
     return st
 
 
-# ─────────────────────────────────────────
-# 그리드 정의
 # ─────────────────────────────────────────
 # 그리드 정의
 # ─────────────────────────────────────────
@@ -288,18 +256,26 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
         log.info(f"\n  ★ 최적 파라미터:")
         log.info(f"    INVEST_MIN_SCORE = {best_p.invest_min_score}")
         log.info(f"    ATR_SL_MULT      = {best_p.atr_sl_mult}")
-        log.info(f"    TP1_MULT         = {best_p.tp1_mult}  (매도비율 {best_p.tp1_ratio:.0%})")
+        log.info(
+            f"    TP1_MULT         = {best_p.tp1_mult}  (매도비율 {best_p.tp1_ratio:.0%})"
+        )
         log.info(f"    ATR_TP_MULT      = {best_p.atr_tp_mult}")
-        log.info(f"    GAP_DOWN_LIMIT   = {best_p.gap_down_limit:.0%}{'  (OFF)' if best_p.gap_down_limit == 0 else ''}")
+        log.info(
+            f"    GAP_DOWN_LIMIT   = {best_p.gap_down_limit:.0%}{'  (OFF)' if best_p.gap_down_limit == 0 else ''}"
+        )
         log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
         log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
         log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
         sec_parts = []
         if best_p.sector_penalty_pts != 0:
-            sec_parts.append(f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점")
+            sec_parts.append(
+                f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점"
+            )
         if best_p.sector_bonus_pts != 0:
             sec_parts.append(f"보너스: 업종MA20≥0% → {best_p.sector_bonus_pts:+d}점")
-        log.info(f"    SECTOR_ADJUST    = {', '.join(sec_parts) if sec_parts else 'off'}")
+        log.info(
+            f"    SECTOR_ADJUST    = {', '.join(sec_parts) if sec_parts else 'off'}"
+        )
         log.info(
             f"    → {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
             f"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%"
@@ -337,7 +313,6 @@ def _fmt_val(key: str, val) -> str:
             return str(int(val)) if val == 0 else str(val)
         return str(val)
     return str(val)
-
 
 
 def _make_opt_line(ts: str, period: str, s: Stats) -> str:
@@ -386,8 +361,13 @@ def _update_factor_file(best_p: Params, best_s: Stats, years: int):
 # ─────────────────────────────────────────
 # 메인
 # ─────────────────────────────────────────
-def run(years: int = 2, rebuild: bool = False, sector: bool = True,
-        apply: bool = True, workers: int = 0):
+def run(
+    years: int = 2,
+    rebuild: bool = False,
+    sector: bool = True,
+    apply: bool = True,
+    workers: int = 0,
+):
     global _WORKER_CACHE
 
     end_date = dtutils.today()
@@ -409,6 +389,7 @@ def run(years: int = 2, rebuild: bool = False, sector: bool = True,
     # DB 연결 풀 해제: fork 전 SQLAlchemy 백그라운드 스레드 락 제거 (Linux hang 방지)
     try:
         from wye.blsh.database.query import engine as _db_engine
+
         _db_engine.dispose()
     except Exception:
         pass
@@ -418,16 +399,18 @@ def run(years: int = 2, rebuild: bool = False, sector: bool = True,
 
     grid = GRID.copy()
     if not sector:
-        grid.update({
-            "sector_penalty_threshold": [-0.03],
-            "sector_penalty_pts": [0],
-            "sector_bonus_pts": [0],
-        })
+        grid.update(
+            {
+                "sector_penalty_threshold": [-0.03],
+                "sector_penalty_pts": [0],
+                "sector_bonus_pts": [0],
+            }
+        )
 
     keys = list(grid.keys())
     combos = list(product(*[grid[k] for k in keys]))
 
-    sector_label = '' if sector else ' (업종패널티 OFF)'
+    sector_label = "" if sector else " (업종패널티 OFF)"
     log.info(f"\n{'─' * 70}")
     log.info(f"  {len(combos):,}개 조합 백테스트{sector_label}")
     log.info(f"{'─' * 70}")
@@ -438,7 +421,9 @@ def run(years: int = 2, rebuild: bool = False, sector: bool = True,
 
     with mp.Pool(processes=n_workers) as pool:
         for i, (p, s) in enumerate(
-            pool.imap_unordered(_backtest_worker, ((keys, c) for c in combos), chunksize=chunk)
+            pool.imap_unordered(
+                _backtest_worker, ((keys, c) for c in combos), chunksize=chunk
+            )
         ):
             results.append((p, s))
             n = i + 1
@@ -471,9 +456,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Factor 최적화 Grid Search")
     parser.add_argument("--years", type=int, default=2, help="백테스트 기간 (년)")
     parser.add_argument("--rebuild", action="store_true", help="캐시 강제 재빌드")
-    parser.add_argument("--no-sector", action="store_true", help="업종지수 패널티 비활성화")
-    parser.add_argument("--no-apply", action="store_true", help="factor.py 자동 갱신 생략")
-    parser.add_argument("--workers", type=int, default=0, help="병렬 프로세스 수 (0=자동)")
+    parser.add_argument(
+        "--no-sector", action="store_true", help="업종지수 패널티 비활성화"
+    )
+    parser.add_argument(
+        "--no-apply", action="store_true", help="factor.py 자동 갱신 생략"
+    )
+    parser.add_argument(
+        "--workers", type=int, default=0, help="병렬 프로세스 수 (0=자동)"
+    )
     args = parser.parse_args()
 
     run(

@@ -21,13 +21,14 @@ PO_TYPE_FIN: Final = "fin"
 
 
 class PO:
-    _po_dir = DATA_DIR / "po"
-    _done_dir = _po_dir / "done"
-
     def __init__(self, po_type, entry_date=None):
+        from wye.blsh.common.env import KIS_ENV
+        _po_dir = DATA_DIR / "po" / KIS_ENV  # demo/real 환경 분리
+        _po_dir.mkdir(parents=True, exist_ok=True)
+        self._done_dir = _po_dir / "done"
         self.po_type = po_type
         self.entry_date = entry_date if entry_date else dtutils.today()
-        self.path = self._po_dir / f"po-{self.entry_date}-{po_type}.json"
+        self.path = _po_dir / f"po-{self.entry_date}-{po_type}.json"
 
     def exists(self):
         return self.path.exists()
@@ -104,5 +105,4 @@ class Milestone:
     KRX_EARLY_TIME: Final = "101500"  # 장 초반 매수
     LIQUIDATE_TIME: Final = "151500"  # 청산시간
     KRX_CLOSE_TIME: Final = "153000"  # KRX 마감
-    NXT_CLOSE_TIME: Final = "200000"  # NTX 마감
-
+    NXT_CLOSE_TIME: Final = "200000"  # NXT 마감

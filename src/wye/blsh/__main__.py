@@ -8,7 +8,6 @@ from wye.blsh.domestic import trader
 log = logging.getLogger(__name__)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     if len(sys.argv) < 2:
         trader.run()
     elif sys.argv[1] == "po":

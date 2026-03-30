@@ -292,17 +292,18 @@ def save_trade_history(
     ticker: str,
     name: str,
     qty: int,
-    price: float,
+    price: float | None,
     reason: str = "",
     po_type: str = "",
 ):
     """매매 이력 1건 INSERT. ~1-5ms (동기, 스레드 불필요)."""
+    from wye.blsh.common.env import KIS_ENV
     with Session(engine) as session:
         session.execute(
             text(
                 """
-                INSERT INTO trade_history (side, ticker, name, qty, price, reason, po_type)
-                VALUES (:side, :ticker, :name, :qty, :price, :reason, :po_type)
+                INSERT INTO trade_history (side, ticker, name, qty, price, reason, po_type, kis_env)
+                VALUES (:side, :ticker, :name, :qty, :price, :reason, :po_type, :kis_env)
                 """
             ),
             {
@@ -313,22 +314,98 @@ def save_trade_history(
                 "price": price,
                 "reason": reason,
                 "po_type": po_type or None,
+                "kis_env": KIS_ENV,
             },
         )
         session.commit()
 
 
 def get_trade_history(date_str: str | None = None):
-    """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘)."""
+    """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘). KIS_ENV 자동 필터."""
+    from wye.blsh.common.env import KIS_ENV
     date_str = date_str or dtutils.today()
     return select_all(
         """
         SELECT * FROM trade_history
         WHERE traded_at::date = to_date(:d, 'YYYYMMDD')
+          AND (kis_env = :env OR kis_env IS NULL)
         ORDER BY traded_at
         """,
         d=date_str,
+        env=KIS_ENV,
     )
+
+
+def get_latest_buy_history(tickers: list[str]) -> dict[str, dict]:
+    """종목별 최근 60일 내 가장 최근 매수 이력 1건씩.
+
+    positions.json 유실 시 복원에 사용.
+    traded_at 날짜를 buy_date로 반환 (실제 체결일 — entry_date와 다를 수 있음).
+    Returns: {ticker: {name, price, qty, buy_date, po_type}}
+    """
+    if not tickers:
+        return {}
+    from wye.blsh.common.env import KIS_ENV
+    with Session(engine) as session:
+        stmt = text(
+            """
+            SELECT DISTINCT ON (ticker)
+                   ticker, name, price, qty, po_type,
+                   to_char(traded_at, 'YYYYMMDD') AS buy_date
+            FROM trade_history
+            WHERE ticker IN :tickers
+              AND side = 'buy'
+              AND traded_at >= now() - INTERVAL '60 days'
+              AND (kis_env = :env OR kis_env IS NULL)
+            ORDER BY ticker, traded_at DESC
+            """
+        ).bindparams(bindparam("tickers", expanding=True))
+        rows = session.execute(stmt, {"tickers": list(tickers), "env": KIS_ENV}).mappings().all()
+    return {r["ticker"]: dict(r) for r in rows}
+
+
+def get_today_sell_history(tickers: list[str], today: str) -> dict[str, dict]:
+    """당일 종목별 최근 매도 이력 1건씩. t1_done 판단에 사용.
+
+    Returns: {ticker: {reason, price, qty}}
+    """
+    if not tickers:
+        return {}
+    from wye.blsh.common.env import KIS_ENV
+    with Session(engine) as session:
+        stmt = text(
+            """
+            SELECT DISTINCT ON (ticker) ticker, reason, price, qty
+            FROM trade_history
+            WHERE ticker IN :tickers
+              AND side = 'sell'
+              AND traded_at::date = to_date(:d, 'YYYYMMDD')
+              AND (kis_env = :env OR kis_env IS NULL)
+            ORDER BY ticker, traded_at DESC
+            """
+        ).bindparams(bindparam("tickers", expanding=True))
+        rows = session.execute(stmt, {"tickers": list(tickers), "d": today, "env": KIS_ENV}).mappings().all()
+    return {r["ticker"]: dict(r) for r in rows}
+
+
+def get_recent_ohlcv_for_atr(ticker: str, n: int = 25) -> list[dict]:
+    """ATR 계산용 최근 OHLCV (고가/저가/종가). KOSPI 우선, 없으면 KOSDAQ.
+
+    Returns: [{high, low, close}, ...] 오름차순 (오래된 것 먼저)
+    """
+    for table in ("isu_ksp_ohlcv", "isu_ksd_ohlcv"):
+        try:
+            rows = select_all(
+                f"SELECT tdd_hgprc AS high, tdd_lwprc AS low, tdd_clsprc AS close "
+                f"FROM {table} WHERE isu_srt_cd = :t ORDER BY trd_dd DESC LIMIT :n",
+                t=ticker,
+                n=n,
+            )
+            if rows:
+                return list(reversed(rows))
+        except Exception:
+            continue
+    return []
 
 
 if __name__ == "__main__":

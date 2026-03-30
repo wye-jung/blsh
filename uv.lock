@@ -166,12 +166,8 @@ name = "blsh"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "certifi" },
-    { name = "charset-normalizer" },
-    { name = "dotenv" },
     { name = "finance-datareader" },
     { name = "httpx" },
-    { name = "idna" },
     { name = "jupyterlab" },
     { name = "numpy" },
     { name = "openpyxl" },
@@ -181,34 +177,20 @@ dependencies = [
     { name = "pykernel" },
     { name = "pykrx" },
     { name = "pyqt6" },
-    { name = "pyqt6-qt6" },
-    { name = "pyqt6-sip" },
     { name = "pyside6" },
-    { name = "pyside6-addons" },
-    { name = "pyside6-essentials" },
     { name = "pytest" },
-    { name = "python-dateutil" },
     { name = "python-dotenv" },
     { name = "python-telegram-bot" },
-    { name = "pytz" },
     { name = "pyyaml" },
     { name = "setuptools" },
-    { name = "shiboken6" },
-    { name = "six" },
     { name = "sqlalchemy" },
-    { name = "tzdata" },
-    { name = "urllib3" },
     { name = "websockets" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "certifi", specifier = "==2025.7.9" },
-    { name = "charset-normalizer", specifier = "==3.4.2" },
-    { name = "dotenv", specifier = ">=0.9.9" },
     { name = "finance-datareader", specifier = ">=0.9.102" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "idna", specifier = "==3.10" },
     { name = "jupyterlab", specifier = ">=4.5.5" },
     { name = "numpy" },
     { name = "openpyxl", specifier = ">=3.1.5" },
@@ -218,23 +200,13 @@ requires-dist = [
     { name = "pykernel", specifier = ">=0.1.6" },
     { name = "pykrx", specifier = ">=1.2.4" },
     { name = "pyqt6", specifier = "==6.9.1" },
-    { name = "pyqt6-qt6", specifier = "==6.9.1" },
-    { name = "pyqt6-sip", specifier = "==13.10.2" },
     { name = "pyside6", specifier = "==6.9.1" },
-    { name = "pyside6-addons", specifier = "==6.9.1" },
-    { name = "pyside6-essentials", specifier = "==6.9.1" },
     { name = "pytest", specifier = ">=9.0.2" },
-    { name = "python-dateutil", specifier = "==2.9.0.post0" },
     { name = "python-dotenv", specifier = "==1.0.0" },
     { name = "python-telegram-bot", specifier = ">=22.7" },
-    { name = "pytz", specifier = "==2025.2" },
     { name = "pyyaml", specifier = "==6.0.2" },
     { name = "setuptools" },
-    { name = "shiboken6", specifier = "==6.9.1" },
-    { name = "six", specifier = "==1.17.0" },
     { name = "sqlalchemy", specifier = ">=2.0.46" },
-    { name = "tzdata", specifier = "==2025.2" },
-    { name = "urllib3", specifier = "==2.5.0" },
     { name = "websockets", specifier = "==15.0.1" },
 ]
 
@@ -631,17 +603,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/49/85/12f0a49a7c4ffb70572b6c2ef13c90c88fd190debda93b23f026b25f9634/deprecated-1.3.1.tar.gz", hash = "sha256:b1b50e0ff0c1fddaa5708a2c6b0a6588bb09b892825ab2b214ac9ea9d92a5223", size = 2932523, upload-time = "2025-10-30T08:19:02.757Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/84/d0/205d54408c08b13550c733c4b85429e7ead111c7f0014309637425520a9a/deprecated-1.3.1-py2.py3-none-any.whl", hash = "sha256:597bfef186b6f60181535a29fbe44865ce137a5079f295b479886c82729d5f3f", size = 11298, upload-time = "2025-10-30T08:19:00.758Z" },
-]
-
-[[package]]
-name = "dotenv"
-version = "0.9.9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "python-dotenv" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/b7/545d2c10c1fc15e48653c91efde329a790f2eecfbbf2bd16003b5db2bab0/dotenv-0.9.9-py2.py3-none-any.whl", hash = "sha256:29cf74a087b31dafdb5a446b6d7e11cbce8ed2741540e2339c69fbef92c94ce9", size = 1892, upload-time = "2025-02-19T22:15:01.647Z" },
 ]
 
 [[package]]

@@ -44,6 +44,7 @@ from wye.blsh.domestic.scanner import (
     MACD_SIGNAL,
     MIN_SCORE,
     ENRICH_SCORE,
+    _SUPPLY_CAP,
 )
 
 
@@ -401,8 +402,7 @@ def _bulk_supply(start: str, end: str, scan_dates: list[str]) -> dict:
                     recent["inst"].iloc[-1],
                 )
                 if ti > 0 and tf <= 0 and to_ <= 0 and ti > abs(tf) + abs(to_):
-                    bonus -= 1
-                    has_pov = True
+                    has_pov = True  # P_OV 패널티는 signal 빌딩에서 캡 적용 후 차감
 
                 if bonus != 0 or has_pov:
                     result[(ticker, date)] = (bonus, flags, has_pov)
@@ -601,20 +601,23 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                 continue
 
             mode = _classify_mode(flags)
-            score = _calc_score(flags, mode)
-            if score < MIN_SCORE:
+            tech_score = _calc_score(flags, mode)
+            if tech_score < MIN_SCORE:
                 continue
 
-            # 수급 보강 (score >= ENRICH_SCORE 인 경우만)
-            if score >= ENRICH_SCORE:
+            # 수급 보강 (tech_score >= ENRICH_SCORE 인 경우만)
+            raw_supply_bonus = 0  # 캡 미적용 원본 수급 점수 (supply_cap_test용)
+            score = tech_score
+            if tech_score >= ENRICH_SCORE:
                 sup = supply.get((ticker, date))
                 if sup:
                     bonus, bonus_flags, has_pov = sup
-                    score += bonus
+                    raw_supply_bonus = bonus
+                    score += min(bonus, _SUPPLY_CAP)  # scanner.py와 동일한 수급 상한
                     flags |= bonus_flags
                     if has_pov:
                         flags.add("P_OV")
-                        score -= 1
+                        score -= 1  # 캡 적용 후 P_OV 패널티 (scanner.py 순서 일치)
 
             atr_val = float(row["_atr"]) if pd.notna(row["_atr"]) else 0
             close_val = float(row["_close"]) if pd.notna(row["_close"]) else 0
@@ -634,6 +637,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                     "name": cache.name_map.get(ticker, ticker),
                     "market": mkt,
                     "score": score,
+                    "tech_score": tech_score,          # 기술 점수만 (수급 제외)
+                    "raw_supply_bonus": raw_supply_bonus,  # 캡 미적용 수급 점수 원본
                     "flags": ",".join(sorted(flags)),
                     "mode": mode,
                     "atr": atr_val,

@@ -12,9 +12,15 @@
 
 cd /home/wye/workspace/blsh || { echo "[ERROR] 디렉토리 이동 실패: /home/wye/workspace/blsh"; exit 1; }
 
-LOG_FILE="$HOME/.blsh/logs/trader.log"
-PID_FILE="$HOME/.blsh/data/trader.pid"
-MONITOR_PID_FILE="$HOME/.blsh/data/monitor.pid"
+# KIS_ENV: 환경변수 우선, 없으면 .env 로드, 기본값 demo
+if [ -z "$KIS_ENV" ] && [ -f "$HOME/.blsh/config/.env" ]; then
+    KIS_ENV=$(grep -E '^KIS_ENV=' "$HOME/.blsh/config/.env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+fi
+KIS_ENV="${KIS_ENV:-demo}"
+
+LOG_FILE="$HOME/.blsh/logs/trader-${KIS_ENV}.log"
+PID_FILE="$HOME/.blsh/data/trader-${KIS_ENV}.pid"
+MONITOR_PID_FILE="$HOME/.blsh/data/monitor-${KIS_ENV}.pid"
 CHECK_INTERVAL=60  # 프로세스 생존 확인 주기 (초)
 
 # ── 텔레그램 알림 (env에서 토큰 로드)
@@ -127,7 +133,7 @@ main() {
 
     # 트레이더 실행 (백그라운드)
     echo "[$(date '+%H:%M:%S')] 트레이더 시작"
-    uv run python -m wye.blsh &
+    $HOME/.local/bin/uv run python -m wye.blsh &
     local trader_pid=$!
     echo "$trader_pid" > "$PID_FILE"
 
