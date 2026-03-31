@@ -111,8 +111,8 @@ from wye.blsh.domestic.config import (
     MAX_HOLD_DAYS,
     MAX_HOLD_DAYS_MIX,
     MAX_HOLD_DAYS_MOM,
-    signal_score,
-    supply_score,
+    SIGNAL_SCORES,
+    SUPPLY_SCORES,
 )
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
@@ -181,6 +181,14 @@ def calc_obv(c, v):
     return (sign * v).cumsum()
 
 
+def _signal_score(signal: str) -> tuple[str, int]:
+    return signal, SIGNAL_SCORES.get(signal, 0)
+
+
+def _supply_score(supply: str) -> tuple[str, int]:
+    return supply, SUPPLY_SCORES.get(supply, 0)
+
+
 # ─────────────────────────────────────────
 # 매수 신호 평가
 # ─────────────────────────────────────────
@@ -220,7 +228,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
 
     # 1. MACD 골든크로스 (+2) → MGC (모멘텀)
     if m0 > s0 and m1 < s1:
-        signals.append(signal_score("MGC"))
+        signals.append(_signal_score("MGC"))
     # 2. MACD 예상 골든크로스 (+1) → MPGC (중립)
     elif (
         m0 < s0
@@ -229,45 +237,45 @@ def evaluate_buy(close, high, low, volume, opn=None):
         and abs(s0) > 0
         and (s0 - m0) / abs(s0) <= GAP_THRESHOLD
     ):
-        signals.append(signal_score("MPGC"))
+        signals.append(_signal_score("MPGC"))
 
     # 3. RSI 30 상향 돌파 (+2) → RBO (전환)
     if r0 > RSI_OVERSOLD and r1 <= RSI_OVERSOLD:
-        signals.append(signal_score("RBO"))
+        signals.append(_signal_score("RBO"))
     # 4. RSI 과매도 (+1) → ROV (전환)
     elif r0 < RSI_OVERSOLD:
-        signals.append(signal_score("ROV"))
+        signals.append(_signal_score("ROV"))
 
     # 5. 볼린저 하단 반등 (+1) → BBL (전환)
     if l1 < bbl1 and c0 > bbl0:
-        signals.append(signal_score("BBL"))
+        signals.append(_signal_score("BBL"))
 
     # 6. 볼린저 중간선 상향 돌파 (+1) → BBM (중립)
     if c0 > bbm0 and c1 <= bbm1:
-        signals.append(signal_score("BBM"))
+        signals.append(_signal_score("BBM"))
 
     # 7. 거래량 급증 + 양봉 (+1) → VS (모멘텀)
     if volume is not None and len(volume) >= 20:
         vol_avg = volume.iloc[-20:-1].mean()
         if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
-            signals.append(signal_score("VS"))
+            signals.append(_signal_score("VS"))
 
     # 8. 이동평균 정배열 전환 (+1) → MAA (모멘텀)
     if ma5.iloc[-1] > ma20.iloc[-1] > ma60.iloc[-1] and not (
         ma5.iloc[-2] > ma20.iloc[-2] > ma60.iloc[-2]
     ):
-        signals.append(signal_score("MAA"))
+        signals.append(_signal_score("MAA"))
 
     # 9. 스토캐스틱 과매도 교차 (+1) → SGC (중립)
     if sk0 > sd0 and sk1 < sd1 and sk0 < 50:
-        signals.append(signal_score("SGC"))
+        signals.append(_signal_score("SGC"))
 
     # 10. 52주 신고가 돌파 (+2) → W52 (모멘텀)
     if len(close) >= 252 and volume is not None and len(volume) >= 21:
         w52_high = high.iloc[-252:-1].max()
         vol_20_avg = volume.iloc[-21:-1].mean()
         if h0 > w52_high and volume.iloc[-1] > vol_20_avg * W52_VOL_MULT:
-            signals.append(signal_score("W52"))
+            signals.append(_signal_score("W52"))
 
     # 11. 눌림목 패턴 (+2) → PB (모멘텀)
     if (
@@ -276,7 +284,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
         and c0 > ma5.iloc[-1]
         and c0 > ma20.iloc[-1]
     ):
-        signals.append(signal_score("PB"))
+        signals.append(_signal_score("PB"))
 
     # 12. 망치형 캔들 (+1) → HMR (전환)
     if o0 is not None:
@@ -290,11 +298,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
                 and upper_wick < candle_range * 0.1
                 and body < candle_range * 0.3
             ):
-                signals.append(signal_score("HMR"))
+                signals.append(_signal_score("HMR"))
 
     # 13. 장대 양봉 (+2) → LB (모멘텀)
     if o0 is not None and c0 > o0 and (c0 - o0) > atr0 * 1.5:
-        signals.append(signal_score("LB"))
+        signals.append(_signal_score("LB"))
 
     # 14. 모닝스타 (+2) → MS (전환)
     if has_opn and len(close) >= 3:
@@ -309,12 +317,12 @@ def evaluate_buy(close, high, low, volume, opn=None):
             and body_d3 > atr0 * 0.7
             and c_0 > (o_2 + c_2) / 2
         ):
-            signals.append(signal_score("MS"))
+            signals.append(_signal_score("MS"))
 
     # 15. OBV 상승 추세 (+1) → OBV (모멘텀)
     if obv is not None and len(obv) >= 3:
         if obv.iloc[-3] < obv.iloc[-2] < obv.iloc[-1]:
-            signals.append(signal_score("OBV"))
+            signals.append(_signal_score("OBV"))
 
     # ── 분리 트랙 점수 집계
     flags = [f for f, _ in signals]
@@ -554,7 +562,7 @@ def classify_supply(qty_list):
         return None, 0
     # TRN: 최소 2일 이상 매도/0 후 전환이어야 의미 있음
     if len(history) >= 2 and all(q <= 0 for q in history):
-        return supply_score("TRN")
+        return _supply_score("TRN")
     consec = 1
     for q in reversed(history):
         if q > 0:
@@ -562,8 +570,8 @@ def classify_supply(qty_list):
         else:
             break
     if consec >= 3:
-        return supply_score("C3")
-    return supply_score("1")
+        return _supply_score("C3")
+    return _supply_score("1")
 
 
 def enrich_with_db(results: list, base_date: str) -> list:

@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code when working with code in this repository.
 
+## 보안 금지 사항 (SECURITY — NEVER VIOLATE)
+
+다음 파일/폴더는 **절대** 읽기·수정·삭제·git 커밋·푸시 금지:
+- 모든 경로의 dotenv 파일 (환경변수 파일)
+- `~/.blsh/config/` 폴더 및 그 하위 파일 전체 (API 키, 토큰, 계좌번호 포함)
+
+이 제한은 PreToolUse 훅으로도 강제됩니다. 어떤 이유로도 예외 없음.
+
 ## Project Overview
 
 **blsh** (buy low sell high) — 한국 주식(KOSPI/KOSDAQ) 자동매매 봇.

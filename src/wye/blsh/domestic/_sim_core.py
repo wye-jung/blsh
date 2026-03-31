@@ -73,9 +73,10 @@ def sim_one(
 
         # 손절
         if ohv["low"] <= sl:
-            pnl += (sl - buy) * remaining - sl * remaining * sell_cost_rate
+            fill = min(sl, ohv["open"])  # 갭 하락 시 시가에 체결
+            pnl += (fill - buy) * remaining - fill * remaining * sell_cost_rate
             result_type = "손절"
-            exit_price = sl
+            exit_price = fill
             exit_date = d
             remaining = 0
             break
@@ -88,8 +89,14 @@ def sim_one(
             t1_done = True
             if buy > sl:
                 sl = buy
+            # 전량 익절(tp1_ratio=1.0) → 즉시 종료
+            if remaining == 0:
+                result_type = "익절(전량)"
+                exit_price = tp1
+                exit_date = d
+                break
             # [보수적] 같은 봉에서 본전 SL도 도달 → 잔량 즉시 본전 청산
-            if remaining > 0 and ohv["low"] <= buy:
+            if ohv["low"] <= buy:
                 pnl += -buy * remaining * sell_cost_rate
                 result_type = "익절(T1+본전손절)"
                 exit_price = buy

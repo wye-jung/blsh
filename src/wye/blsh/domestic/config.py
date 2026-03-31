@@ -1,14 +1,14 @@
 class Optimized:
-    INVEST_MIN_SCORE: int = 11
-    SECTOR_PENALTY_THRESHOLD: float = -0.05  # 업종지수 MA20 대비 해당값 이하
-    SECTOR_PENALTY_PTS: int = -2
-    SECTOR_BONUS_PTS: int = 0  # 업종지수 MA20 이상일 때
+    INVEST_MIN_SCORE: int = 9
+    SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
+    SECTOR_PENALTY_PTS: int = 0
+    SECTOR_BONUS_PTS: int = 1  # 업종지수 MA20 이상일 때
     ATR_SL_MULT: float = 3.0
-    ATR_TP_MULT: float = 3.0
+    ATR_TP_MULT: float = 1.5
     TP1_MULT: float = 1.5  # 1차 익절: buy + ATR × TP1_MULT
-    TP1_RATIO: float = 0.7  # 1차 익절 매도 비율 (1.0 = 전량)
+    TP1_RATIO: float = 1.0  # 1차 익절 매도 비율 (1.0 = 전량)
     MAX_HOLD_DAYS: int = 3
-    MAX_HOLD_DAYS_MIX: int = 2
+    MAX_HOLD_DAYS_MIX: int = 5
     MAX_HOLD_DAYS_MOM: int = 3
 
 
@@ -64,21 +64,11 @@ SIGNAL_SCORES = {
     "OBV": 1,
 }
 
-
-def signal_score(signal: str) -> tuple[str, int]:
-    return signal, SIGNAL_SCORES.get(signal, 0)
-
-
 SUPPLY_SCORES = {
     "TRN": 3,
     "C3": 2,
     "1": 1,
 }
-
-
-def supply_score(supply: str) -> tuple[str, int]:
-    return supply, SUPPLY_SCORES.get(supply, 0)
-
 
 # for trade
 ATR_SL_MULT: float = Optimized.ATR_SL_MULT
