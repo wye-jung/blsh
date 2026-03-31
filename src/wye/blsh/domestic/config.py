@@ -1,3 +1,6 @@
+from wye.blsh.common.env import KIS_ENV
+
+
 class Optimized:
     INVEST_MIN_SCORE: int = 9
     SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
@@ -36,7 +39,8 @@ TRDVAL_MIN: int = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (1
 TRDVAL_DAYS: int = 20
 INDEX_MA_DAYS: int = 20  # 지수 환경 체크 이동평균 기간
 INDEX_DROP_LIMIT: float = (
-    0.05  # MA 대비 괴리율 -5% 이하일 때만 시장 전체 스캔 스킵 (재앙 수준)
+    0.05 if KIS_ENV == "real" else 1
+    # 0.05  # MA 대비 괴리율 -5% 이하일 때만 시장 전체 스캔 스킵 (재앙 수준)
 )
 INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE

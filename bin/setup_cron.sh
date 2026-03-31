@@ -37,6 +37,11 @@ CRON_ENTRIES=(
 
     # 8. 업종지수 매핑 확인 (매주 월 06:30)
     "30 6 * * 1 $CRON_ENV cd $BLSH_DIR && uv run python -m wye.blsh.domestic.sector_check >> ~/.blsh/logs/cron.log 2>&1 $BLSH_TAG"
+
+    # 9. 패턴 보너스 재채굴 (매월 1일 03:00)
+    #    grid_search(매주 토 02:00) 이후 실행되도록 03:00 설정
+    #    --train-end: 실행일 기준 3개월 전 (룩어헤드 바이어스 방지)
+    "0 3 1 * * $CRON_ENV cd $BLSH_DIR && uv run python -m wye.blsh.domestic.optimize.pattern_mine --years 1 --train-end \$(date -d '3 months ago' +\%Y\%m\%d) >> ~/.blsh/logs/pattern_mine.log 2>&1 $BLSH_TAG"
 )
 
 install_cron() {
@@ -64,8 +69,9 @@ install_cron() {
     echo "  월~금 10:05  데이터 수집 + PO② (장초반 스캔)"
     echo "  월~금 15:05  데이터 수집 + PO③ (청산 후 스캔)"
     echo "  월~금 20:30  일일 로그 분석 리포트"
-    echo "  토   02:00  Grid Search 최적화
-  월   06:30  업종지수 매핑 확인"
+    echo "  토   02:00  Grid Search 최적화"
+    echo "  매월 1일 03:00  패턴 보너스 재채굴 (--train-end 3개월 전)"
+    echo "  월   06:30  업종지수 매핑 확인"
     echo ""
     echo "로그 위치: ~/.blsh/logs/"
 }
