@@ -46,6 +46,7 @@ from wye.blsh.domestic.scanner import (
     ENRICH_SCORE,
     SUPPLY_CAP,
 )
+from wye.blsh.domestic.config import PATTERN_BONUS_MAX
 
 
 # 업종코드 → DB 지수명 매핑은 sector.py에서 참조
@@ -77,6 +78,48 @@ _SCORES = {
 }
 _SIGNAL_COLS = list(_SCORES.keys())
 _ALL_FLAGS = _MOMENTUM_FLAGS | _REVERSAL_FLAGS  # 중립 = 전체 - 이 집합
+
+# 수급 플래그 — 패턴 매칭 시 기술 플래그만 사용하기 위해 제외
+_SUPPLY_FLAGS_CACHE = frozenset(
+    {"F_TRN", "I_TRN", "F_C3", "I_C3", "F_1", "I_1", "FI", "P_OV"}
+)
+
+
+# ─────────────────────────────────────────
+# 패턴 보너스 로더 (scanner.py와 동일 패턴)
+# ─────────────────────────────────────────
+import json as _json
+from wye.blsh.common.env import DATA_DIR as _DATA_DIR
+
+_PATTERN_FILE_CACHE = _DATA_DIR / "flag_patterns.json"
+_cache_patterns: dict[str, list[frozenset]] | None = None  # None = 아직 미시도
+
+
+def _get_cache_patterns() -> dict[str, list[frozenset]]:
+    """패턴 파일 1회 로드. 없으면 빈 dict 반환."""
+    global _cache_patterns
+    if _cache_patterns is not None:
+        return _cache_patterns
+    _cache_patterns = {}
+    if not _PATTERN_FILE_CACHE.exists():
+        log.warning(
+            "패턴 파일 없음 → 패턴 보너스 미적용 (%s)", _PATTERN_FILE_CACHE
+        )
+        return _cache_patterns
+    try:
+        data = _json.loads(_PATTERN_FILE_CACHE.read_text(encoding="utf-8"))
+        _cache_patterns = {
+            mode: [frozenset(e["flags"]) for e in entries]
+            for mode, entries in data.get("patterns", {}).items()
+        }
+        log.info(
+            "패턴 로드 (cache): %d개 (generated=%s)",
+            sum(len(v) for v in _cache_patterns.values()),
+            data.get("generated"),
+        )
+    except Exception as e:
+        log.warning("패턴 파일 로드 실패: %s", e)
+    return _cache_patterns
 
 
 # ─────────────────────────────────────────
@@ -656,6 +699,17 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                         flags.add("P_OV")
                         score -= 1  # 캡 적용 후 P_OV 패널티 (scanner.py 순서 일치)
 
+            # 패턴 보너스 (기술 플래그만 사용 — 수급 플래그 제외)
+            pat_bonus = 0
+            _pats = _get_cache_patterns().get(mode, [])
+            if _pats:
+                tech_flags_only = flags - _SUPPLY_FLAGS_CACHE
+                pat_bonus = min(
+                    sum(1 for p in _pats if p.issubset(tech_flags_only)),
+                    PATTERN_BONUS_MAX,
+                )
+                score += pat_bonus
+
             atr_val = float(row["_atr"]) if pd.notna(row["_atr"]) else 0
             close_val = float(row["_close"]) if pd.notna(row["_close"]) else 0
             if atr_val <= 0 or close_val <= 0:
@@ -678,6 +732,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                     "score": score,
                     "tech_score": tech_score,  # 기술 점수만 (수급 제외)
                     "raw_supply_bonus": raw_supply_bonus,  # 캡 미적용 수급 점수 원본
+                    "pat_bonus": pat_bonus,  # 패턴 보너스 (0 = 패턴 없거나 미매칭)
                     "flags": ",".join(sorted(flags)),
                     "mode": mode,
                     "atr": atr_val,

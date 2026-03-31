@@ -106,6 +106,7 @@ from wye.blsh.domestic.config import (
     SECTOR_PENALTY_THRESHOLD,
     SECTOR_PENALTY_PTS,
     SECTOR_BONUS_PTS,
+    PATTERN_BONUS_MAX,
     ATR_SL_MULT,
     ATR_TP_MULT,
     MAX_HOLD_DAYS,
@@ -854,6 +855,74 @@ def _get_sector_gap(
     return (cur - ma) / ma if ma else 0.0
 
 
+# ─────────────────────────────────────────
+# 패턴 보너스 로더
+# ─────────────────────────────────────────
+_PATTERN_FILE = DATA_DIR / "flag_patterns.json"
+_patterns_loaded: bool = False
+_pattern_frozensets: dict[str, list[frozenset]] = {}
+
+
+def _load_patterns() -> None:
+    """flag_patterns.json 을 한 번만 로드. 없으면 경고 1회."""
+    global _patterns_loaded, _pattern_frozensets
+    if _patterns_loaded:
+        return
+    _patterns_loaded = True  # 성공/실패 무관 1회만 시도
+
+    import json
+
+    if not _PATTERN_FILE.exists():
+        log.warning(
+            "패턴 파일 없음 → 패턴 보너스 비활성 (%s). "
+            "pattern_mine.py 실행 후 재시작하세요.",
+            _PATTERN_FILE,
+        )
+        return
+    try:
+        data = json.loads(_PATTERN_FILE.read_text(encoding="utf-8"))
+        _pattern_frozensets = {
+            mode: [frozenset(e["flags"]) for e in entries]
+            for mode, entries in data.get("patterns", {}).items()
+        }
+        total = sum(len(v) for v in _pattern_frozensets.values())
+        log.info(
+            "패턴 로드: %d개 (generated=%s, %s)",
+            total,
+            data.get("generated"),
+            _PATTERN_FILE.name,
+        )
+    except Exception as e:
+        log.warning("패턴 파일 로드 실패: %s", e)
+
+
+def _apply_pattern_bonus(df: pd.DataFrame) -> pd.DataFrame:
+    """미리 채굴된 플래그 패턴과 subset 매칭 → buy_score 가산 (상한 PATTERN_BONUS_MAX)."""
+    bonuses = []
+    for _, row in df.iterrows():
+        pats = _pattern_frozensets.get(row["mode"], [])
+        if not pats:
+            bonuses.append(0)
+            continue
+        flag_set = frozenset(row["buy_flags"].split(","))
+        # 수급 플래그가 flag_set에 포함돼 있어도 subset check에 무해
+        matched = [p for p in pats if p.issubset(flag_set)]
+        bonus = min(len(matched), PATTERN_BONUS_MAX)
+        bonuses.append(bonus)
+        if bonus > 0:
+            log.debug(
+                "  [패턴보너스+%d] %s %s  matched=%s",
+                bonus,
+                row["ticker"],
+                row.get("name", ""),
+                [sorted(p) for p in matched],
+            )
+    df = df.copy()
+    df["pat_bonus"] = bonuses
+    df["buy_score"] = df["buy_score"] + bonuses
+    return df
+
+
 def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
     if SECTOR_PENALTY_PTS == 0 and SECTOR_BONUS_PTS == 0:
@@ -902,6 +971,11 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 
     # 업종 패널티/보너스 적용
     sdf = _apply_sector_penalty(sdf, base_date)
+
+    # 패턴 보너스 적용 (패턴 파일 있을 때만)
+    _load_patterns()
+    if _pattern_frozensets:
+        sdf = _apply_pattern_bonus(sdf)
 
     cand_mask = (
         (sdf["buy_score"] >= INVEST_MIN_SCORE)
