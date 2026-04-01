@@ -20,7 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import DATA_DIR
+from wye.blsh.common.env import CACHE_DIR as _BLSH_CACHE_DIR
 from wye.blsh.database.query import engine, select_all
 from wye.blsh.domestic import sector, Tick
 from wye.blsh.domestic.scanner import (
@@ -55,7 +55,7 @@ _KOSDAQ_MID_TO_IDX = sector.KOSDAQ_MID_TO_IDX
 _KOSDAQ_BIG_TO_IDX = sector.KOSDAQ_BIG_TO_IDX
 
 log = logging.getLogger(__name__)
-CACHE_DIR = DATA_DIR / "cache" / "optimize"
+CACHE_DIR = _BLSH_CACHE_DIR / "optimize"
 
 # scanner.evaluate_buy 와 동일한 점수표
 _SCORES = {

@@ -11,7 +11,7 @@ import json
 import time
 from typing import Final
 from wye.blsh.common.env import DATA_DIR
-from wye.blsh.common import dtutils, fileutils
+from wye.blsh.common import dtutils, fileutils, messageutils
 
 log = logging.getLogger(__name__)
 
@@ -22,8 +22,7 @@ PO_TYPE_FIN: Final = "fin"
 
 class PO:
     def __init__(self, po_type, entry_date=None):
-        from wye.blsh.common.env import KIS_ENV
-        _po_dir = DATA_DIR / "po" / KIS_ENV  # demo/real 환경 분리
+        _po_dir = DATA_DIR / "po"  # demo/real 환경 분리
         _po_dir.mkdir(parents=True, exist_ok=True)
         self._done_dir = _po_dir / "done"
         self.po_type = po_type
@@ -34,7 +33,14 @@ class PO:
         return self.path.exists()
 
     def create(self, orders: dict[str, dict]) -> bool:
-        return fileutils.create_json(self.path, orders)
+        if fileutils.create_json(self.path, orders):
+            log.info(f"PO 파일 생성: {self.path} ({len(orders)} 종목)")
+            messageutils.send_message(
+                f"📦 PO 파일 생성: {self.path.name} ({len(orders)} 종목)"
+            )
+            return True
+        log.error(f"PO 파일 생성 실패: {self.path}")
+        return False
 
     def loads(self) -> dict[str, dict]:
         try:

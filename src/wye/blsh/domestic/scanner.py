@@ -116,11 +116,11 @@ from wye.blsh.domestic.config import (
 )
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import DATA_DIR, LOG_DIR, KIS_ENV
+from wye.blsh.common.env import CACHE_DIR, LOG_DIR
 
 log = logging.getLogger(__name__)
 _fh = TimedRotatingFileHandler(
-    LOG_DIR / f"scanner-{KIS_ENV}.log",
+    LOG_DIR / "scanner.log",
     when="midnight",
     backupCount=30,
     encoding="utf-8",
@@ -770,7 +770,7 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
 # ─────────────────────────────────────────
 # 업종지수 패널티/보너스
 # ─────────────────────────────────────────
-_SECTOR_MAP_FILE = DATA_DIR / "cache" / "sector_map.json"
+_SECTOR_MAP_FILE = CACHE_DIR / "sector_map.json"
 
 
 def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
@@ -986,8 +986,7 @@ def issue_po(base_date=None):
 
         if po_type and entry_date:
             po = PO(po_type, entry_date)
-            if po.create(df.set_index("ticker").to_dict("index")):
-                log.info(f"{len(df)} 종목. {po.path.name} 생성.")
+            po.create(df.set_index("ticker").to_dict("index"))
 
             model_manager = ModelManager(TradeCandidates)
             model_manager.delete(entry_date=entry_date, po_type=po_type)
@@ -995,5 +994,5 @@ def issue_po(base_date=None):
 
 
 if __name__ == "__main__":
-    log.setLevel(logging.DEBUG)
+    # log.setLevel(logging.DEBUG)
     find_candidates(report=True)
