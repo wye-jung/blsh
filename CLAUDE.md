@@ -118,7 +118,9 @@ src/wye/blsh/
 | `KRX_LOGIN_ID`, `KRX_LOGIN_PW` | KRX 사이트 로그인 |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | 알림 |
 
-런타임 경로 (`BLSH_HOME = ~/.blsh`): `DATA_DIR`, `LOG_DIR`, `BACKUP_DIR`, `TEMP_DIR`
+런타임 경로 (`BLSH_HOME = ~/.blsh`):
+- 환경별: `DATA_DIR`, `LOG_DIR`, `BACKUP_DIR` → `~/.blsh/{KIS_ENV}/{data,logs,backup}`
+- 공통: `CACHE_DIR` → `~/.blsh/cache`, `TEMP_DIR` → `~/.blsh/temp`
 
 ### Configuration
 
@@ -183,7 +185,7 @@ SECTOR_BONUS_PTS = 1
 
 **KRX 시장가 매도** (`_sell_market`): 매도 후 2초 대기 → `inquire_daily_ccld`로 실제 체결가 조회 → DB/텔레그램 기록.
 
-**Position 영속화**: `~/.blsh/data/positions.json` (백업: `~/.blsh/backup/positions.json.bak`)
+**Position 영속화**: `~/.blsh/{KIS_ENV}/data/positions.json` (백업: `~/.blsh/{KIS_ENV}/backup/positions.json.bak`)
 
 ### kis_client.py — KIS API 래퍼
 

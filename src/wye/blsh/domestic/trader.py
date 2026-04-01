@@ -43,7 +43,7 @@
     │   PO 감시 중단, 신규 매수 없음                      │
     └──────────────────────────────────────────────────────┘
 
-PO 파일 포맷: ~/.blsh/data/po/po-{entry_date}-{po_type}.json
+PO 파일 포맷: ~/.blsh/{KIS_ENV}/data/po/po-{entry_date}-{po_type}.json
     po_type: pre (전일스캔), ini (장초매수), fin (청산후매수)
     내용: {ticker: {atr, atr_sl_mult, atr_tp_mult, tp1_mult, tp1_ratio,
                     entry_price, max_hold_days, mode, ...}}
@@ -85,7 +85,7 @@ from wye.blsh.database import query
 
 log = logging.getLogger(__name__)
 _fh = TimedRotatingFileHandler(
-    LOG_DIR / f"trader-{KIS_ENV}.log", when="midnight", backupCount=30, encoding="utf-8"
+    LOG_DIR / "trader.log", when="midnight", backupCount=30, encoding="utf-8"
 )
 _fh.suffix = "%Y-%m-%d"
 _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
@@ -100,12 +100,8 @@ FETCH_TIMEOUT = 30  # _fetch_prices as_completed 타임아웃 (종목 많아도 
 SLOW_EVERY = 3  # po 감시·체결 확인 = TICK_SEC × SLOW_EVERY (30초)
 PO_CANCEL_MIN = 10
 
-_env_data_dir = DATA_DIR / KIS_ENV
-_env_data_dir.mkdir(parents=True, exist_ok=True)
-_env_bak_dir = BACKUP_DIR / KIS_ENV
-_env_bak_dir.mkdir(parents=True, exist_ok=True)
-POSITIONS_FILE = _env_data_dir / "positions.json"
-POSITIONS_BAK = _env_bak_dir / "positions.json.bak"
+POSITIONS_FILE = DATA_DIR / "positions.json"
+POSITIONS_BAK = BACKUP_DIR / "positions.json.bak"
 
 
 # ─────────────────────────────────────────
@@ -206,7 +202,9 @@ def _sell_market(
             break
         log.debug(f"  체결가 조회 대기 중: {ticker} odno={odno} (대기={wait}s)")
     if fill_price is None:
-        log.warning(f"  ⚠️ 체결가 조회 실패: {name}({ticker}) odno={odno} → 현재가로 대체")
+        log.warning(
+            f"  ⚠️ 체결가 조회 실패: {name}({ticker}) odno={odno} → 현재가로 대체"
+        )
         fill_price = kis.get_price(ticker)  # 최후 수단: 현재가 사용
     _save_history("sell", ticker, name, qty, fill_price, reason, po_type)
     return True
@@ -746,11 +744,11 @@ def run():
         log.info(f"{ctime} 거래시간이 아닙니다 (NXT 마감 후).")
         return
 
-    mode_label = "🚨 실전투자" if KIS_ENV.lower() == "real" else "📋 모의투자"
+    mode_label = "🚨 실전투자" if KIS_ENV == "real" else "📋 모의투자"
     messageutils.send_message(f"[{today}] 트레이더 시작 ({mode_label})")
 
     try:
-        kis = KISClient(KIS_ENV.lower(), FETCH_TIMEOUT)
+        kis = KISClient(KIS_ENV, FETCH_TIMEOUT)
     except RuntimeError as e:
         log.error(str(e))
         return

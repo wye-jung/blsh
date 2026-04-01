@@ -7,7 +7,7 @@
 #   bin/watchdog.sh monitor  # 모니터링만 (트레이더는 이미 실행 중)
 #
 # 크론탭 예시 (매일 07:55 시작):
-#   55 7 * * 1-5 /home/wye/workspace/blsh/bin/watchdog.sh >> ~/.blsh/logs/watchdog.log 2>&1
+#   55 7 * * 1-5 /home/wye/workspace/blsh/bin/watchdog.sh >> ~/.blsh/${KIS_ENV}/logs/watchdog.log 2>&1
 # ─────────────────────────────────────────
 
 cd /home/wye/workspace/blsh || { echo "[ERROR] 디렉토리 이동 실패: /home/wye/workspace/blsh"; exit 1; }
@@ -18,9 +18,10 @@ if [ -z "$KIS_ENV" ] && [ -f "$HOME/.blsh/config/.env" ]; then
 fi
 KIS_ENV="${KIS_ENV:-demo}"
 
-LOG_FILE="$HOME/.blsh/logs/trader-${KIS_ENV}.log"
-PID_FILE="$HOME/.blsh/data/trader-${KIS_ENV}.pid"
-MONITOR_PID_FILE="$HOME/.blsh/data/monitor-${KIS_ENV}.pid"
+ENV_DIR="$HOME/.blsh/${KIS_ENV}"
+LOG_FILE="${ENV_DIR}/logs/trader.log"
+PID_FILE="${ENV_DIR}/data/trader.pid"
+MONITOR_PID_FILE="${ENV_DIR}/data/monitor.pid"
 CHECK_INTERVAL=60  # 프로세스 생존 확인 주기 (초)
 
 # ── 텔레그램 알림 (env에서 토큰 로드)

@@ -35,7 +35,7 @@ TRDVAL_MIN: int = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (1
 TRDVAL_DAYS: int = 20
 INDEX_MA_DAYS: int = 20  # 지수 환경 체크 이동평균 기간
 INDEX_DROP_LIMIT: float = (
-    0.05  # MA 대비 괴리율 -5% 이하일 때만 시장 전체 스캔 스킵 (재앙 수준)
+    1.0  # MA 대비 괴리율 -100% 이하 → 사실상 지수 환경 체크 비활성화
 )
 INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE
