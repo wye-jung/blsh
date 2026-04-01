@@ -7,7 +7,7 @@
 #   bin/watchdog.sh monitor  # 모니터링만 (트레이더는 이미 실행 중)
 #
 # 크론탭 예시 (매일 07:55 시작):
-#   55 7 * * 1-5 /home/wye/workspace/blsh/bin/watchdog.sh >> ~/.blsh/${KIS_ENV}/logs/watchdog.log 2>&1
+#   55 7 * * 1-5 /home/wye/workspace/blsh/bin/watchdog.sh >> ~/.blsh/logs/watchdog.log 2>&1
 # ─────────────────────────────────────────
 
 cd /home/wye/workspace/blsh || { echo "[ERROR] 디렉토리 이동 실패: /home/wye/workspace/blsh"; exit 1; }
