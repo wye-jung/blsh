@@ -59,8 +59,8 @@
   업종지수 MA20 대비 괴리율(gap)로 패널티/보너스 적용.
   미매핑 종목: KOSPI → "코스피" / KOSDAQ → "코스닥" 전체 지수로 대체.
 
-  gap < SECTOR_PENALTY_THRESHOLD (-5%) → SECTOR_PENALTY_PTS (-2점)
-  gap ≥ 0%                             → SECTOR_BONUS_PTS   (현재 0점)
+  gap < SECTOR_PENALTY_THRESHOLD → SECTOR_PENALTY_PTS
+  gap ≥ SECTOR_BONUS_THRESHOLD  → SECTOR_BONUS_PTS
 
 [4단계] PO 후보 선별 및 파일 생성
   조건: buy_score ≥ INVEST_MIN_SCORE, mode ∈ {MOM, MIX, REV}, P_OV 없음
@@ -105,6 +105,7 @@ from wye.blsh.domestic.config import (
     INVEST_MIN_SCORE,
     SECTOR_PENALTY_THRESHOLD,
     SECTOR_PENALTY_PTS,
+    SECTOR_BONUS_THRESHOLD,
     SECTOR_BONUS_PTS,
     ATR_SL_MULT,
     ATR_TP_MULT,
@@ -880,7 +881,7 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
         adj = 0
         if SECTOR_PENALTY_PTS != 0 and gap < SECTOR_PENALTY_THRESHOLD:
             adj = SECTOR_PENALTY_PTS
-        elif SECTOR_BONUS_PTS != 0 and gap >= 0:
+        elif SECTOR_BONUS_PTS != 0 and gap >= SECTOR_BONUS_THRESHOLD:
             adj = SECTOR_BONUS_PTS
         adjustments.append(adj)
 

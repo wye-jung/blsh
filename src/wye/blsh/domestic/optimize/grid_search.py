@@ -51,7 +51,8 @@ class Params:
     tp1_ratio: float  # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
     sector_penalty_threshold: float  # 업종지수 MA20 괴리율 패널티 임계값 (e.g. -0.03)
     sector_penalty_pts: int  # 임계값 이하 시 점수 패널티 (e.g. -2)
-    sector_bonus_pts: int  # 업종지수 MA20 이상일 때 보너스 (e.g. +1)
+    sector_bonus_threshold: float  # 업종지수 MA20 괴리율 보너스 임계값 (e.g. 0.0)
+    sector_bonus_pts: int  # 임계값 이상 시 보너스 (e.g. +1)
 
     def label(self) -> str:
         parts = []
@@ -60,7 +61,9 @@ class Params:
                 f"pen={self.sector_penalty_threshold:.0%}/{self.sector_penalty_pts:+d}"
             )
         if self.sector_bonus_pts != 0:
-            parts.append(f"bon=+0%/{self.sector_bonus_pts:+d}")
+            parts.append(
+                f"bon={self.sector_bonus_threshold:+.0%}/{self.sector_bonus_pts:+d}"
+            )
         sec = " ".join(parts) if parts else "sec=off"
         return (
             f"score≥{self.invest_min_score} "
@@ -177,7 +180,7 @@ def backtest(cache: OptCache, params: Params) -> Stats:
                 and sec_gap < params.sector_penalty_threshold
             ):
                 effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
+            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
                 effective_score += params.sector_bonus_pts
 
             if effective_score < params.invest_min_score:
@@ -218,8 +221,9 @@ GRID = {
     "tp1_ratio": [0.3, 0.5, 0.7, 1.0],
     "sector_penalty_threshold": [-0.03, -0.05],
     "sector_penalty_pts": [0, -2],
+    "sector_bonus_threshold": [0.0, 0.02],
     "sector_bonus_pts": [0, 1],
-}  # 5×5×6×4×3×3×3×4×2×2×2 = 518,400 → --no-sector 시 64,800
+}  # 5×5×6×4×3×3×3×4×2×2×2×2 = 1,036,800 → --no-sector 시 64,800
 
 
 # ─────────────────────────────────────────
@@ -260,7 +264,9 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
                 f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점"
             )
         if best_p.sector_bonus_pts != 0:
-            sec_parts.append(f"보너스: 업종MA20≥0% → {best_p.sector_bonus_pts:+d}점")
+            sec_parts.append(
+                f"보너스: 업종MA20괴리≥{best_p.sector_bonus_threshold:.0%} → {best_p.sector_bonus_pts:+d}점"
+            )
         log.info(
             f"    SECTOR_ADJUST    = {', '.join(sec_parts) if sec_parts else 'off'}"
         )
@@ -289,13 +295,14 @@ def _params_to_dict(p: Params) -> dict:
         "MAX_HOLD_DAYS_MOM": p.max_hold_days_mom,
         "SECTOR_PENALTY_THRESHOLD": p.sector_penalty_threshold,
         "SECTOR_PENALTY_PTS": p.sector_penalty_pts,
+        "SECTOR_BONUS_THRESHOLD": p.sector_bonus_threshold,
         "SECTOR_BONUS_PTS": p.sector_bonus_pts,
     }
 
 
 def _fmt_val(key: str, val) -> str:
     if isinstance(val, float):
-        if val == int(val) and key != "SECTOR_PENALTY_THRESHOLD":
+        if val == int(val) and "THRESHOLD" not in key:
             return str(int(val)) if val == 0 else str(val)
         return str(val)
     return str(val)
@@ -308,13 +315,17 @@ def _make_opt_line(ts: str, period: str, s: Stats) -> str:
     )
 
 
-def _update_config_file(best_p: Params, best_s: Stats, years: int):
+def _update_config_file(
+    best_p: Params, best_s: Stats, start_date: str, end_date: str, elapsed: float
+):
     """최적 파라미터로 config.py의 Optimized 클래스 속성 갱신."""
     import re
+    from datetime import datetime
 
     d = _params_to_dict(best_p)
     content = _FACTOR_PATH.read_text(encoding="utf-8")
 
+    # 파라미터 갱신
     for k, v in d.items():
         val_str = _fmt_val(k, v)
         type_hint = "int" if isinstance(v, int) else "float"
@@ -326,6 +337,29 @@ def _update_config_file(best_p: Params, best_s: Stats, years: int):
             content,
             flags=re.MULTILINE,
         )
+
+    # 백테스트 결과 주석 갱신
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    elapsed_min = elapsed / 60
+    content = re.sub(
+        r"^(    # 수행일시:).*$",
+        rf"\g<1> {ts} ({elapsed_min:.0f}분)",
+        content,
+        flags=re.MULTILINE,
+    )
+    content = re.sub(
+        r"^(    # 기간:).*$",
+        rf"\g<1> {start_date} ~ {end_date}",
+        content,
+        flags=re.MULTILINE,
+    )
+    content = re.sub(
+        r"^(    # 성과:).*$",
+        rf"\g<1> {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
+        rf"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%",
+        content,
+        flags=re.MULTILINE,
+    )
 
     _FACTOR_PATH.write_text(content, encoding="utf-8")
     log.info(f"\n  💾 config.py (Optimized) 자동 갱신: {_FACTOR_PATH}")
@@ -380,16 +414,33 @@ def run(
             {
                 "sector_penalty_threshold": [-0.03],
                 "sector_penalty_pts": [0],
+                "sector_bonus_threshold": [0.0],
                 "sector_bonus_pts": [0],
             }
         )
 
     keys = list(grid.keys())
-    combos = list(product(*[grid[k] for k in keys]))
+    all_combos = list(product(*[grid[k] for k in keys]))
+
+    # 중복 조합 제거: 결과에 영향 없는 파라미터 조합 스킵
+    # - tp1_ratio=1.0 → TP1 전량 매도, TP2(atr_tp_mult) 무의미
+    # - sector_penalty_pts=0 → threshold 무의미
+    # - sector_bonus_pts=0 → threshold 무의미
+    _first = {k: grid[k][0] for k in keys}
+    combos = []
+    for c in all_combos:
+        d = dict(zip(keys, c))
+        if d["tp1_ratio"] == 1.0 and d["atr_tp_mult"] != _first["atr_tp_mult"]:
+            continue
+        if d["sector_penalty_pts"] == 0 and d["sector_penalty_threshold"] != _first["sector_penalty_threshold"]:
+            continue
+        if d["sector_bonus_pts"] == 0 and d["sector_bonus_threshold"] != _first["sector_bonus_threshold"]:
+            continue
+        combos.append(c)
 
     sector_label = "" if sector else " (업종패널티 OFF)"
     log.info(f"\n{'─' * 70}")
-    log.info(f"  {len(combos):,}개 조합 백테스트{sector_label}")
+    log.info(f"  {len(combos):,}개 조합 백테스트{sector_label} (전수 {len(all_combos):,}개 중 중복 제거)")
     log.info(f"{'─' * 70}")
 
     results: list[tuple[Params, Stats]] = []
@@ -411,13 +462,14 @@ def run(
                     f"{n / elapsed:.0f} combo/s)"
                 )
 
+    elapsed = time.time() - t0
     results.sort(key=lambda x: x[1].metric, reverse=True)
-    _report(results, time.time() - t0)
+    _report(results, elapsed)
 
     if results and results[0][1].metric > -9999:
         best_p, best_s = results[0]
         if apply:
-            _update_config_file(best_p, best_s, years)
+            _update_config_file(best_p, best_s, start_date, end_date, elapsed)
         else:
             log.info("\n  ⚠️  --no-apply: config.py 갱신 생략")
 
