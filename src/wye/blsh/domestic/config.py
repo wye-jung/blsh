@@ -1,21 +1,21 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-01 23:32 (27분)
-    # 기간: 20240401 ~ 20260401
-    # 성과: 504건  승률 33.3%  평균 +0.63%  총 +320.0%
+    # 수행일시: 2026-04-03 08:42 (0분)
+    # 기간: 20240403 ~ 20260403
+    # 성과: 6853건  승률 37.1%  평균 +0.59%  총 +4061.9%
     # ──────────────────────────────────────────
-    INVEST_MIN_SCORE: int = 13
+    INVEST_MIN_SCORE: int = 9
     SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
-    SECTOR_PENALTY_PTS: int = -2
-    SECTOR_BONUS_THRESHOLD: float = 0.02  # 업종지수 MA20 대비 해당값 이상일 때 보너스
-    SECTOR_BONUS_PTS: int = 1  # 보너스 점수
+    SECTOR_PENALTY_PTS: int = 0
+    SECTOR_BONUS_THRESHOLD: float = 0.0  # 업종지수 MA20 대비 해당값 이상일 때 보너스
+    SECTOR_BONUS_PTS: int = 0  # 보너스 점수
     ATR_SL_MULT: float = 3.0
     ATR_TP_MULT: float = 1.5
     TP1_MULT: float = 1.5  # 1차 익절: buy + ATR × TP1_MULT
     TP1_RATIO: float = 1.0  # 1차 익절 매도 비율 (1.0 = 전량)
-    MAX_HOLD_DAYS: int = 3
-    MAX_HOLD_DAYS_MIX: int = 2
-    MAX_HOLD_DAYS_MOM: int = 2
+    MAX_HOLD_DAYS: int = 10
+    MAX_HOLD_DAYS_MIX: int = 5
+    MAX_HOLD_DAYS_MOM: int = 3
 
 
 # for scan
@@ -54,21 +54,21 @@ SECTOR_BONUS_THRESHOLD: float = Optimized.SECTOR_BONUS_THRESHOLD
 SECTOR_BONUS_PTS: int = Optimized.SECTOR_BONUS_PTS  # 업종지수 MA20 이상일 때
 
 SIGNAL_SCORES = {
-    "MGC": 2,
-    "MPGC": 1,
-    "RBO": 2,
-    "ROV": 1,
-    "BBL": 1,
-    "BBM": 1,
-    "VS": 1,
-    "MAA": 0,
-    "SGC": 1,
+    "MGC": 1,
     "W52": 3,
-    "PB": 2,
-    "HMR": 1,
-    "LB": 2,
+    "PB": 0,
+    "LB": 0,
     "MS": 2,
-    "OBV": 1,
+    "RBO": 3,
+    "MPGC": 1,
+    "ROV": 2,
+    "BBL": 2,
+    "BBM": 2,
+    "VS": 2,
+    "MAA": 0,
+    "SGC": 2,
+    "HMR": 2,
+    "OBV": 2,
 }
 
 SUPPLY_SCORES = {
