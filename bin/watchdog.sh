@@ -27,9 +27,10 @@ CHECK_INTERVAL=60  # 프로세스 생존 확인 주기 (초)
 # ── 텔레그램 알림 (env에서 토큰 로드)
 send_alert() {
     local msg="$1"
-    # .env에서 토큰/채팅ID 로드
+    # .env에서 토큰/채팅ID 로드 (source 대신 grep — .env에 bash 비호환 구문 방지)
     if [ -f "$HOME/.blsh/config/.env" ]; then
-        source "$HOME/.blsh/config/.env"
+        TELEGRAM_BOT_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' "$HOME/.blsh/config/.env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
+        TELEGRAM_CHAT_ID=$(grep -E '^TELEGRAM_CHAT_ID=' "$HOME/.blsh/config/.env" | cut -d= -f2 | tr -d '"' | tr -d "'" | xargs)
     fi
     if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
         echo "[$(date '+%H:%M:%S')] 텔레그램 미설정 → 콘솔 출력: $msg"
