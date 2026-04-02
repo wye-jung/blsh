@@ -10,43 +10,37 @@
     USE_WEBSOCKET=1  웹소켓 실시간 체결가 / 0 끄끔 (기본: 비활성)
 
 투자 전략:
-    1. 08:00 NXT 프리마켓 개장 → PO①(전일스캔) NXT 지정가 매수 (30%).
-       NXT 비대상 종목 → KRX 개장 후 재시도.
-       09:00 KRX 정규장 개장 → SL/TP 매도 + 기간초과 청산 시작.
-       보유종목 모니터링.
-        장 중 현재가 조회 → ATR 기반 SL/TP 처리
-        - 손절: 현재가 ≤ SL → 전량 시장가 매도
-        - 1차 익절: TP1 = buy + ATR × TP1_MULT → TP1_RATIO 비율 매도, SL → 매수가(본전)
-        - 2차 익절: TP2 = buy + ATR × ATR_TP_MULT → 잔여 전량 매도
-        - 트레일링 SL: 주가 상승 시 SL을 (현재가 - ATR × ATR_SL_MULT) 로 상향
-    2. ~10:10 PO②(오전 스캔) 감지 시 잔고의 15% 지정가 매수
-        기 보유종목은 매수 제외. 10분 후 미체결 취소.
-        PO 파일 처리 후 done 폴더로 이동.
-    3. 15:15 만기 청산
-        청산일(expiry_date) 도래 종목 전량 시장가 매도.
-        청산 실패 시 다음 영업일 재시도 (포지션 영속 저장).
-    4. 청산 직후 PO③(오후 스캔) 지정가 매수 (55% × 90%)
-    5. 매수/매도 성공 시 trade_history DB + 텔레그램 알림
-    6. 15:30 KRX 마감 → NXT 에프터마켓(~20:00) SL/TP 모니터링 지속
-       NXT는 시장가 불가 → 지정가 매도 (Tick.floor_tick(현재가))
+    1. 08:00 NXT 프리마켓 → PO① NXT 지정가 매수 (30%). 실패 종목 → KRX 개장 후 재시도.
+    2. 09:00 KRX 개장 → 유령/추적불가 체크 → 기간초과 청산 → SL/TP 모니터링 시작.
+       - 손절: 현재가 ≤ SL → KRX 시장가 매도 / NXT 하한가 지정가 매도
+       - 1차 익절: TP1 도달 → TP1_RATIO 매도, SL → 매수가(본전)
+       - 2차 익절: TP2 도달 → 잔여 전량 매도
+       - 트레일링 SL: 주가 상승 시 SL 상향 (현재가 - ATR × ATR_SL_MULT)
+    3. ~10:10 PO② 감지 → 잔고 15% 지정가 매수. 10분 후 미체결 취소.
+    4. 15:15 만기 청산 → PO③ KRX 지정가 매수 (55% × 90%).
+    5. 15:30 KRX 마감 → FIN PO 미체결분 NXT 재발주 → NXT SL/TP + pending 체결 확인.
+    6. 20:00 NXT 마감 → 종료. 세션 종료 시 실제 체결가로 PnL 보정 + DB update.
+    7. 매수/매도 시 trade_history DB + 텔레그램 알림.
 
 구조:
-    완전 단일 스레드 — 작업별 차등 주기
-    ┌──────────────────────────────────────────────────────┐
-    │ 09:00~15:30 (KRX 정규장):                            │
-    │   매 틱 (10초): 현재가 조회 + SL/TP (KRX 시장가 매도) │
-    │   매 SLOW 틱 (30초): PO 감시 + 체결 확인             │
-    │   15:15 만기 청산 + PO③ 매수                       │
-    ├──────────────────────────────────────────────────────┤
-    │ 15:30~20:00 (NXT 에프터마켓):                        │
-    │   매 틱 (10초): 현재가 조회 + SL/TP (NXT 지정가 매도) │
-    │   PO 감시 중단, 신규 매수 없음                      │
-    └──────────────────────────────────────────────────────┘
+    단일 스레드 — 차등 주기
+    ┌────────────────────────────────────────────────────────┐
+    │ 08:00~09:00 (NXT 프리마켓):                            │
+    │   PO① 매수 + pending 체결 확인 (30초 간격)            │
+    ├────────────────────────────────────────────────────────┤
+    │ 09:00~15:30 (KRX 정규장):                              │
+    │   매 틱 (10초): 현재가 조회 + SL/TP (KRX 시장가 매도)  │
+    │   매 SLOW 틱 (30초): PO 감시 + pending 체결 확인       │
+    │   09:00 1회: 유령/추적불가 체크 → 기간초과 청산 (재시도)│
+    │   15:15: 만기 청산 + PO③ KRX 매수                     │
+    ├────────────────────────────────────────────────────────┤
+    │ 15:30~20:00 (NXT 에프터마켓):                          │
+    │   FIN PO 미체결 → NXT 재발주                           │
+    │   매 틱 (10초): 현재가 조회 + SL/TP (NXT 지정가 매도)  │
+    │   매 SLOW 틱 (30초): NXT pending 체결 확인             │
+    └────────────────────────────────────────────────────────┘
 
-PO 파일 포맷: ~/.blsh/{KIS_ENV}/data/po/po-{entry_date}-{po_type}.json
-    po_type: pre (전일스캔), ini (장초매수), fin (청산후매수)
-    내용: {ticker: {atr, atr_sl_mult, atr_tp_mult, tp1_mult, tp1_ratio,
-                    entry_price, max_hold_days, mode, ...}}
+PO 파일: ~/.blsh/{KIS_ENV}/data/po-{entry_date}-{po_type}.json
 ─────────────────────────────────────────────────────
 """
 
@@ -223,7 +217,8 @@ def _sell_or_log(
     nxt_price: int = 0,
     today: str = "",
 ) -> bool:
-    """nxt_price > 0 이면 NXT 지정가 매도, 아니면 KRX 시장가 매도."""
+    """nxt_price > 0 이면 NXT 지정가 매도, 아니면 KRX 시장가 매도.
+    연속 실패 시 KIS 잔고 확인 → 유령 포지션이면 True 반환하여 포지션 제거."""
     if nxt_price > 0:
         ok = kis.sell_nxt(pos.ticker, qty, nxt_price, reason)
         if ok:
@@ -519,7 +514,7 @@ def _process_position(
     """
     ret_pct = (current - pos.buy_price) / pos.buy_price * 100
     changed = False
-    # NXT 모드: 현재가를 지정가로 사용 (0이면 KRX 시장가)
+    # NXT 모드: 익절은 현재가 지정가, 손절은 하한가 지정가 (0이면 KRX 시장가)
     sell_price = Tick.floor_tick(current) if nxt_mode else 0
 
     trail_sl = Tick.floor_tick(current - pos.atr_sl_mult * pos.atr)
@@ -891,7 +886,7 @@ def run():
                     log.info("[KRX 마감] 보유/체결대기 종목 없음 → 종료")
                     break
 
-            # ── 0. KRX 개장 시: 기간초과 청산 + 프리마켓 실패 종목 재주문
+            # ── 0. KRX 개장 시: 프리마켓 재시도 → 유령 체크 → 기간초과 청산
             krx_open = now >= Milestone.KRX_OPEN_TIME and not krx_closed
 
             # 프리마켓 주문 실패 종목 재시도 (KRX 개장 후 1회)
@@ -1038,7 +1033,7 @@ def run():
                         session_closed[ticker] = positions.pop(ticker)
                     monitor.sync_subscriptions(list(positions.keys()))
 
-            # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱)
+            # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱, KRX+NXT)
             if is_slow_tick:
                 # KRX 장중: INI PO 감시
                 if not krx_closed:

@@ -16,9 +16,9 @@
   │ 볼린저 하단 반등 (전일 하단 이탈 → 당일 회복)         │  BBL │  전환  │  +1  │
   │ 볼린저 중간선 상향 돌파                               │  BBM │  중립  │  +1  │
   │ 거래량 급증 + 양봉 (20일 평균의 2배 이상)             │  VS  │  모멘텀│  +1  │
-  │ 이동평균 정배열 전환 (5>20>60, 전일 미성립)           │  MAA │  모멘텀│  +1  │
+  │ 이동평균 정배열 전환 (5>20>60, 전일 미성립)           │  MAA │  모멘텀│  +0  │
   │ 스토캐스틱 과매도 골든크로스 (K>D, 50 미만)           │  SGC │  중립  │  +1  │
-  │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배 이상)      │  W52 │  모멘텀│  +2  │
+  │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배 이상)      │  W52 │  모멘텀│  +3  │
   │ 눌림목 패턴 (MA20 상승 중, 5MA 이탈 후 복귀)          │  PB  │  모멘텀│  +2  │
   │ 망치형 캔들 (하단 꼬리 50%↑, 상단 꼬리 10%↓)        │  HMR │  전환  │  +1  │
   │ 장대 양봉 (양봉 크기 > ATR × 1.5)                    │  LB  │  모멘텀│  +2  │
@@ -68,7 +68,7 @@
 
   po-{date}-pre.json — 전일 스캔 (NXT 08:00 매수, 30%)
   po-{date}-ini.json — 오전 스캔 (KRX ~10:10 매수, 15%)
-  po-{date}-fin.json — 청산 후 스캔 (NXT 15:30 매수, 55%, max_hold_days +1)
+  po-{date}-fin.json — 청산 후 스캔 (KRX 15:15 매수 → 미체결분 NXT 재발주, 55%, max_hold_days +1)
 """
 
 import logging
@@ -154,7 +154,7 @@ def calc_rsi(c, p=RSI_PERIOD):
     d = c.diff()
     g = d.clip(lower=0).ewm(alpha=1 / p, adjust=False).mean()
     l = (-d.clip(upper=0)).ewm(alpha=1 / p, adjust=False).mean()
-    return 100 - 100 / (1 + g / l.replace(0, np.nan))
+    return (100 - 100 / (1 + g / l.replace(0, np.nan))).fillna(100)
 
 
 def calc_bb(c, p=BB_PERIOD, k=BB_STD):
@@ -256,7 +256,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
         signals.append(_signal_score("BBM"))
 
     # 7. 거래량 급증 + 양봉 (+1) → VS (모멘텀)
-    if volume is not None and len(volume) >= 20:
+    if volume is not None and len(volume) >= 21:
         vol_avg = volume.iloc[-20:-1].mean()
         if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
             signals.append(_signal_score("VS"))
