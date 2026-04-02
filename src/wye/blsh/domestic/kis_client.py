@@ -61,16 +61,24 @@ class KISClient:
             raise RuntimeError("인증 실패 — 토큰을 확인하고 다시 실행하세요.")
         log.info(f"계좌: {self.trenv.my_acct}-{self.trenv.my_prod}")
 
-    def get_price(self, ticker: str) -> float | None:
+    def get_price_detail(self, ticker: str) -> tuple[float, int] | None:
+        """현재가 + 하한가 동시 조회 (inquire_price 1회). 실패 시 None."""
         try:
             self.rate_limiter.wait()
             with _api_sem:
                 df = ds.inquire_price(self.env_dv, "J", ticker)
             if df is not None and not df.empty:
-                return float(df.iloc[0]["stck_prpr"])
+                row = df.iloc[0]
+                price = float(row["stck_prpr"])
+                lower_limit = int(row.get("stck_llam", 0) or 0)
+                return (price, lower_limit)
         except Exception as e:
             log.debug(f"현재가 조회 실패 ({ticker}): {e}")
         return None
+
+    def get_price(self, ticker: str) -> float | None:
+        result = self.get_price_detail(ticker)
+        return result[0] if result else None
 
     def fetch_prices(self, tickers: list[str]) -> dict[str, float]:
         """여러 종목 현재가 병렬 조회"""
@@ -259,6 +267,45 @@ class KISClient:
         except Exception as e:
             log.debug(f"체결가 조회 실패 ({ticker} no={odno}): {e}")
         return None
+
+    def get_sell_fills(self, today: str) -> dict[str, tuple[float, int]]:
+        """당일 매도 체결 내역 일괄 조회. {종목코드: (가중평균체결가, 총수량)} 반환."""
+        try:
+            self.rate_limiter.wait()
+            with _api_sem:
+                df1, _ = ds.inquire_daily_ccld(
+                    env_dv=self.env_dv,
+                    pd_dv="inner",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    inqr_strt_dt=today,
+                    inqr_end_dt=today,
+                    sll_buy_dvsn_cd="01",  # 매도만
+                    ccld_dvsn="01",        # 체결만
+                    inqr_dvsn="00",
+                    inqr_dvsn_3="00",
+                    excg_id_dvsn_cd="ALL",
+                )
+            if df1 is None or df1.empty:
+                return {}
+            # 종목별 총 체결금액·수량 집계 (TP1 + TP2 등 분할 매도 대응)
+            totals: dict[str, list[float]] = {}  # {ticker: [총금액, 총수량]}
+            for _, row in df1.iterrows():
+                ticker = str(row.get("pdno", ""))
+                qty = int(row.get("ccld_qty", 0) or 0)
+                price = float(row.get("ccld_unpr", 0) or 0)
+                if ticker and qty > 0 and price > 0:
+                    if ticker not in totals:
+                        totals[ticker] = [0.0, 0]
+                    totals[ticker][0] += price * qty
+                    totals[ticker][1] += qty
+            return {
+                t: (amt / q, int(q))
+                for t, (amt, q) in totals.items() if q > 0
+            }
+        except Exception as e:
+            log.debug(f"당일 매도 체결 일괄 조회 실패: {e}")
+        return {}
 
     def sell_nxt(self, ticker: str, qty: int, price: int, reason: str = "") -> bool:
         """NXT 지정가 매도. NXT는 시장가 불가이므로 지정가만 지원. 성공 시 True."""

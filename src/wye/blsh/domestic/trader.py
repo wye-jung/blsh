@@ -128,6 +128,7 @@ class Position:
     realized_pnl: float = 0.0
     po_type: str = ""
     excg_cd: str = "KRX"  # 매수 시 거래소 (KRX/NXT)
+    sell_fail_count: int = 0  # 연속 매도 실패 횟수 (잔고 재확인 트리거)
 
 
 @dataclass
@@ -163,7 +164,8 @@ def _save_history(
         else:
             log.warning(f"이력 저장 실패 ({ticker}): {e}")
 
-    messageutils.send_message(f"{name}({ticker}) {qty}주를 {price}원에 {side}")
+    price_str = f"{price:,.0f}" if price is not None else "미정"
+    messageutils.send_message(f"{name}({ticker}) {qty}주를 {price_str}원에 {side}")
 
 
 # ─────────────────────────────────────────
@@ -210,6 +212,9 @@ def _sell_market(
     return True
 
 
+_SELL_FAIL_BALANCE_CHECK = 3  # 연속 N회 매도 실패 시 KIS 잔고 재확인
+
+
 def _sell_or_log(
     kis: KISClient,
     pos: Position,
@@ -222,11 +227,28 @@ def _sell_or_log(
     if nxt_price > 0:
         ok = kis.sell_nxt(pos.ticker, qty, nxt_price, reason)
         if ok:
+            pos.sell_fail_count = 0
             _save_history(
-                "sell", pos.ticker, pos.name, qty, nxt_price, reason, pos.po_type
+                "sell", pos.ticker, pos.name, qty, nxt_price,
+                f"{reason} (지정가. 실제 체결가 미정)", pos.po_type,
             )
             return True
+        pos.sell_fail_count += 1
         log.critical(f"  🚨 매도 실패: {pos.ticker} [{reason}] → 다음 틱 재시도")
+        # 연속 실패 시 KIS 잔고 확인 → 유령 포지션이면 True 반환하여 포지션 제거
+        if pos.sell_fail_count >= _SELL_FAIL_BALANCE_CHECK:
+            holdings, _, _ = kis.get_balance()
+            if pos.ticker not in holdings or holdings[pos.ticker] <= 0:
+                log.warning(
+                    f"  ⚠️ 유령 포지션 감지: {pos.ticker} KIS 잔고 없음 → 포지션 제거"
+                )
+                messageutils.send_message(
+                    f"⚠️ 유령 포지션 제거: {pos.ticker} [{reason}]"
+                    f" (매도 {pos.sell_fail_count}회 실패, KIS 잔고 없음)"
+                )
+                pos.sell_fail_count = 0
+                return True
+            pos.sell_fail_count = 0
         return False
     return _sell_market(
         kis, pos.ticker, pos.name, qty, reason, today or dtutils.today(), pos.po_type
@@ -255,12 +277,10 @@ def _load_positions() -> dict[str, Position]:
             v.setdefault("expiry_date", "")
             v.setdefault("po_type", "")
             v.setdefault("excg_cd", "KRX")
+            v.pop("sell_fail_count", None)  # 세션 내 임시 값 — 이월 방지
             p = Position(**v)
-            if p.max_hold_days == 0 and p.entry_date != today:
-                log.warning(f"  이전 데이 포지션 무시: {t} (entry={p.entry_date})")
-                continue
-            # [FIX] 구버전 포지션 expiry_date 미설정 보정
-            if not p.expiry_date and p.max_hold_days > 0:
+            # [FIX] expiry_date 미설정 보정 (데이: entry_date, 스윙: +N영업일)
+            if not p.expiry_date:
                 try:
                     p.expiry_date = dtutils.add_biz_days(p.entry_date, p.max_hold_days)
                 except Exception as e:
@@ -520,8 +540,14 @@ def _process_position(
 
     # [FIX] 매도 성공 시에만 changed=True (실패 시 상태 불변)
     if current <= pos.sl:
+        # NXT 손절: 거래소 하한가로 지정가 매도 (사실상 시장가 효과)
+        if nxt_mode:
+            detail = kis.get_price_detail(pos.ticker)
+            sl_sell_price = Tick.floor_tick(detail[1]) if detail and detail[1] else Tick.floor_tick(current)
+        else:
+            sl_sell_price = 0  # KRX 시장가
         reason = f"손절 {ret_pct:+.2f}% (SL={pos.sl:,.0f})"
-        if _sell_or_log(kis, pos, pos.qty, reason, nxt_price=sell_price, today=today):
+        if _sell_or_log(kis, pos, pos.qty, reason, nxt_price=sl_sell_price, today=today):
             pos.realized_pnl += (
                 current - pos.buy_price
             ) * pos.qty - current * pos.qty * SELL_COST_RATE
@@ -805,25 +831,8 @@ def run():
     retry_orders: dict[str, dict] = failed  # KRX 개장 후 재시도 대상
     retry_done = False
 
-    # ── 기간 초과 포지션: KRX 개장 후 청산 (09:00 이전이면 메인 루프에서 처리)
+    # ── 기간 초과 포지션: 메인 루프에서 유령 체크 후 처리 (유령 매도 시도 방지)
     overdue_done = False
-    if dtutils.ctime() >= Milestone.KRX_OPEN_TIME:
-        overdue = [
-            t
-            for t, p in list(positions.items())
-            if p.expiry_date and today > p.expiry_date
-        ]
-        if overdue:
-            log.info(f"[기간초과 청산] {len(overdue)}종목")
-            for ticker in overdue:
-                pos = positions[ticker]
-                if _sell_market(
-                    kis, ticker, pos.name, pos.qty, "기간초과청산", today, pos.po_type
-                ):
-                    session_closed[ticker] = positions.pop(ticker)
-                else:
-                    log.warning(f"  기간초과 청산 실패: {ticker} → 다음 틱 재시도")
-        overdue_done = True
 
     _save_positions(positions)
     log.info(f"[모니터링] {len(positions)}종목 감시 시작  (틱={TICK_SEC}s)")
@@ -842,17 +851,44 @@ def run():
                 log.info("[종료] NXT 마감")
                 break
 
-            # ── KRX 마감 (15:30) → pending 취소, NXT 모니터링 전환
+            # ── KRX 마감 (15:30) → KRX 미체결 취소, FIN PO NXT 재발주
             if not krx_closed and now >= Milestone.KRX_CLOSE_TIME:
+                # FIN PO 미체결분 NXT 재발주 준비
+                fin_retry: dict[str, dict] = {}
+                if pending_po:
+                    # 체결 확인 (마지막 한 번)
+                    _check_pending_orders(pending_po, positions, kis, today)
+                    # 남은 FIN PO 미체결 주문 → NXT 재발주 대상 수집
+                    for t, po_item in list(pending_po.items()):
+                        if po_item.po_type == PO_TYPE_FIN:
+                            fin_retry[t] = po_item.cand
                 _cancel_all_pending(pending_po, kis)
+
+                # FIN PO NXT 재발주
+                if fin_retry:
+                    log.info(f"[KRX 마감] FIN PO 미체결 {len(fin_retry)}종목 → NXT 재발주")
+                    _, _, cash = kis.get_balance()
+                    cash_limit = cash * FIN_CASH_RATIO * CASH_USAGE
+                    _submit_buy_orders(
+                        fin_retry,
+                        positions,
+                        pending_po,
+                        kis,
+                        today,
+                        cash_limit=cash_limit,
+                        po_type=PO_TYPE_FIN,
+                        excg_id_dvsn_cd="NXT",
+                    )
+
                 krx_closed = True
-                if positions:
+                if positions or pending_po:
                     log.info(
-                        f"[KRX 마감] NXT 에프터마켓 SL/TP 모니터링 전환"
-                        f"  ({len(positions)}종목 감시, ~{Milestone.NXT_CLOSE_TIME[:2]}:00)"
+                        f"[KRX 마감] NXT 에프터마켓 전환"
+                        f"  (보유={len(positions)}종목, 체결대기={len(pending_po)}종목,"
+                        f" ~{Milestone.NXT_CLOSE_TIME[:2]}:00)"
                     )
                 else:
-                    log.info("[KRX 마감] 보유 종목 없음 → 종료")
+                    log.info("[KRX 마감] 보유/체결대기 종목 없음 → 종료")
                     break
 
             # ── 0. KRX 개장 시: 기간초과 청산 + 프리마켓 실패 종목 재주문
@@ -874,37 +910,7 @@ def run():
                     log.warning(f"  재주문도 실패: {list(still_failed.keys())}")
                 retry_done = True
 
-            if krx_open and not overdue_done:
-                overdue = [
-                    t
-                    for t, p in list(positions.items())
-                    if p.expiry_date and today > p.expiry_date
-                ]
-                if overdue:
-                    log.info(f"[KRX 개장] 기간초과 청산 {len(overdue)}종목")
-                    for ticker in overdue:
-                        pos = positions[ticker]
-                        if _sell_market(
-                            kis,
-                            ticker,
-                            pos.name,
-                            pos.qty,
-                            "기간초과청산",
-                            today,
-                            pos.po_type,
-                        ):
-                            session_closed[ticker] = positions.pop(ticker)
-                        else:
-                            log.warning(
-                                f"  기간초과 청산 실패: {ticker} → 다음 틱 재시도"
-                            )
-                    dirty = True
-                    monitor.sync_subscriptions(list(positions.keys()))
-                overdue_done = True
-
-            # ── 0-1. 추적불가 보유종목: DB 복원 우선, 실패 시 청산
-            #   positions.json + .bak 모두 유실된 경우, DB 매매이력으로 복원 시도.
-            #   복원 불가(매수가 불명 등)한 종목만 시장가 청산. KRX 개장 후 1회 실행.
+            # ── 0-1. 유령/추적불가 체크 (KRX 개장 후 1회, 기간초과 청산보다 먼저 실행)
             if krx_open and not orphan_done:
                 orphan_done = True
                 holdings_chk, avg_prices_chk, _ = kis.get_balance()
@@ -913,6 +919,26 @@ def run():
                     | set(pending_po.keys())
                     | set(session_closed.keys())
                 )
+
+                # ── 유령 포지션 제거: positions에 있지만 KIS 잔고에 없는 종목
+                ghost = {
+                    t for t in positions
+                    if t not in holdings_chk or holdings_chk[t] <= 0
+                }
+                if ghost:
+                    log.warning(
+                        f"[유령 포지션] KIS 잔고에 없는 종목 {len(ghost)}건 제거:"
+                        f" {list(ghost)}"
+                    )
+                    messageutils.send_message(
+                        f"⚠️ [{today}] 유령 포지션 {len(ghost)}건 제거:"
+                        f" {list(ghost)}"
+                    )
+                    for t in ghost:
+                        del positions[t]
+                    dirty = True
+                    monitor.sync_subscriptions(list(positions.keys()))
+
                 orphans = {
                     t: q for t, q in holdings_chk.items() if t not in tracked and q > 0
                 }
@@ -954,6 +980,36 @@ def run():
                                     f"  추적불가 청산 실패: {ticker}  수량={qty}"
                                 )
 
+            # ── 0-2. 기간초과 청산 (유령 체크 후 실행, 슬로우 틱 간격 재시도)
+            if krx_open and not overdue_done and is_slow_tick:
+                overdue = [
+                    t
+                    for t, p in list(positions.items())
+                    if p.expiry_date and today > p.expiry_date
+                ]
+                if overdue:
+                    log.info(f"[기간초과 청산] {len(overdue)}종목 시도")
+                    for ticker in overdue:
+                        pos = positions[ticker]
+                        if _sell_market(
+                            kis,
+                            ticker,
+                            pos.name,
+                            pos.qty,
+                            "기간초과청산",
+                            today,
+                            pos.po_type,
+                        ):
+                            session_closed[ticker] = positions.pop(ticker)
+                        else:
+                            log.warning(
+                                f"  기간초과 청산 실패: {ticker} → 30초 후 재시도"
+                            )
+                    dirty = True
+                    monitor.sync_subscriptions(list(positions.keys()))
+                # 미청산 기간초과 종목이 남아있으면 다음 슬로우 틱에서 재시도
+                overdue_done = not overdue
+
             # ── 1. 현재가 조회 + SL/TP 처리 (KRX 장중 + NXT 에프터마켓)
             if (krx_open or krx_closed) and positions:
                 cur_prices = monitor.get_prices(list(positions.keys()))
@@ -982,25 +1038,28 @@ def run():
                         session_closed[ticker] = positions.pop(ticker)
                     monitor.sync_subscriptions(list(positions.keys()))
 
-            # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱 — KRX 장중만)
-            if is_slow_tick and not krx_closed:
-                if not ini_po_bought and now <= Milestone.KRX_EARLY_TIME:
-                    po = PO(PO_TYPE_INI)
-                    if po.exists():
-                        orders = po.loads()
-                        log.info(f"[매수] {po.path.name} {len(orders)} 종목")
-                        _submit_buy_orders(
-                            orders,
-                            positions,
-                            pending_po,
-                            kis,
-                            today,
-                            cash_usage=INI_CASH_RATIO,
-                            po_type=PO_TYPE_INI,
-                        )
-                        ini_po_bought = True
+            # ── 2. po 파일 감시 + pending 체결 확인 (느린 틱)
+            if is_slow_tick:
+                # KRX 장중: INI PO 감시
+                if not krx_closed:
+                    if not ini_po_bought and now <= Milestone.KRX_EARLY_TIME:
+                        po = PO(PO_TYPE_INI)
+                        if po.exists():
+                            orders = po.loads()
+                            log.info(f"[매수] {po.path.name} {len(orders)} 종목")
+                            _submit_buy_orders(
+                                orders,
+                                positions,
+                                pending_po,
+                                kis,
+                                today,
+                                cash_usage=INI_CASH_RATIO,
+                                po_type=PO_TYPE_INI,
+                            )
+                            ini_po_bought = True
 
-                if _check_pending_orders(pending_po, positions, kis, today):
+                # KRX + NXT: pending 체결 확인
+                if pending_po and _check_pending_orders(pending_po, positions, kis, today):
                     dirty = True
                     monitor.sync_subscriptions(list(positions.keys()))
 
@@ -1046,8 +1105,8 @@ def run():
                 dirty = True
                 monitor.sync_subscriptions(list(positions.keys()))
 
-            # ── 4. 종료 조건
-            if not positions and (liquidated or krx_closed):
+            # ── 4. 종료 조건 (pending 체결대기도 없어야 종료)
+            if not positions and not pending_po and (liquidated or krx_closed):
                 log.info("[모니터링] 전 포지션 청산")
                 break
 
@@ -1091,13 +1150,34 @@ def run():
         # ── 웹소켓 종료
         monitor.stop()
 
-        # ── 당일 결과 요약
+        # ── 당일 결과 요약 (실제 체결가로 PnL 보정)
         if session_closed:
+            sell_fills = kis.get_sell_fills(today)
+            if sell_fills:
+                # DB 매도 이력 체결가 보정 (NXT 지정가 → 실제 체결가)
+                try:
+                    query.update_sell_prices(today, sell_fills)
+                except Exception as e:
+                    log.warning(f"DB 매도 체결가 보정 실패: {e}")
+            for t, p in session_closed.items():
+                if t in sell_fills:
+                    avg_price, total_qty = sell_fills[t]
+                    old_pnl = p.realized_pnl
+                    p.realized_pnl = (
+                        (avg_price - p.buy_price) * total_qty
+                        - avg_price * total_qty * SELL_COST_RATE
+                    )
+                    if abs(old_pnl - p.realized_pnl) > 1:
+                        log.info(
+                            f"  PnL 보정: {t}  추정={old_pnl:+,.0f} → 실제={p.realized_pnl:+,.0f}"
+                            f"  (평균체결가={avg_price:,.0f}, 수량={total_qty})"
+                        )
+
             total_pnl = sum(p.realized_pnl for p in session_closed.values())
             winners = sum(1 for p in session_closed.values() if p.realized_pnl > 0)
             message = (
                 f"[당일 결과] 청산 {len(session_closed)}종목"
-                f"  추정손익 {total_pnl:+,.0f}원"
+                f"  손익 {total_pnl:+,.0f}원"
                 f"  수익 {winners}/손실 {len(session_closed) - winners}"
             )
             log.info(message)

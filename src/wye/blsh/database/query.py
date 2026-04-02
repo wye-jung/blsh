@@ -320,6 +320,36 @@ def save_trade_history(
         session.commit()
 
 
+def update_sell_prices(date_str: str, fills: dict[str, tuple[float, int]]):
+    """당일 매도 이력의 체결가를 실제 체결가로 보정.
+
+    Args:
+        date_str: 조회일자 (YYYYMMDD)
+        fills: {종목코드: (평균체결가, 총수량)} — KIS inquire_daily_ccld 결과
+    """
+    if not fills:
+        return
+    from wye.blsh.common.env import KIS_ENV
+    with Session(engine) as session:
+        for ticker, (avg_price, _) in fills.items():
+            session.execute(
+                text(
+                    """
+                    UPDATE trade_history
+                    SET price = :price,
+                        reason = regexp_replace(reason, ' \\(지정가\\. 실제 체결가 미정\\)', '')
+                    WHERE ticker = :ticker
+                      AND side = 'sell'
+                      AND traded_at::date = to_date(:d, 'YYYYMMDD')
+                      AND (kis_env = :env OR kis_env IS NULL)
+                      AND reason LIKE '%실제 체결가 미정%'
+                    """
+                ),
+                {"price": avg_price, "ticker": ticker, "d": date_str, "env": KIS_ENV},
+            )
+        session.commit()
+
+
 def get_trade_history(date_str: str | None = None):
     """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘). KIS_ENV 자동 필터."""
     from wye.blsh.common.env import KIS_ENV
