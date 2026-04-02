@@ -164,7 +164,7 @@ def print_simul_report(
         is_confirmed_cut = df_ok["result_type"] == "손절"
         is_hold = ~(is_confirmed_win | is_confirmed_cut)
 
-        wins = df_ok[is_confirmed_win | (is_hold & (df_ok["ret_pct"] > 0))]
+        wins = df_ok[is_confirmed_win]
 
         confirmed_wins = df_ok[is_confirmed_win]
         confirmed_cuts = df_ok[is_confirmed_cut]

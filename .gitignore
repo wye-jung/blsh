@@ -13,7 +13,7 @@ build/
 .venv/
 .env
 .blsh
-kis-open-trading-api
+open-trading-api
 
 
 # IDE

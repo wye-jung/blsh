@@ -54,9 +54,16 @@ _KOSDAQ_BIG_TO_IDX = sector.KOSDAQ_BIG_TO_IDX
 log = logging.getLogger(__name__)
 CACHE_DIR = _BLSH_CACHE_DIR / "optimize"
 
-from wye.blsh.domestic.config import SIGNAL_SCORES as _SCORES
+from wye.blsh.domestic.config import SIGNAL_SCORES as _SCORES, SUPPLY_CAP
 _SIGNAL_COLS = list(_SCORES.keys())
 _ALL_FLAGS = _MOMENTUM_FLAGS | _REVERSAL_FLAGS  # 중립 = 전체 - 이 집합
+
+# 플래그 비트마스크 상수 (backtest_scores_nb용)
+FLAG_ORDER = list(_SCORES.keys())
+FLAG_IDX = {name: i for i, name in enumerate(FLAG_ORDER)}
+N_FLAGS = len(FLAG_ORDER)
+MOM_MASK = sum(1 << FLAG_IDX[f] for f in _MOMENTUM_FLAGS if f in FLAG_IDX)
+REV_MASK = sum(1 << FLAG_IDX[f] for f in _REVERSAL_FLAGS if f in FLAG_IDX)
 
 
 # ─────────────────────────────────────────
@@ -150,7 +157,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     out["BBM"] = (c0 > bbm0) & (c1 <= bbm1)
 
     # 7. VS: 거래량 급증 + 양봉 (+1)
-    vol_avg = v.shift(1).rolling(19, min_periods=10).mean()
+    vol_avg = v.shift(1).rolling(19, min_periods=19).mean()
     out["VS"] = (v > vol_avg * 2) & (c0 > c1)
 
     # 8. MAA: 이동평균 정배열 전환 (+1)
@@ -161,7 +168,8 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     out["SGC"] = (sk0 > sd0) & (sk1 < sd1) & (sk0 < 50)
 
     # 10. W52: 52주 신고가 돌파 (+2)
-    w52_high = h.rolling(252, min_periods=200).max().shift(1)
+    # scanner.py와 동일: 전일까지의 251일 최고가 (당일 제외)
+    w52_high = h.shift(1).rolling(251, min_periods=200).max()
     vol_20_avg = v.rolling(20).mean().shift(1)
     out["W52"] = (h > w52_high) & (v > vol_20_avg * W52_VOL_MULT)
 
@@ -434,6 +442,185 @@ class OptCache:
         self.sector_gaps: dict[
             tuple[str, str, str], float
         ] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
+        # numba용 (build_arrays()로 생성)
+        self.ohlcv_arrays: dict[str, np.ndarray] | None = None
+        self.date_to_idx: dict[str, int] | None = None
+
+    def build_arrays(self):
+        """ohlcv_idx를 종목별 numpy 배열로 변환 (numba sim용)."""
+        all_dates = sorted({d for _, d in self.ohlcv_idx})
+        self.date_to_idx = {d: i for i, d in enumerate(all_dates)}
+        n_dates = len(all_dates)
+
+        # 종목별 (N, 4) 배열 생성 — sentinel -1.0 = 데이터 없음
+        tickers = {t for t, _ in self.ohlcv_idx}
+        self.ohlcv_arrays = {}
+        for ticker in tickers:
+            self.ohlcv_arrays[ticker] = np.full(
+                (n_dates, 4), -1.0, dtype=np.float64
+            )
+        for (t, d), ohv in self.ohlcv_idx.items():
+            idx = self.date_to_idx[d]
+            self.ohlcv_arrays[t][idx] = [
+                ohv["open"], ohv["high"], ohv["low"], ohv["close"],
+            ]
+        log.info(
+            f"[numpy] OHLCV 배열 변환 완료: {len(tickers)}종목 × {n_dates}일"
+        )
+
+    def precompute_signals(self, min_score: int = 0, max_sector_bonus: int = 1):
+        """signal별 OHLCV 슬라이스를 사전 계산 (backtest 루프 최적화).
+
+        Args:
+            min_score: GRID 최소 invest_min_score. score + max_sector_bonus < min_score인 signal 제거.
+            max_sector_bonus: sector 보너스 최대값 (GRID에서 추출).
+
+        각 signal dict에 _buy, _opens, _highs, _lows, _closes, _n_bars, _mode_id 추가.
+        _skip=True인 signal은 backtest에서 건너뜀.
+        """
+        _MODE_MAP = {"REV": 0, "MIX": 1, "MOM": 2}
+        d2i = self.date_to_idx
+        total, skipped = 0, 0
+
+        for base_date, sigs in self.signals.items():
+            entry_date = self.next_biz.get(base_date)
+            if not entry_date:
+                for sig in sigs:
+                    sig["_skip"] = True
+                total += len(sigs)
+                skipped += len(sigs)
+                continue
+            hold_dates = self.forward_dates.get(entry_date, [entry_date])
+            # 보유 기간 인덱스 (entry_date 이후, 전체 기간)
+            indices = [d2i[d] for d in hold_dates if d >= entry_date and d in d2i]
+            if not indices:
+                for sig in sigs:
+                    sig["_skip"] = True
+                total += len(sigs)
+                skipped += len(sigs)
+                continue
+            idx_arr = np.array(indices)
+
+            for sig in sigs:
+                total += 1
+
+                # score 사전 필터: 최대 가능 점수가 min_score 미달이면 스킵
+                if min_score > 0 and sig["score"] + max_sector_bonus < min_score:
+                    sig["_skip"] = True
+                    skipped += 1
+                    continue
+
+                ticker = sig["ticker"]
+                arr = self.ohlcv_arrays.get(ticker)
+                entry_idx = d2i.get(entry_date)
+
+                if (
+                    arr is None
+                    or entry_idx is None
+                    or arr[entry_idx, 0] <= 0
+                    or arr[entry_idx, 0] > sig["entry_price"]
+                ):
+                    sig["_skip"] = True
+                    skipped += 1
+                    continue
+
+                sig["_skip"] = False
+                sig["_buy"] = arr[entry_idx, 0]
+                sig["_opens"] = arr[idx_arr, 0].copy()
+                sig["_highs"] = arr[idx_arr, 1].copy()
+                sig["_lows"] = arr[idx_arr, 2].copy()
+                sig["_closes"] = arr[idx_arr, 3].copy()
+                sig["_n_bars"] = len(idx_arr)
+                mode = sig.get("mode", "REV")
+                if mode not in _MODE_MAP:
+                    sig["_skip"] = True
+                    skipped += 1
+                    continue
+                sig["_mode_id"] = _MODE_MAP[mode]
+
+        log.info(
+            f"[사전계산] signal OHLCV 슬라이스: {total - skipped:,}건 유효"
+            f" / {skipped:,}건 스킵 (총 {total:,}건)"
+        )
+
+    def flatten_signals(self):
+        """비스킵 신호를 flat numpy 배열로 변환 (numba backtest용)."""
+        sigs_flat = []
+        for sigs in self.signals.values():
+            for sig in sigs:
+                if not sig.get("_skip", True):
+                    sigs_flat.append(sig)
+
+        n = len(sigs_flat)
+        if n == 0:
+            self.flat_buy = np.empty(0, dtype=np.float64)
+            self.flat_atr = np.empty(0, dtype=np.float64)
+            self.flat_score = np.empty(0, dtype=np.int64)
+            self.flat_sec_gap = np.empty(0, dtype=np.float64)
+            self.flat_mode_id = np.empty(0, dtype=np.int64)
+            self.flat_n_bars = np.empty(0, dtype=np.int64)
+            self.flat_opens = np.empty((0, 1), dtype=np.float64)
+            self.flat_highs = np.empty((0, 1), dtype=np.float64)
+            self.flat_lows = np.empty((0, 1), dtype=np.float64)
+            self.flat_closes = np.empty((0, 1), dtype=np.float64)
+            self.flat_flag_mask = np.empty(0, dtype=np.int64)
+            self.flat_supply_bonus = np.empty(0, dtype=np.int64)
+            self.flat_has_pov = np.empty(0, dtype=np.int64)
+            return
+
+        max_bars = max(s["_n_bars"] for s in sigs_flat)
+
+        self.flat_buy = np.empty(n, dtype=np.float64)
+        self.flat_atr = np.empty(n, dtype=np.float64)
+        self.flat_score = np.empty(n, dtype=np.int64)
+        self.flat_sec_gap = np.empty(n, dtype=np.float64)
+        self.flat_mode_id = np.empty(n, dtype=np.int64)
+        self.flat_n_bars = np.empty(n, dtype=np.int64)
+        self.flat_opens = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_highs = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_lows = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_closes = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_flag_mask = np.empty(n, dtype=np.int64)
+        self.flat_supply_bonus = np.empty(n, dtype=np.int64)
+        self.flat_has_pov = np.empty(n, dtype=np.int64)
+
+        for i, sig in enumerate(sigs_flat):
+            self.flat_buy[i] = sig["_buy"]
+            self.flat_atr[i] = sig["atr"]
+            self.flat_score[i] = sig["score"]
+            self.flat_sec_gap[i] = sig.get("sector_gap", 0.0)
+            self.flat_mode_id[i] = sig["_mode_id"]
+            nb = sig["_n_bars"]
+            self.flat_n_bars[i] = nb
+            self.flat_opens[i, :nb] = sig["_opens"]
+            self.flat_highs[i, :nb] = sig["_highs"]
+            self.flat_lows[i, :nb] = sig["_lows"]
+            self.flat_closes[i, :nb] = sig["_closes"]
+
+            # 플래그 비트마스크 인코딩
+            flag_str = sig.get("flags", "")
+            flags = set(flag_str.split(",")) if flag_str else set()
+            mask = 0
+            for f in flags:
+                idx = FLAG_IDX.get(f)
+                if idx is not None:
+                    mask |= 1 << idx
+            self.flat_flag_mask[i] = mask
+            self.flat_supply_bonus[i] = min(
+                sig.get("raw_supply_bonus", 0), SUPPLY_CAP,
+            )
+            self.flat_has_pov[i] = 1 if "P_OV" in flags else 0
+
+        log.info(f"[flat] {n:,}건 → numpy 배열 (max_bars={max_bars})")
+
+    def update_flat_scores(self):
+        """recalc_cache_scores 이후 flat_score만 갱신."""
+        idx = 0
+        for sigs in self.signals.values():
+            for sig in sigs:
+                if not sig.get("_skip", True):
+                    self.flat_score[idx] = sig["score"]
+                    idx += 1
 
     # ── pickle I/O
     def save(self, tag: str = ""):

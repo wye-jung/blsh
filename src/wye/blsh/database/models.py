@@ -229,6 +229,10 @@ class TradeCandidates(Base):
     atr_tp_mult = Column(Numeric, comment="ATR_TP_MULT")
     max_hold_days = Column(SmallInteger, comment="최대 보유 영업일수")
     expiry_date = Column(String(8), comment="청산일(매수일 + 최대 보유 영업일수)")
+    buy_flags = Column(
+        String(200),
+        comment="매수 신호 (콤마로 구분된 신호 코드 목록, 예: 'MAA,VS')",
+    )
     created_at = Column(DateTime, server_default=func.now(), comment="레코드 생성일시")
 
 
