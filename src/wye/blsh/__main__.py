@@ -1,15 +1,48 @@
 import logging
+import os
+import signal
 import sys
 from wye.blsh.common import dtutils
+from wye.blsh.common.env import DATA_DIR
 from wye.blsh.database import query
 from wye.blsh.domestic import scanner, collector
 from wye.blsh.domestic import trader
 
 log = logging.getLogger(__name__)
 
+PID_FILE = DATA_DIR / "trader.pid"
+
+
+def _start():
+    """PID 파일 기록 후 트레이더 실행. 종료 시 PID 파일 삭제."""
+    PID_FILE.write_text(str(os.getpid()))
+    try:
+        trader.run()
+    finally:
+        PID_FILE.unlink(missing_ok=True)
+
+
+def _stop():
+    """PID 파일에서 프로세스 ID를 읽어 SIGINT 전송."""
+    if not PID_FILE.exists():
+        log.error("트레이더 PID 파일 없음 → 실행 중인 트레이더가 없습니다.")
+        return
+    pid = int(PID_FILE.read_text().strip())
+    try:
+        os.kill(pid, signal.SIGINT)
+        log.info(f"트레이더(PID: {pid})에 종료 신호 전송 완료.")
+    except ProcessLookupError:
+        log.warning(f"트레이더(PID: {pid})가 이미 종료되었습니다.")
+        PID_FILE.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         trader.run()
+    elif sys.argv[1] == "start":
+        _start()
+    elif sys.argv[1] == "stop":
+        _stop()
     elif sys.argv[1] == "po":
         collector.collect_holiday()
         today = dtutils.today()
