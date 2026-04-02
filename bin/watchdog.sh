@@ -135,9 +135,8 @@ main() {
 
     # 트레이더 실행 (백그라운드)
     echo "[$(date '+%H:%M:%S')] 트레이더 시작"
-    $HOME/.local/bin/uv run python -m wye.blsh &
+    $HOME/.local/bin/uv run python -m wye.blsh start &
     local trader_pid=$!
-    echo "$trader_pid" > "$PID_FILE"
 
     send_alert "🟢 트레이더 시작 (PID: $trader_pid)"
 

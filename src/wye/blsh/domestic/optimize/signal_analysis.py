@@ -20,6 +20,7 @@ from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import (
     CACHE_DIR, OptCache, build_or_load,
     _SCORES, _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS,
+    _classify_mode, _calc_score,
 )
 from wye.blsh.domestic.optimize.grid_search import Params, Stats, _simulate_one
 
@@ -27,34 +28,6 @@ log = logging.getLogger(__name__)
 
 # 수급 플래그 — 스캐너 신호가 아닌 외부 수급 데이터에서 추가되므로 분석 제외
 _SUPPLY_FLAGS = frozenset({"F_TRN", "I_TRN", "F_C3", "I_C3", "F_1", "I_1", "FI", "P_OV"})
-
-
-# ─────────────────────────────────────────
-# 헬퍼
-# ─────────────────────────────────────────
-def _classify_mode(flags: set) -> str:
-    rev_cnt = len(flags & _REVERSAL_FLAGS)
-    mom_cnt = len(flags & _MOMENTUM_FLAGS)
-    if mom_cnt >= 2 and mom_cnt > rev_cnt:
-        return "MOM"
-    if rev_cnt >= 2 and rev_cnt > mom_cnt:
-        return "REV"
-    if mom_cnt > 0 and rev_cnt > 0:
-        return "MIX"
-    return "WEAK"
-
-
-def _calc_score(flags: set, mode: str) -> int:
-    mom = sum(_SCORES[f] for f in flags & _MOMENTUM_FLAGS)
-    rev = sum(_SCORES[f] for f in flags & _REVERSAL_FLAGS)
-    neu = sum(_SCORES.get(f, 0) for f in flags - _ALL_FLAGS)
-    if mode == "MOM":
-        return mom + neu
-    if mode == "REV":
-        return rev + neu
-    if mode == "MIX":
-        return max(mom, rev) + neu
-    return mom + rev + neu
 
 
 # ─────────────────────────────────────────
@@ -117,7 +90,7 @@ def analyze_flags(cache: OptCache, params: Params) -> tuple[list[FlagStats], Sta
             sec_gap = sig.get("sector_gap", 0.0)
             if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
                 effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
+            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
                 effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
@@ -204,7 +177,7 @@ def _backtest_disabled(cache: OptCache, params: Params, disabled: frozenset[str]
             sec_gap = sig.get("sector_gap", 0.0)
             if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
                 new_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
+            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
                 new_score += params.sector_bonus_pts
 
             if new_score < params.invest_min_score:
@@ -371,6 +344,7 @@ def run(years: int = 2, rebuild: bool = False, top: int = 5):
         tp1_ratio=_f.TP1_RATIO,
         sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
         sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
+        sector_bonus_threshold=_f.SECTOR_BONUS_THRESHOLD,
         sector_bonus_pts=_f.SECTOR_BONUS_PTS,
     )
     log.info(f"파라미터: {params.label()}")

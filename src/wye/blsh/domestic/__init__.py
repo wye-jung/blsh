@@ -22,7 +22,7 @@ PO_TYPE_FIN: Final = "fin"
 
 class PO:
     def __init__(self, po_type, entry_date=None):
-        _po_dir = DATA_DIR / "po"  # demo/real 환경 분리
+        _po_dir = DATA_DIR
         _po_dir.mkdir(parents=True, exist_ok=True)
         self._done_dir = _po_dir / "done"
         self.po_type = po_type

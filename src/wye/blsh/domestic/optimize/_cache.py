@@ -16,9 +16,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import CACHE_DIR as _BLSH_CACHE_DIR
 from wye.blsh.database.query import engine, select_all
@@ -57,24 +54,7 @@ _KOSDAQ_BIG_TO_IDX = sector.KOSDAQ_BIG_TO_IDX
 log = logging.getLogger(__name__)
 CACHE_DIR = _BLSH_CACHE_DIR / "optimize"
 
-# scanner.evaluate_buy 와 동일한 점수표
-_SCORES = {
-    "MGC": 2,
-    "MPGC": 1,
-    "RBO": 2,
-    "ROV": 1,
-    "BBL": 1,
-    "BBM": 1,
-    "VS": 1,
-    "MAA": 0,
-    "SGC": 1,
-    "W52": 3,
-    "PB": 2,
-    "HMR": 1,
-    "LB": 2,
-    "MS": 2,
-    "OBV": 1,
-}
+from wye.blsh.domestic.config import SIGNAL_SCORES as _SCORES
 _SIGNAL_COLS = list(_SCORES.keys())
 _ALL_FLAGS = _MOMENTUM_FLAGS | _REVERSAL_FLAGS  # 중립 = 전체 - 이 집합
 

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from wye.blsh.common import dtutils
 from wye.blsh.domestic import Tick
-from wye.blsh.domestic._sim_core import sim_one, SELL_COST_RATE
+from wye.blsh.domestic._sim_core import sim_one
 from wye.blsh.domestic.optimize._cache import build_or_load, OptCache, CACHE_DIR
 
 log = logging.getLogger(__name__)
@@ -306,13 +306,6 @@ def _fmt_val(key: str, val) -> str:
             return str(int(val)) if val == 0 else str(val)
         return str(val)
     return str(val)
-
-
-def _make_opt_line(ts: str, period: str, s: Stats) -> str:
-    return (
-        f"{ts}  기간 {period}  {s.trades}건  "
-        f"승률 {s.win_rate:.1f}%  평균 {s.avg_ret:+.2f}%  총 {s.total_ret:+.1f}%"
-    )
 
 
 def _update_config_file(
