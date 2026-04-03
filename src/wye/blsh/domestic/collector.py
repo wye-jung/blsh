@@ -40,7 +40,17 @@ def collect() -> tuple[bool, str]:
     if max_ohlcv_date is None:
         from_date = latest_biz_date
     elif max_ohlcv_date < latest_biz_date:
-        from_date = krx.get_nearest_business_day_in_a_week(max_ohlcv_date, prev=False)
+        fetched_at = query.get_fetched_at(max_ohlcv_date)
+        print(
+            f"max_ohlcv_date: {max_ohlcv_date}, fetched_at: {fetched_at.strftime(dtutils.TIME_FMT)}"
+        )
+        if (
+            fetched_at is not None
+            and fetched_at.strftime(dtutils.TIME_FMT) <= Milestone.NXT_CLOSE_TIME
+        ):
+            from_date = max_ohlcv_date
+        else:
+            from_date = dtutils.add_biz_days(max_ohlcv_date, 1)
     elif max_ohlcv_date == latest_biz_date:
         if Milestone.NXT_OPEN_TIME < dtutils.ctime() < Milestone.NXT_CLOSE_TIME:
             _collect_idx_data(max_ohlcv_date)
@@ -127,8 +137,11 @@ def collect_holiday():
 def _recreate(df, model, **filters):
     if df is not None and not df.empty:
         manager = ModelManager(model)
-        manager.delete(**filters)
-        manager.create(df)
+        deleted = manager.delete(**filters)
+        created = manager.create(df)
+        log.info(
+            f"Recreated {model.__tablename__} with filters {filters}: {deleted} deleted, {created} created"
+        )
         time.sleep(0.1)
         return len(df)
     else:
