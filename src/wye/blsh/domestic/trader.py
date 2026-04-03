@@ -1180,47 +1180,52 @@ def run():
                 time.sleep(1)
 
     finally:
-        # ── 웹소켓 종료
-        monitor.stop()
-
-        # ── 당일 결과 요약 (실제 체결가로 PnL 보정)
-        if session_closed:
-            sell_fills = kis.get_sell_fills(today)
-            if sell_fills:
-                # DB 매도 이력 체결가 보정 (NXT 지정가 → 실제 체결가)
-                try:
-                    query.update_sell_prices(today, sell_fills)
-                except Exception as e:
-                    log.warning(f"DB 매도 체결가 보정 실패: {e}")
-            for t, p in session_closed.items():
-                if t in sell_fills:
-                    avg_price, total_qty = sell_fills[t]
-                    old_pnl = p.realized_pnl
-                    p.realized_pnl = (
-                        (avg_price - p.buy_price) * total_qty
-                        - avg_price * total_qty * SELL_COST_RATE
-                    )
-                    if abs(old_pnl - p.realized_pnl) > 1:
-                        log.info(
-                            f"  PnL 보정: {t}  추정={old_pnl:+,.0f} → 실제={p.realized_pnl:+,.0f}"
-                            f"  (평균체결가={avg_price:,.0f}, 수량={total_qty})"
-                        )
-
-            total_pnl = sum(p.realized_pnl for p in session_closed.values())
-            winners = sum(1 for p in session_closed.values() if p.realized_pnl > 0)
-            message = (
-                f"[당일 결과] 청산 {len(session_closed)}종목"
-                f"  손익 {total_pnl:+,.0f}원"
-                f"  수익 {winners}/손실 {len(session_closed) - winners}"
-            )
-            log.info(message)
-            messageutils.send_message(message)
-
-            for t, p in session_closed.items():
-                log.info(f"  {t} {p.name}  {p.realized_pnl:+,.0f}원")
-
-        # ── 종료: 스윙 포지션만 저장
+        # ── 포지션 저장 (최우선 — API 호출 없이 즉시 완료)
         _save_positions(positions, swing_only=True)
+
+        # ── 웹소켓 종료
+        try:
+            monitor.stop()
+        except Exception as e:
+            log.warning(f"웹소켓 종료 실패: {e}")
+
+        # ── 당일 결과 요약 (실제 체결가로 PnL 보정, 타임아웃 보호)
+        try:
+            if session_closed:
+                sell_fills = kis.get_sell_fills(today)
+                if sell_fills:
+                    try:
+                        query.update_sell_prices(today, sell_fills)
+                    except Exception as e:
+                        log.warning(f"DB 매도 체결가 보정 실패: {e}")
+                for t, p in session_closed.items():
+                    if t in sell_fills:
+                        avg_price, total_qty = sell_fills[t]
+                        old_pnl = p.realized_pnl
+                        p.realized_pnl = (
+                            (avg_price - p.buy_price) * total_qty
+                            - avg_price * total_qty * SELL_COST_RATE
+                        )
+                        if abs(old_pnl - p.realized_pnl) > 1:
+                            log.info(
+                                f"  PnL 보정: {t}  추정={old_pnl:+,.0f} → 실제={p.realized_pnl:+,.0f}"
+                                f"  (평균체결가={avg_price:,.0f}, 수량={total_qty})"
+                            )
+
+                total_pnl = sum(p.realized_pnl for p in session_closed.values())
+                winners = sum(1 for p in session_closed.values() if p.realized_pnl > 0)
+                message = (
+                    f"[당일 결과] 청산 {len(session_closed)}종목"
+                    f"  손익 {total_pnl:+,.0f}원"
+                    f"  수익 {winners}/손실 {len(session_closed) - winners}"
+                )
+                log.info(message)
+                messageutils.send_message(message)
+
+                for t, p in session_closed.items():
+                    log.info(f"  {t} {p.name}  {p.realized_pnl:+,.0f}원")
+        except Exception as e:
+            log.warning(f"당일 결과 요약 실패 (position은 이미 저장됨): {e}")
         swing_remaining = {t: p for t, p in positions.items() if p.max_hold_days > 0}
         log.info(
             f"[세션 종료] 스윙 잔여={len(swing_remaining)}종목"
