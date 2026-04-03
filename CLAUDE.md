@@ -36,6 +36,7 @@ KIS_ENV=real uv run python -m wye.blsh
 
 # 최적화
 uv run python -m wye.blsh.domestic.optimize.grid_search [--rebuild|--years N|--alternating]
+uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward [--train-months 18 --val-months 6]
 uv run python -m wye.blsh.domestic.optimize.signal_analysis
 uv run python -m wye.blsh.domestic.optimize.supply_cap_test
 

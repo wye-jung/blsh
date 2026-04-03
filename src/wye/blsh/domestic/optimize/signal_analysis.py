@@ -106,6 +106,7 @@ def analyze_flags(cache: OptCache, params: Params) -> tuple[list[FlagStats], Sta
             # 베이스라인 집계
             baseline.trades += 1
             baseline.total_ret += ret_pct
+            baseline.ret_sq += ret_pct * ret_pct
             if result_type.startswith("익절"):
                 baseline.wins += 1
             elif result_type == "손절":
@@ -191,6 +192,7 @@ def _backtest_disabled(cache: OptCache, params: Params, disabled: frozenset[str]
             result_type, ret_pct = res
             st.trades += 1
             st.total_ret += ret_pct
+            st.ret_sq += ret_pct * ret_pct
             if result_type.startswith("익절"):
                 st.wins += 1
             elif result_type == "손절":

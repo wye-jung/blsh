@@ -25,9 +25,25 @@
 ### 최적화 지표
 
 ```
-metric = total_return x min(1.0, trades / 100)
+metric = avg_ret x sqrt(trades)
 ```
-거래 수 < 30건이면 페널티 적용 (통계적 유의성).
+신호 품질(평균 수익률)을 우선하면서 거래 수가 적으면 sqrt로 자연스럽게 불이익.
+30건 미만은 통계 무의미로 제외 (-9999).
+
+### GRID 범위
+
+| 파라미터 | 탐색 범위 |
+|---------|----------|
+| invest_min_score | 9, 10, 11, 12, 13 |
+| atr_sl_mult | 1.0 ~ 4.0 (0.5 step) |
+| atr_tp_mult | 1.5, 2.0, 2.5, 3.0, 4.0, 5.0 |
+| max_hold_days_rev | 3, 5, 7, 10, 15, 20 |
+| max_hold_days_mix | 2, 3, 5, 7, 10 |
+| max_hold_days_mom | 1, 2, 3 |
+| tp1_mult | 0.7, 1.0, 1.5 |
+| tp1_ratio | 0.3, 0.5, 0.7, 1.0 |
+
+최적 파라미터가 GRID 경계값에 도달하면 `[BOUNDARY]` 경고 출력.
 
 ### 사용법
 
@@ -41,6 +57,23 @@ uv run python -m wye.blsh.domestic.optimize.grid_search --alternating   # Stage1
 결과는 `config.py`의 `Optimized` 클래스와 `SIGNAL_SCORES`에 자동 기록.
 
 크론: 매주 토요일 02:00 `--alternating` 모드로 실행.
+
+## Walk-Forward 검증
+
+과적합 방지를 위한 롤링 윈도우 검증. 기존 최적화와 독립적으로 실행.
+
+- 전체 기간 캐시 1개를 빌드, 날짜 필터로 train/val 분리
+- 각 train 윈도우에서 Stage 2(매매 파라미터)만 최적화
+- val 윈도우에서 backtest → train 대비 avg_ret 비율로 과적합 판정
+- val_avg_ret / train_avg_ret < 50% → OVERFIT 경고
+
+```bash
+uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward                 # 기본 (18개월 train + 6개월 val)
+uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --train-months 12 --val-months 6
+uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --step-months 6  # 6개월 간격 롤링
+```
+
+`--alternating`과 `--walkforward`는 상호 배타.
 
 ## signal_analysis.py
 

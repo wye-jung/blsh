@@ -190,7 +190,7 @@ def backtest_nb(
     """전체 백테스트 루프 (numba JIT).
 
     flat numpy 배열로 전환된 신호 데이터를 받아 Python 오버헤드 없이 실행.
-    Returns: (trades, wins, losses, holds, total_ret)
+    Returns: (trades, wins, losses, holds, total_ret, ret_sq)
     """
     n_sigs = len(buy_arr)
     trades = 0
@@ -198,6 +198,7 @@ def backtest_nb(
     losses = 0
     holds = 0
     total_ret = 0.0
+    ret_sq = 0.0
 
     for i in range(n_sigs):
         eff_score = int(score_arr[i])
@@ -235,6 +236,7 @@ def backtest_nb(
 
         trades += 1
         total_ret += ret_pct
+        ret_sq += ret_pct * ret_pct
         if res_id <= 3:
             if res_id == 0:
                 losses += 1
@@ -243,7 +245,7 @@ def backtest_nb(
         else:
             holds += 1
 
-    return trades, wins, losses, holds, total_ret
+    return trades, wins, losses, holds, total_ret, ret_sq
 
 
 @nb.jit(nopython=True, cache=True, fastmath=True)
@@ -265,6 +267,7 @@ def backtest_scores_nb(
         has_pov_arr: (N,) int64 — P_OV 여부 (0/1)
         score_values: (n_flags,) int64 — 플래그 인덱스별 점수
         mom_mask, rev_mask: int64 — 모멘텀/전환 플래그 비트마스크
+    Returns: (trades, wins, losses, holds, total_ret, ret_sq)
     """
     n_sigs = len(buy_arr)
     trades = 0
@@ -272,6 +275,7 @@ def backtest_scores_nb(
     losses = 0
     holds = 0
     total_ret = 0.0
+    ret_sq = 0.0
 
     for i in range(n_sigs):
         fm = flag_mask_arr[i]
@@ -345,6 +349,7 @@ def backtest_scores_nb(
 
         trades += 1
         total_ret += ret_pct
+        ret_sq += ret_pct * ret_pct
         if res_id == 0:
             losses += 1
         elif res_id <= 3:
@@ -352,7 +357,7 @@ def backtest_scores_nb(
         else:
             holds += 1
 
-    return trades, wins, losses, holds, total_ret
+    return trades, wins, losses, holds, total_ret, ret_sq
 
 
 def sim_one(
