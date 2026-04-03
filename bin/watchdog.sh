@@ -128,20 +128,24 @@ main() {
     if [ "$mode" = "stop" ]; then
         local pos_saved="true"
 
-        # 1. 트레이더에 SIGINT (Python finally → position 저장)
+        # 1. 트레이더에 SIGINT (Python finally → position 저장 → PID 파일 삭제)
         if [ -f "$PID_FILE" ]; then
             local trader_pid
             trader_pid=$(cat "$PID_FILE")
             kill -INT "$trader_pid" 2>/dev/null
             echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
+            # PID 파일 삭제 = python finally 완료 (position 저장 포함)
             for i in $(seq 1 60); do
-                kill -0 "$trader_pid" 2>/dev/null || break
+                [ -f "$PID_FILE" ] || break
                 sleep 1
             done
-            if kill -0 "$trader_pid" 2>/dev/null; then
+            if [ -f "$PID_FILE" ]; then
                 echo "[$(date '+%H:%M:%S')] 트레이더 응답 없음 (60초) → 강제 종료"
                 kill -9 "$trader_pid" 2>/dev/null
+                rm -f "$PID_FILE"
                 pos_saved="false"
+            else
+                echo "[$(date '+%H:%M:%S')] 트레이더 종료 완료 (position 저장됨)"
             fi
         fi
 
