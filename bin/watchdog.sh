@@ -25,6 +25,7 @@ ENV_DIR="$HOME/.blsh/${KIS_ENV}"
 LOG_FILE="${ENV_DIR}/logs/trader.log"
 PID_FILE="${ENV_DIR}/data/trader.pid"
 MONITOR_PID_FILE="${ENV_DIR}/data/monitor.pid"
+WATCHDOG_PID_FILE="${ENV_DIR}/data/watchdog.pid"
 CHECK_INTERVAL=60  # 프로세스 생존 확인 주기 (초)
 
 # ── 텔레그램 알림 (env에서 토큰 로드)
@@ -125,27 +126,41 @@ main() {
     fi
 
     if [ "$mode" = "stop" ]; then
-        # 트레이더 종료
+        # watchdog 본체 종료 (SIGTERM → cleanup()이 트레이더+모니터 종료)
+        if [ -f "$WATCHDOG_PID_FILE" ]; then
+            local wd_pid
+            wd_pid=$(cat "$WATCHDOG_PID_FILE")
+            if kill -0 "$wd_pid" 2>/dev/null; then
+                echo "[$(date '+%H:%M:%S')] watchdog 종료 요청 (PID: $wd_pid)"
+                kill "$wd_pid" 2>/dev/null
+                # 종료 대기 (최대 15초)
+                for i in $(seq 1 15); do
+                    kill -0 "$wd_pid" 2>/dev/null || break
+                    sleep 1
+                done
+                if kill -0 "$wd_pid" 2>/dev/null; then
+                    echo "[$(date '+%H:%M:%S')] watchdog 강제 종료"
+                    kill -9 "$wd_pid" 2>/dev/null
+                fi
+                echo "[$(date '+%H:%M:%S')] watchdog 종료 완료"
+            else
+                echo "[$(date '+%H:%M:%S')] watchdog 이미 종료됨"
+            fi
+            rm -f "$WATCHDOG_PID_FILE"
+        fi
+        # watchdog이 없는 경우 직접 정리
         if [ -f "$PID_FILE" ]; then
             local trader_pid
             trader_pid=$(cat "$PID_FILE")
             if kill -0 "$trader_pid" 2>/dev/null; then
                 echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
                 kill -INT "$trader_pid" 2>/dev/null
-                wait "$trader_pid" 2>/dev/null
-                echo "[$(date '+%H:%M:%S')] 트레이더 종료 완료"
-            else
-                echo "[$(date '+%H:%M:%S')] 트레이더 이미 종료됨 (PID: $trader_pid)"
             fi
             rm -f "$PID_FILE"
-        else
-            echo "[$(date '+%H:%M:%S')] 트레이더 PID 파일 없음"
         fi
-        # 로그 모니터 종료
         if [ -f "$MONITOR_PID_FILE" ]; then
             kill "$(cat "$MONITOR_PID_FILE")" 2>/dev/null
             rm -f "$MONITOR_PID_FILE"
-            echo "[$(date '+%H:%M:%S')] 로그 모니터 종료"
         fi
         exit 0
     fi
@@ -168,6 +183,9 @@ main() {
         fi
         rm -f "$PID_FILE"
     fi
+
+    # watchdog PID 저장
+    echo $$ > "$WATCHDOG_PID_FILE"
 
     # 로그 모니터 시작
     start_log_monitor
@@ -202,6 +220,7 @@ cleanup() {
         wait "$trader_pid" 2>/dev/null
         rm -f "$PID_FILE"
     fi
+    rm -f "$WATCHDOG_PID_FILE"
     exit 0
 }
 # status/stop은 trap 불필요 → main 내부에서 exit 0으로 즉시 종료
