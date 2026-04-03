@@ -113,6 +113,7 @@ watch_trader() {
 # ── 메인
 main() {
     local mode="${1:-full}"  # full(기본) 또는 monitor
+    _WATCHDOG_MODE="$mode"
 
     if [ "$mode" = "status" ]; then
         if [ -n "$2" ]; then
@@ -185,18 +186,18 @@ main() {
 }
 
 # 시그널 핸들러 (Ctrl+C 등)
+_WATCHDOG_MODE=""
 cleanup() {
     echo "[$(date '+%H:%M:%S')] 종료 시그널 수신"
     if [ -f "$MONITOR_PID_FILE" ]; then
         kill "$(cat "$MONITOR_PID_FILE")" 2>/dev/null
         rm -f "$MONITOR_PID_FILE"
     fi
-    if [ -f "$PID_FILE" ]; then
+    # monitor 모드에서는 로그 모니터만 종료, 트레이더는 유지
+    if [ "$_WATCHDOG_MODE" != "monitor" ] && [ -f "$PID_FILE" ]; then
         local trader_pid
         trader_pid=$(cat "$PID_FILE")
         echo "[$(date '+%H:%M:%S')] 트레이더 종료 대기 (SIGINT → Python finally 실행)"
-        # [FIX] SIGTERM → SIGINT: Python KeyboardInterrupt 발생 → try/finally 블록 실행 보장
-        #       (SIGTERM은 Python finally 미실행 → 포지션 미저장, WS 비정상 종료)
         kill -INT "$trader_pid" 2>/dev/null
         wait "$trader_pid" 2>/dev/null
         rm -f "$PID_FILE"
