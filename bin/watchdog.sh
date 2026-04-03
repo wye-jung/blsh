@@ -126,42 +126,44 @@ main() {
     fi
 
     if [ "$mode" = "stop" ]; then
-        # watchdog 본체 종료 (SIGTERM → cleanup()이 트레이더+모니터 종료)
-        if [ -f "$WATCHDOG_PID_FILE" ]; then
-            local wd_pid
-            wd_pid=$(cat "$WATCHDOG_PID_FILE")
-            if kill -0 "$wd_pid" 2>/dev/null; then
-                echo "[$(date '+%H:%M:%S')] watchdog 종료 요청 (PID: $wd_pid)"
-                kill "$wd_pid" 2>/dev/null
-                # 종료 대기 (최대 15초)
-                for i in $(seq 1 15); do
-                    kill -0 "$wd_pid" 2>/dev/null || break
-                    sleep 1
-                done
-                if kill -0 "$wd_pid" 2>/dev/null; then
-                    echo "[$(date '+%H:%M:%S')] watchdog 강제 종료"
-                    kill -9 "$wd_pid" 2>/dev/null
-                fi
-                echo "[$(date '+%H:%M:%S')] watchdog 종료 완료"
-            else
-                echo "[$(date '+%H:%M:%S')] watchdog 이미 종료됨"
-            fi
-            rm -f "$WATCHDOG_PID_FILE"
-        fi
-        # watchdog이 없는 경우 직접 정리
+        # 1. 트레이더 종료 (SIGINT → Python finally 실행 → position 저장)
         if [ -f "$PID_FILE" ]; then
             local trader_pid
             trader_pid=$(cat "$PID_FILE")
             if kill -0 "$trader_pid" 2>/dev/null; then
                 echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
                 kill -INT "$trader_pid" 2>/dev/null
+                for i in $(seq 1 30); do
+                    kill -0 "$trader_pid" 2>/dev/null || break
+                    sleep 1
+                done
+                echo "[$(date '+%H:%M:%S')] 트레이더 종료 완료"
             fi
             rm -f "$PID_FILE"
         fi
+        # 2. 로그 모니터 종료
         if [ -f "$MONITOR_PID_FILE" ]; then
             kill "$(cat "$MONITOR_PID_FILE")" 2>/dev/null
             rm -f "$MONITOR_PID_FILE"
         fi
+        # 3. watchdog 본체 + 자식 프로세스 종료
+        if [ -f "$WATCHDOG_PID_FILE" ]; then
+            local wd_pid
+            wd_pid=$(cat "$WATCHDOG_PID_FILE")
+            if kill -0 "$wd_pid" 2>/dev/null; then
+                echo "[$(date '+%H:%M:%S')] watchdog 종료 (PID: $wd_pid)"
+                # 자식 프로세스 먼저 종료 (로그 모니터 서브셸 등)
+                pkill -P "$wd_pid" 2>/dev/null
+                kill "$wd_pid" 2>/dev/null
+                sleep 1
+                # 잔존 확인 후 강제 종료
+                pkill -9 -P "$wd_pid" 2>/dev/null
+                kill -9 "$wd_pid" 2>/dev/null
+            fi
+            rm -f "$WATCHDOG_PID_FILE"
+        fi
+        send_alert "🔴 트레이더 수동 종료 (stop)"
+        echo "[$(date '+%H:%M:%S')] 전체 종료 완료"
         exit 0
     fi
 
