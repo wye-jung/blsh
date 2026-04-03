@@ -3,11 +3,7 @@ import logging
 import os
 import signal
 import sys
-from wye.blsh.common import dtutils
 from wye.blsh.common.env import DATA_DIR, KIS_ENV
-from wye.blsh.database import query
-from wye.blsh.domestic import scanner, collector
-from wye.blsh.domestic import trader
 
 log = logging.getLogger(__name__)
 
@@ -17,6 +13,7 @@ POSITIONS_FILE = DATA_DIR / "positions.json"
 
 def _start():
     """PID 파일 기록 후 트레이더 실행. 종료 시 PID 파일 삭제."""
+    from wye.blsh.domestic import trader
     PID_FILE.write_text(str(os.getpid()))
     try:
         trader.run()
@@ -84,6 +81,7 @@ def _status(sub: str | None = None):
             )
 
     elif sub == "pendings":
+        from wye.blsh.common import dtutils
         from wye.blsh.domestic.kis_client import KISClient
         kis = KISClient()
         today = dtutils.today()
@@ -123,6 +121,7 @@ def _status(sub: str | None = None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
+        from wye.blsh.domestic import trader
         trader.run()
     elif sys.argv[1] == "start":
         _start()
@@ -131,6 +130,9 @@ if __name__ == "__main__":
     elif sys.argv[1] == "status":
         _status(sys.argv[2] if len(sys.argv) > 2 else None)
     elif sys.argv[1] == "po":
+        from wye.blsh.common import dtutils
+        from wye.blsh.database import query
+        from wye.blsh.domestic import scanner, collector
         collector.collect_holiday()
         today = dtutils.today()
         kh = query.get_krx_holiday(today)
