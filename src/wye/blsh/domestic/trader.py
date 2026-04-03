@@ -730,8 +730,41 @@ def _check_pending_orders(
 
         elif now_mono >= po.deadline:
             log.info(f"  [po] {PO_CANCEL_MIN}분 경과 미체결 취소: {ticker}")
-            if not kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd):
-                log.warning(f"  [po] 미체결 취소 실패: {ticker} odno={po.odno}")
+            if kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd):
+                done.append(ticker)
+                continue
+
+            # 취소 실패 → 이미 체결 가능성, 잔고 재확인
+            log.warning(f"  [po] 취소 실패 → 잔고 재확인: {ticker}")
+            holdings_api, avg_prices, _ = kis.get_balance()
+            filled_qty = holdings_api.get(ticker, 0)
+            if filled_qty > 0:
+                buy_price = avg_prices.get(ticker) or po.entry_price
+                log.info(
+                    f"  [po] 취소실패+잔고확인 → 체결 감지: {ticker}"
+                    f"  {filled_qty}주 @ {buy_price:,.0f}"
+                )
+                try:
+                    pos = _make_position(
+                        po.cand, buy_price, filled_qty, today,
+                        po.cand.get("expiry_date") or "",
+                        po_type=po.po_type, excg_cd=po.excg_cd,
+                        ticker=ticker,
+                    )
+                    positions[ticker] = pos
+                    _save_history(
+                        "buy", ticker, pos.name, filled_qty,
+                        buy_price, "po지정가체결(지연감지)", pos.po_type,
+                    )
+                    log.info(
+                        f"  ✅ 지연체결: {ticker} {pos.name}  매수가={buy_price:,.0f}"
+                        f"  SL={pos.sl:,.0f}  TP1={pos.tp1:,.0f}  TP2={pos.tp2:,.0f}"
+                    )
+                    changed = True
+                except Exception as e:
+                    log.error(f"  지연체결 Position 생성 실패 ({ticker}): {e}")
+            else:
+                log.warning(f"  [po] 취소 실패 + 잔고 없음: {ticker} (무시)")
             done.append(ticker)
 
     for t in done:
