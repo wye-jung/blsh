@@ -115,7 +115,11 @@ main() {
     local mode="${1:-full}"  # full(기본) 또는 monitor
 
     if [ "$mode" = "status" ]; then
-        $HOME/.local/bin/uv run python -m wye.blsh status "$2"
+        if [ -n "$2" ]; then
+            $HOME/.local/bin/uv run python -m wye.blsh status "$2"
+        else
+            $HOME/.local/bin/uv run python -m wye.blsh status
+        fi
         exit 0
     fi
 
