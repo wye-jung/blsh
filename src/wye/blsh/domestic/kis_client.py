@@ -307,6 +307,47 @@ class KISClient:
             log.debug(f"당일 매도 체결 일괄 조회 실패: {e}")
         return {}
 
+    def get_pending_orders(self, today: str) -> list[dict]:
+        """당일 미체결 주문 조회. [{ticker, name, side, qty, price, odno}, ...]"""
+        try:
+            self.rate_limiter.wait()
+            with _api_sem:
+                df1, _ = ds.inquire_daily_ccld(
+                    env_dv=self.env_dv,
+                    pd_dv="inner",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    inqr_strt_dt=today,
+                    inqr_end_dt=today,
+                    sll_buy_dvsn_cd="00",  # 전체
+                    ccld_dvsn="02",        # 미체결만
+                    inqr_dvsn="00",
+                    inqr_dvsn_3="00",
+                    excg_id_dvsn_cd="ALL",
+                )
+            if df1 is None or df1.empty:
+                return []
+            results = []
+            for _, row in df1.iterrows():
+                ord_qty = int(row.get("ord_qty", 0) or 0)
+                ccld_qty = int(row.get("tot_ccld_qty", 0) or row.get("ccld_qty", 0) or 0)
+                rmn = ord_qty - ccld_qty
+                if rmn <= 0:
+                    continue
+                side = "매수" if str(row.get("sll_buy_dvsn_cd", "")) == "02" else "매도"
+                results.append({
+                    "ticker": str(row.get("pdno", "")),
+                    "name": str(row.get("prdt_name", "")),
+                    "side": side,
+                    "qty": rmn,
+                    "price": int(float(row.get("ord_unpr", 0) or 0)),
+                    "odno": str(row.get("odno", "")),
+                })
+            return results
+        except Exception as e:
+            log.debug(f"미체결 조회 실패: {e}")
+        return []
+
     def sell_nxt(self, ticker: str, qty: int, price: int, reason: str = "") -> bool:
         """NXT 지정가 매도. NXT는 시장가 불가이므로 지정가만 지원. 성공 시 True."""
         try:

@@ -5,6 +5,7 @@
 # 사용법:
 #   bin/watchdog.sh          # 트레이더 실행 + 모니터링
 #   bin/watchdog.sh monitor  # 모니터링만 (트레이더는 이미 실행 중)
+#   bin/watchdog.sh stop     # 트레이더 + watchdog 종료
 #
 # 크론탭 예시 (매일 07:55 시작):
 #   55 7 * * 1-5 /home/wye/workspace/blsh/bin/watchdog.sh >> ~/.blsh/logs/watchdog.log 2>&1
@@ -110,6 +111,32 @@ watch_trader() {
 # ── 메인
 main() {
     local mode="${1:-full}"  # full(기본) 또는 monitor
+
+    if [ "$mode" = "stop" ]; then
+        # 트레이더 종료
+        if [ -f "$PID_FILE" ]; then
+            local trader_pid
+            trader_pid=$(cat "$PID_FILE")
+            if kill -0 "$trader_pid" 2>/dev/null; then
+                echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
+                kill -INT "$trader_pid" 2>/dev/null
+                wait "$trader_pid" 2>/dev/null
+                echo "[$(date '+%H:%M:%S')] 트레이더 종료 완료"
+            else
+                echo "[$(date '+%H:%M:%S')] 트레이더 이미 종료됨 (PID: $trader_pid)"
+            fi
+            rm -f "$PID_FILE"
+        else
+            echo "[$(date '+%H:%M:%S')] 트레이더 PID 파일 없음"
+        fi
+        # 로그 모니터 종료
+        if [ -f "$MONITOR_PID_FILE" ]; then
+            kill "$(cat "$MONITOR_PID_FILE")" 2>/dev/null
+            rm -f "$MONITOR_PID_FILE"
+            echo "[$(date '+%H:%M:%S')] 로그 모니터 종료"
+        fi
+        exit 0
+    fi
 
     if [ "$mode" = "monitor" ]; then
         # 모니터링만 (트레이더는 이미 실행 중)
