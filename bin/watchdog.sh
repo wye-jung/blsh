@@ -3,9 +3,11 @@
 # 트레이더 로그 모니터 + 프로세스 감시
 # ─────────────────────────────────────────
 # 사용법:
-#   bin/watchdog.sh          # 트레이더 실행 + 모니터링
-#   bin/watchdog.sh monitor  # 모니터링만 (트레이더는 이미 실행 중)
-#   bin/watchdog.sh stop     # 트레이더 + watchdog 종료
+#   bin/watchdog.sh              # 트레이더 실행 + 모니터링
+#   bin/watchdog.sh monitor      # 모니터링만 (트레이더는 이미 실행 중)
+#   bin/watchdog.sh stop         # 트레이더 + watchdog 종료
+#   bin/watchdog.sh status       # 트레이더 상태 확인
+#   bin/watchdog.sh status positions/pendings/holdings/cash
 #
 # 크론탭 예시 (매일 07:55 시작):
 #   55 7 * * 1-5 /home/wye/workspace/blsh/bin/watchdog.sh >> ~/.blsh/logs/watchdog.log 2>&1
@@ -111,6 +113,11 @@ watch_trader() {
 # ── 메인
 main() {
     local mode="${1:-full}"  # full(기본) 또는 monitor
+
+    if [ "$mode" = "status" ]; then
+        $HOME/.local/bin/uv run python -m wye.blsh status "$2"
+        exit 0
+    fi
 
     if [ "$mode" = "stop" ]; then
         # 트레이더 종료
