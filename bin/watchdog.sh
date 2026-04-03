@@ -134,12 +134,12 @@ main() {
             trader_pid=$(cat "$PID_FILE")
             kill -INT "$trader_pid" 2>/dev/null
             echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
-            for i in $(seq 1 30); do
+            for i in $(seq 1 60); do
                 kill -0 "$trader_pid" 2>/dev/null || break
                 sleep 1
             done
             if kill -0 "$trader_pid" 2>/dev/null; then
-                echo "[$(date '+%H:%M:%S')] 트레이더 응답 없음 → 강제 종료"
+                echo "[$(date '+%H:%M:%S')] 트레이더 응답 없음 (60초) → 강제 종료"
                 kill -9 "$trader_pid" 2>/dev/null
                 pos_saved="false"
             fi
