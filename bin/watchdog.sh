@@ -126,7 +126,7 @@ main() {
     fi
 
     if [ "$mode" = "stop" ]; then
-        send_alert "🔴 트레이더 수동 종료 (stop)"
+        send_alert "🟡 stop 요청되었습니다."
 
         # 1. 트레이더에 SIGINT (Python finally → position 저장)
         if [ -f "$PID_FILE" ]; then
@@ -134,20 +134,23 @@ main() {
             trader_pid=$(cat "$PID_FILE")
             kill -INT "$trader_pid" 2>/dev/null
             echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
+            # position 저장 완료 대기
+            for i in $(seq 1 30); do
+                kill -0 "$trader_pid" 2>/dev/null || break
+                sleep 1
+            done
+            send_alert "✅ position 저장되었습니다."
         fi
 
-        # 2. watchdog 본체 종료 → cleanup()이 트레이더 wait + 모니터 종료 처리
+        # 2. watchdog 본체 종료 → cleanup()이 모니터 종료 처리
         if [ -f "$WATCHDOG_PID_FILE" ]; then
             local wd_pid
             wd_pid=$(cat "$WATCHDOG_PID_FILE")
             kill "$wd_pid" 2>/dev/null
-            echo "[$(date '+%H:%M:%S')] watchdog 종료 요청 (PID: $wd_pid)"
-            # 최대 10초 대기
             for i in $(seq 1 10); do
                 kill -0 "$wd_pid" 2>/dev/null || break
                 sleep 1
             done
-            # 잔존 시 강제 종료
             if kill -0 "$wd_pid" 2>/dev/null; then
                 pkill -9 -P "$wd_pid" 2>/dev/null
                 kill -9 "$wd_pid" 2>/dev/null
@@ -157,6 +160,7 @@ main() {
 
         # 3. PID 파일 정리
         rm -f "$PID_FILE" "$MONITOR_PID_FILE"
+        send_alert "🔴 stop 되었습니다."
         echo "[$(date '+%H:%M:%S')] 전체 종료 완료"
         exit 0
     fi
