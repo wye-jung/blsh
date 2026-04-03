@@ -121,8 +121,7 @@ def _status(sub: str | None = None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        from wye.blsh.domestic import trader
-        trader.run()
+        _start()
     elif sys.argv[1] == "start":
         _start()
     elif sys.argv[1] == "stop":
