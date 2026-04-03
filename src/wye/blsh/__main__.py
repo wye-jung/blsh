@@ -98,46 +98,23 @@ def _status(sub: str | None = None):
                 f"  {o['qty']}주 @ {o['price']:>10,}원  odno={o['odno']}"
             )
 
-    elif sub == "holdings":
+    elif sub in ("holdings", "cash"):
         from wye.blsh.domestic.kis_client import KISClient
-        from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
         kis = KISClient()
-        kis.rate_limiter.wait()
-        df1, df2 = ds.inquire_balance(
-            env_dv=kis.env_dv,
-            cano=kis.trenv.my_acct,
-            acnt_prdt_cd=kis.trenv.my_prod,
-            afhr_flpr_yn="N",
-            inqr_dvsn="02",
-            unpr_dvsn="01",
-            fund_sttl_icld_yn="N",
-            fncg_amt_auto_rdpt_yn="N",
-            prcs_dvsn="01",
-        )
-        if df1 is None or df1.empty:
-            print("[잔고] 보유종목 없음")
-        else:
-            rows = df1[df1["hldg_qty"].astype(int) > 0]
-            print(f"[잔고] {len(rows)}종목  (KIS_ENV: {KIS_ENV})")
-            for _, r in rows.iterrows():
-                ticker = str(r.get("pdno", ""))
-                name = str(r.get("prdt_name", ""))
-                qty = int(r.get("hldg_qty", 0))
-                avg_price = float(r.get("pchs_avg_pric", 0))
-                evlu_rt = float(r.get("evlu_pfls_rt", 0))
-                print(
-                    f"  {ticker} {name:<10s}  {qty:>5}주"
-                    f"  매입={avg_price:>10,.0f}  수익률={evlu_rt:>+6.2f}%"
-                )
-        if df2 is not None and not df2.empty:
-            cash = float(df2.iloc[0].get("dnca_tot_amt", 0))
+        holdings, avg_prices, cash = kis.get_balance()
+        if sub == "holdings":
+            if not holdings:
+                print("[잔고] 보유종목 없음")
+            else:
+                print(f"[잔고] {len(holdings)}종목  (KIS_ENV: {KIS_ENV})")
+                for ticker, qty in holdings.items():
+                    avg_price = avg_prices.get(ticker, 0)
+                    print(
+                        f"  {ticker}  {qty:>5}주  매입={avg_price:>10,.0f}"
+                    )
             print(f"  현금: {cash:>12,.0f}원")
-
-    elif sub == "cash":
-        from wye.blsh.domestic.kis_client import KISClient
-        kis = KISClient()
-        _, _, cash = kis.get_balance()
-        print(f"[현금] 가용: {cash:>12,.0f}원  (KIS_ENV: {KIS_ENV})")
+        else:
+            print(f"[현금] 가용: {cash:>12,.0f}원  (KIS_ENV: {KIS_ENV})")
 
     else:
         print(f"[오류] 알 수 없는 서브커맨드: {sub}")
