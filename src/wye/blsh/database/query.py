@@ -56,6 +56,12 @@ def get_max_ohlcv_date():
     return select_one("select max(trd_dd) as d from idx_stk_ohlcv")["d"]
 
 
+def get_ohlcv_fetcted_at(base_date):
+    return select_one(
+        "select min(fetched_at) as t from idx_stk_ohlcv where trd_dd=:bd", bd=base_date
+    )["t"]
+
+
 def get_fetched_at(base_date):
     return select_one(
         """
@@ -298,6 +304,7 @@ def save_trade_history(
 ):
     """매매 이력 1건 INSERT. ~1-5ms (동기, 스레드 불필요)."""
     from wye.blsh.common.env import KIS_ENV
+
     with Session(engine) as session:
         session.execute(
             text(
@@ -330,6 +337,7 @@ def update_sell_prices(date_str: str, fills: dict[str, tuple[float, int]]):
     if not fills:
         return
     from wye.blsh.common.env import KIS_ENV
+
     with Session(engine) as session:
         for ticker, (avg_price, _) in fills.items():
             session.execute(
@@ -353,6 +361,7 @@ def update_sell_prices(date_str: str, fills: dict[str, tuple[float, int]]):
 def get_trade_history(date_str: str | None = None):
     """당일 매매 이력 조회. date_str: YYYYMMDD (미지정 시 오늘). KIS_ENV 자동 필터."""
     from wye.blsh.common.env import KIS_ENV
+
     date_str = date_str or dtutils.today()
     return select_all(
         """
@@ -376,6 +385,7 @@ def get_latest_buy_history(tickers: list[str]) -> dict[str, dict]:
     if not tickers:
         return {}
     from wye.blsh.common.env import KIS_ENV
+
     with Session(engine) as session:
         stmt = text(
             """
@@ -390,7 +400,11 @@ def get_latest_buy_history(tickers: list[str]) -> dict[str, dict]:
             ORDER BY ticker, traded_at DESC
             """
         ).bindparams(bindparam("tickers", expanding=True))
-        rows = session.execute(stmt, {"tickers": list(tickers), "env": KIS_ENV}).mappings().all()
+        rows = (
+            session.execute(stmt, {"tickers": list(tickers), "env": KIS_ENV})
+            .mappings()
+            .all()
+        )
     return {r["ticker"]: dict(r) for r in rows}
 
 
@@ -402,6 +416,7 @@ def get_today_sell_history(tickers: list[str], today: str) -> dict[str, dict]:
     if not tickers:
         return {}
     from wye.blsh.common.env import KIS_ENV
+
     with Session(engine) as session:
         stmt = text(
             """
@@ -414,7 +429,13 @@ def get_today_sell_history(tickers: list[str], today: str) -> dict[str, dict]:
             ORDER BY ticker, traded_at DESC
             """
         ).bindparams(bindparam("tickers", expanding=True))
-        rows = session.execute(stmt, {"tickers": list(tickers), "d": today, "env": KIS_ENV}).mappings().all()
+        rows = (
+            session.execute(
+                stmt, {"tickers": list(tickers), "d": today, "env": KIS_ENV}
+            )
+            .mappings()
+            .all()
+        )
     return {r["ticker"]: dict(r) for r in rows}
 
 

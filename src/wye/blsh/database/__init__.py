@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 def _make_engine():
     from wye.blsh.common.env import DB_URL
+
     return create_engine(DB_URL)
 
 
@@ -38,6 +39,7 @@ class _LazyEngine:
 engine = _LazyEngine()
 
 import atexit
+
 atexit.register(lambda: engine.dispose())
 
 
@@ -45,7 +47,7 @@ def create(table_name, df, if_exists="append"):
     with engine.connect() as conn:
         df.to_sql(table_name, con=conn, if_exists=if_exists, index=False)
         conn.commit()
-    print(f"Inserted {len(df)} rows into {table_name} table")
+    return len(df)
 
 
 def select_one(sql, **params):
@@ -80,7 +82,7 @@ class ModelManager:
         self.model = model
 
     def create(self, df):
-        create(self.model.__tablename__, df)
+        return create(self.model.__tablename__, df)
 
     def read(self, **filters) -> pd.DataFrame:
         with Session(engine) as session:
@@ -100,7 +102,4 @@ class ModelManager:
             stmt = _delete(self.model).filter_by(**filters)
             result = session.execute(stmt)
             session.commit()
-            print(
-                f"Deleted {result.rowcount} rows from {self.model.__tablename__} table"
-            )
             return result.rowcount

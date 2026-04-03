@@ -14,6 +14,7 @@ POSITIONS_FILE = DATA_DIR / "positions.json"
 def _start():
     """PID 파일 기록 후 트레이더 실행. 종료 시 PID 파일 삭제."""
     from wye.blsh.domestic import trader
+
     PID_FILE.write_text(str(os.getpid()))
     try:
         trader.run()
@@ -23,6 +24,12 @@ def _start():
 
 def _stop():
     """PID 파일에서 프로세스 ID를 읽어 SIGINT 전송."""
+    watchdog_pid_file = DATA_DIR / "watchdog.pid"
+    if watchdog_pid_file.exists():
+        log.warning(
+            "watchdog가 실행 중입니다. 트레이더만 종료됩니다. "
+            "전체 종료는 'bin/watchdog.sh stop'을 사용하세요."
+        )
     if not PID_FILE.exists():
         log.error("트레이더 PID 파일 없음 → 실행 중인 트레이더가 없습니다.")
         return
@@ -83,6 +90,7 @@ def _status(sub: str | None = None):
     elif sub == "pendings":
         from wye.blsh.common import dtutils
         from wye.blsh.domestic.kis_client import KISClient
+
         kis = KISClient()
         today = dtutils.today()
         orders = kis.get_pending_orders(today)
@@ -98,6 +106,7 @@ def _status(sub: str | None = None):
 
     elif sub in ("holdings", "cash"):
         from wye.blsh.domestic.kis_client import KISClient
+
         kis = KISClient()
         holdings, avg_prices, cash = kis.get_balance()
         if sub == "holdings":
@@ -107,9 +116,7 @@ def _status(sub: str | None = None):
                 print(f"[잔고] {len(holdings)}종목  (KIS_ENV: {KIS_ENV})")
                 for ticker, qty in holdings.items():
                     avg_price = avg_prices.get(ticker, 0)
-                    print(
-                        f"  {ticker}  {qty:>5}주  매입={avg_price:>10,.0f}"
-                    )
+                    print(f"  {ticker}  {qty:>5}주  매입={avg_price:>10,.0f}")
             print(f"  현금: {cash:>12,.0f}원")
         else:
             print(f"[현금] 가용: {cash:>12,.0f}원  (KIS_ENV: {KIS_ENV})")
@@ -132,11 +139,14 @@ if __name__ == "__main__":
         from wye.blsh.common import dtutils
         from wye.blsh.database import query
         from wye.blsh.domestic import scanner, collector
+
         collector.collect_holiday()
         today = dtutils.today()
         kh = query.get_krx_holiday(today)
         if kh is None:
-            log.error(f"오늘({today}) KRX 휴장일 정보 없음 → po 생성 불가. collect_holiday() 재실행 필요.")
+            log.error(
+                f"오늘({today}) KRX 휴장일 정보 없음 → po 생성 불가. collect_holiday() 재실행 필요."
+            )
         elif kh["opnd_yn"] == "Y":
             collected, max_ohlcv_date = collector.collect()
             if collected:
@@ -145,6 +155,18 @@ if __name__ == "__main__":
                 log.warning(
                     f"최대 OHLCV 날짜 {max_ohlcv_date}가 오늘 {today} 또는 가장 가까운 영업일이 아닙니다."
                 )
+    elif sys.argv[1] == "holiday":
+        from wye.blsh.domestic import collector
 
+        collector.collect_holiday()
+    elif sys.argv[1] == "sector":
+        from wye.blsh.domestic import sector_check
+
+        sector_check.check()
+    elif sys.argv[1] == "analyze":
+        from wye.blsh.domestic import log_analyzer
+
+        target = sys.argv[2] if len(sys.argv) > 2 else None
+        log_analyzer.analyze(target)
     else:
         log.warning("invalid arguments")

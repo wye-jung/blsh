@@ -12,6 +12,7 @@ BLSH_DIR="/home/wye/workspace/blsh"
 BLSH_TAG="# BLSH_AUTO"
 
 CRON_LOG_DIR="$HOME/.blsh/logs"
+CRON_INIT="mkdir -p $CRON_LOG_DIR && cd $BLSH_DIR"
 
 # crontab 헤더에 선언할 환경변수 (인라인 VAR=val은 sh에서 단일 명령에만 적용됨)
 CRON_ENV_LINES=(
@@ -22,28 +23,29 @@ CRON_ENV_LINES=(
 # 등록할 크론 작업 목록
 CRON_ENTRIES=(
     # 1. 휴장일 데이터 수집 (매주 월 06:00)
-    "0 6 * * 1 cd $BLSH_DIR && uv run python -c \"from wye.blsh.domestic.collector import collect_holiday; collect_holiday()\" >> $CRON_LOG_DIR/cron.log 2>&1 $BLSH_TAG"
+    "0 6 * * 1 $CRON_INIT && uv run python -m wye.blsh holiday >> $CRON_LOG_DIR/holiday.log 2>&1 $BLSH_TAG"
 
     # 2. 데이터 수집 + PO 생성 — PRE (매일 월~금 07:30, 전일 스캔 → PO①)
-    "30 7 * * 1-5 cd $BLSH_DIR && uv run python -m wye.blsh po >> $CRON_LOG_DIR/cron.log 2>&1 $BLSH_TAG"
+    "30 7 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
 
     # 3. 데이터 수집 + PO 생성 — INI (매일 월~금 10:05, 장초반 스캔 → PO②)
-    "5 10 * * 1-5 cd $BLSH_DIR && uv run python -m wye.blsh po >> $CRON_LOG_DIR/cron.log 2>&1 $BLSH_TAG"
+    "5 10 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
 
     # 4. 데이터 수집 + PO 생성 — FIN (매일 월~금 15:05, 청산 후 매수 → PO③)
-    "5 15 * * 1-5 cd $BLSH_DIR && uv run python -m wye.blsh po >> $CRON_LOG_DIR/cron.log 2>&1 $BLSH_TAG"
+    "5 15 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
 
     # 5. 트레이더 실행 + 모니터링 (매일 월~금 07:55)
-    "55 7 * * 1-5 cd $BLSH_DIR && bin/watchdog.sh >> $CRON_LOG_DIR/watchdog.log 2>&1 $BLSH_TAG"
+    "55 7 * * 1-5 $CRON_INIT && bin/watchdog.sh >> $CRON_LOG_DIR/watchdog.log 2>&1 $BLSH_TAG"
 
     # 6. 일일 로그 분석 리포트 (매일 월~금 20:30)
-    "30 20 * * 1-5 cd $BLSH_DIR && uv run python -m wye.blsh.domestic.log_analyzer >> $CRON_LOG_DIR/analyzer.log 2>&1 $BLSH_TAG"
+    "30 20 * * 1-5 $CRON_INIT && uv run python -m wye.blsh analyze >> $CRON_LOG_DIR/analyze.log 2>&1 $BLSH_TAG"
 
     # 7. Grid Search 최적화 (매주 토 02:00)
-    "0 2 * * 6 cd $BLSH_DIR && bin/optimize.sh >> $CRON_LOG_DIR/optimize.log 2>&1 $BLSH_TAG"
+    # 캐시 강제 재빌드 하려면 --rebuild 인자 지정(+~3분). 미지정 시 캐시 범위 불일치(5일 초과)시에만 자동 재빌드.
+    "0 2 * * 6 $CRON_INIT && uv run python -m wye.blsh.domestic.optimize.grid_search --alternating >> $CRON_LOG_DIR/optimize.log 2>&1 $BLSH_TAG"
 
     # 8. 업종지수 매핑 확인 (매주 월 06:30)
-    "30 6 * * 1 cd $BLSH_DIR && uv run python -m wye.blsh.domestic.sector_check >> $CRON_LOG_DIR/cron.log 2>&1 $BLSH_TAG"
+    "30 6 * * 1 $CRON_INIT && uv run python -m wye.blsh sector >> $CRON_LOG_DIR/sector.log 2>&1 $BLSH_TAG"
 )
 
 install_cron() {
