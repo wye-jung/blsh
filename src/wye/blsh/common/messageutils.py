@@ -22,11 +22,12 @@ def _get_bot():
     return _bot
 
 
-def send_message(message: str) -> None:
+def send_message(message: str, timeout: float = 10) -> None:
     try:
-        asyncio.run_coroutine_threadsafe(
+        future = asyncio.run_coroutine_threadsafe(
             _get_bot().send_message(chat_id=TELEGRAM_CHAT_ID, text=message),
             _loop,
         )
+        future.result(timeout=timeout)
     except Exception as e:
         log.warning(e)

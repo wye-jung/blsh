@@ -66,6 +66,7 @@ def backtest_capped(cache, params: Params, supply_cap: int | None = None) -> Sta
             result_type, ret_pct = res
             st.trades += 1
             st.total_ret += ret_pct
+            st.ret_sq += ret_pct * ret_pct
             if result_type.startswith("익절"):
                 st.wins += 1
             elif result_type == "손절":

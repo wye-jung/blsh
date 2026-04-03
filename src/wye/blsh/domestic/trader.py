@@ -66,6 +66,8 @@ from wye.blsh.domestic.config import (
     MAX_HOLD_DAYS,
     CASH_USAGE,
     MIN_ALLOC,
+    MAX_ALLOC_TIERS,
+    MAX_ALLOC_RATIO_DEFAULT,
     SELL_COST_RATE,
     PRE_CASH_RATIO,
     INI_CASH_RATIO,
@@ -619,7 +621,22 @@ def _submit_buy_orders(
         return failed
 
     avail = cash_limit if cash_limit is not None else cash * cash_usage
-    alloc = avail / len(new_orders)
+    stock_value = sum(
+        qty * avg_prices.get(t, 0) for t, qty in holdings_api.items()
+    )
+    total_asset = cash + stock_value
+    ratio = MAX_ALLOC_RATIO_DEFAULT
+    for threshold, r in MAX_ALLOC_TIERS:
+        if total_asset < threshold:
+            ratio = r
+            break
+    max_alloc = total_asset * ratio
+    alloc = min(avail / len(new_orders), max_alloc)
+    log.info(
+        f"[po] 총자산={total_asset:,.0f} 가용={avail:,.0f} "
+        f"종목수={len(new_orders)} 균등={avail/len(new_orders):,.0f} "
+        f"상한={max_alloc:,.0f} → 배분={alloc:,.0f}"
+    )
     if alloc < MIN_ALLOC:
         log.warning(f"[po] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 스킵")
         return failed

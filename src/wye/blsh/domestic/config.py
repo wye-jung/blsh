@@ -1,15 +1,15 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-03 08:42 (0분)
+    # 수행일시: 2026-04-03 23:47 (0분)
     # 기간: 20240403 ~ 20260403
-    # 성과: 6853건  승률 37.1%  평균 +0.59%  총 +4061.9%
+    # 성과: 873건  승률 51.1%  평균 +2.47%  총 +2153.7%
     # ──────────────────────────────────────────
     INVEST_MIN_SCORE: int = 9
     SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
     SECTOR_PENALTY_PTS: int = 0
     SECTOR_BONUS_THRESHOLD: float = 0.0  # 업종지수 MA20 대비 해당값 이상일 때 보너스
     SECTOR_BONUS_PTS: int = 0  # 보너스 점수
-    ATR_SL_MULT: float = 3.0
+    ATR_SL_MULT: float = 3.5
     ATR_TP_MULT: float = 1.5
     TP1_MULT: float = 1.5  # 1차 익절: buy + ATR × TP1_MULT
     TP1_RATIO: float = 1.0  # 1차 익절 매도 비율 (1.0 = 전량)
@@ -54,21 +54,21 @@ SECTOR_BONUS_THRESHOLD: float = Optimized.SECTOR_BONUS_THRESHOLD
 SECTOR_BONUS_PTS: int = Optimized.SECTOR_BONUS_PTS  # 업종지수 MA20 이상일 때
 
 SIGNAL_SCORES = {
-    "MGC": 1,
-    "W52": 3,
-    "PB": 0,
+    "MGC": 0,
+    "W52": 1,
+    "PB": 1,
     "LB": 0,
-    "MS": 2,
+    "MS": 1,
     "RBO": 3,
-    "MPGC": 1,
-    "ROV": 2,
+    "MPGC": 2,
+    "ROV": 0,
     "BBL": 2,
-    "BBM": 2,
-    "VS": 2,
-    "MAA": 0,
+    "BBM": 1,
+    "VS": 0,
+    "MAA": 1,
     "SGC": 2,
-    "HMR": 2,
-    "OBV": 2,
+    "HMR": 1,
+    "OBV": 1,
 }
 
 SUPPLY_SCORES = {
@@ -96,4 +96,11 @@ FIN_CASH_RATIO: float = (
     0.55  # PO③ 오후 스캔: 청산 후 현금의 55% (확정에 가까운 데이터 → 주력)
 )
 MIN_ALLOC: int = 10_000  # 종목당 최소 배분액 (1만원)
+MAX_ALLOC_TIERS: list[tuple[int, float]] = [  # (총자산 상한, 배분 비율)
+    (100_000_000, 0.15),      # ~1억: 15%
+    (500_000_000, 0.10),      # 1~5억: 10%
+    (1_000_000_000, 0.07),    # 5~10억: 7%
+    (5_000_000_000, 0.05),    # 10~50억: 5%
+]
+MAX_ALLOC_RATIO_DEFAULT: float = 0.03  # 50억~: 3%
 SELL_COST_RATE: float = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)

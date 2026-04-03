@@ -91,6 +91,7 @@ class Stats:
     losses: int = 0
     holds: int = 0
     total_ret: float = 0.0
+    ret_sq: float = 0.0
 
     @property
     def win_rate(self) -> float:
@@ -102,10 +103,15 @@ class Stats:
 
     @property
     def metric(self) -> float:
-        """최적화 지표: 총수익 × min(1, trades/100). 거래 30건 미만 패널티."""
+        """최적화 지표: avg_ret × sqrt(trades).
+
+        신호 품질(평균 수익률)을 우선하면서, 거래 수가 적으면
+        sqrt로 자연스럽게 불이익. 30건 미만은 통계 무의미로 제외.
+        """
         if self.trades < 30:
             return -9999
-        return self.total_ret * min(1.0, self.trades / 100)
+        import math
+        return self.avg_ret * math.sqrt(self.trades)
 
 
 # ─────────────────────────────────────────
@@ -216,7 +222,7 @@ def backtest(cache: OptCache, params: Params) -> Stats:
     """
     # ── numba 경로: flat 배열 사용
     if hasattr(cache, "flat_buy") and cache.flat_buy is not None:
-        trades, wins, losses, holds, total_ret = backtest_nb(
+        trades, wins, losses, holds, total_ret, ret_sq = backtest_nb(
             cache.flat_buy, cache.flat_atr, cache.flat_score,
             cache.flat_sec_gap, cache.flat_mode_id, cache.flat_n_bars,
             cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
@@ -234,6 +240,7 @@ def backtest(cache: OptCache, params: Params) -> Stats:
         st.losses = losses
         st.holds = holds
         st.total_ret = total_ret
+        st.ret_sq = ret_sq
         return st
 
     # ── fallback: dict 경로
@@ -286,6 +293,7 @@ def backtest(cache: OptCache, params: Params) -> Stats:
 
             st.trades += 1
             st.total_ret += ret_pct
+            st.ret_sq += ret_pct * ret_pct
             if res_id <= 3:
                 if res_id == 0:
                     st.losses += 1
@@ -406,6 +414,7 @@ def backtest_scores(
 
             st.trades += 1
             st.total_ret += ret_pct
+            st.ret_sq += ret_pct * ret_pct
             if res_id == 0:
                 st.losses += 1
             elif res_id <= 3:
@@ -426,7 +435,7 @@ def _score_worker(args):
     if hasattr(cache, "flat_flag_mask") and cache.flat_flag_mask is not None:
         import numpy as _np
         sv = _np.array([scores.get(f, 0) for f in FLAG_ORDER], dtype=_np.int64)
-        trades, wins, losses, holds, total_ret = backtest_scores_nb(
+        trades, wins, losses, holds, total_ret, ret_sq = backtest_scores_nb(
             cache.flat_flag_mask, cache.flat_supply_bonus, cache.flat_has_pov,
             cache.flat_buy, cache.flat_atr, cache.flat_sec_gap, cache.flat_n_bars,
             cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
@@ -445,6 +454,7 @@ def _score_worker(args):
         st.losses = losses
         st.holds = holds
         st.total_ret = total_ret
+        st.ret_sq = ret_sq
     else:
         st = backtest_scores(cache, params, scores, _WORKER_MIN_SCORE)
 
@@ -561,10 +571,10 @@ def recalc_cache_scores(cache: OptCache, scores: dict):
 # ─────────────────────────────────────────
 GRID = {
     "invest_min_score": [9, 10, 11, 12, 13],
-    "atr_sl_mult": [1.0, 1.5, 2.0, 2.5, 3.0],
+    "atr_sl_mult": [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
     "atr_tp_mult": [1.5, 2.0, 2.5, 3.0, 4.0, 5.0],
-    "max_hold_days_rev": [3, 5, 7, 10],
-    "max_hold_days_mix": [2, 3, 5],
+    "max_hold_days_rev": [3, 5, 7, 10, 15, 20],
+    "max_hold_days_mix": [2, 3, 5, 7, 10],
     "max_hold_days_mom": [1, 2, 3],
     "tp1_mult": [0.7, 1.0, 1.5],
     "tp1_ratio": [0.3, 0.5, 0.7, 1.0],
@@ -572,7 +582,7 @@ GRID = {
     "sector_penalty_pts": [0, -2],
     "sector_bonus_threshold": [0.0, 0.02],
     "sector_bonus_pts": [0, 1],
-}  # 5×5×6×4×3×3×3×4×2×2×2×2 = 1,036,800 → --no-sector 시 64,800
+}  # 5×7×6×6×5×3×3×4×2×2×2×2 = 3,628,800 → _dedup + --no-sector 시 ~230,000
 
 _SCORE_MIN_SCORE = min(GRID["invest_min_score"])  # 1단계 진입 기준: GRID 최소값
 _WORKER_MIN_SCORE: int = _SCORE_MIN_SCORE  # 1단계 워커용 min_score (동적 갱신)
@@ -627,6 +637,32 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
             f"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%"
         )
     log.info("=" * 100)
+
+    if ranked:
+        _check_boundaries(ranked[0][0])
+
+
+def _check_boundaries(best_p: Params):
+    """최적 파라미터가 GRID 경계값에 도달했는지 확인하고 경고."""
+    _PARAM_TO_GRID = {
+        "invest_min_score": "invest_min_score",
+        "atr_sl_mult": "atr_sl_mult",
+        "atr_tp_mult": "atr_tp_mult",
+        "max_hold_days_rev": "max_hold_days_rev",
+        "max_hold_days_mix": "max_hold_days_mix",
+        "max_hold_days_mom": "max_hold_days_mom",
+        "tp1_mult": "tp1_mult",
+        "tp1_ratio": "tp1_ratio",
+    }
+    for attr, grid_key in _PARAM_TO_GRID.items():
+        grid_vals = GRID.get(grid_key)
+        if not grid_vals:
+            continue
+        val = getattr(best_p, attr)
+        if val == min(grid_vals):
+            log.warning(f"  [BOUNDARY] {grid_key}={val} hits GRID min ({min(grid_vals)}) — consider expanding")
+        elif val == max(grid_vals):
+            log.warning(f"  [BOUNDARY] {grid_key}={val} hits GRID max ({max(grid_vals)}) — consider expanding")
 
 
 # ─────────────────────────────────────────
@@ -1085,6 +1121,179 @@ def run_alternating(
 
 
 # ─────────────────────────────────────────
+# Walk-Forward 검증
+# ─────────────────────────────────────────
+def _generate_wf_windows(start_date, end_date, train_months=18, val_months=6, step_months=3):
+    """롤링 윈도우 생성. (train_start, train_end, val_start, val_end) 리스트 반환."""
+    from dateutil.relativedelta import relativedelta
+    from datetime import datetime
+
+    fmt = "%Y%m%d"
+    cursor = datetime.strptime(start_date, fmt)
+    end_dt = datetime.strptime(end_date, fmt)
+    windows = []
+    while True:
+        train_end = cursor + relativedelta(months=train_months) - relativedelta(days=1)
+        val_start = train_end + relativedelta(days=1)
+        val_end = val_start + relativedelta(months=val_months) - relativedelta(days=1)
+        if val_end > end_dt:
+            break
+        windows.append((
+            cursor.strftime(fmt), train_end.strftime(fmt),
+            val_start.strftime(fmt), val_end.strftime(fmt),
+        ))
+        cursor += relativedelta(months=step_months)
+    return windows
+
+
+def _wf_report(results: list[tuple[int, str, str, str, str, Stats, Stats, Params]]):
+    """Walk-Forward 검증 리포트 출력."""
+    log.info("")
+    log.info("=" * 100)
+    log.info("  Walk-Forward 검증 결과")
+    log.info("=" * 100)
+    log.info(
+        f"  {'#':>2s}  {'Train Period':<21s}  {'Val Period':<21s}  "
+        f"{'AvgRet(T)':>9s}  {'AvgRet(V)':>9s}  {'Ratio':>5s}  Params"
+    )
+    log.info("-" * 100)
+
+    ratios = []
+    overfit_windows = []
+    for idx, ts, te, vs, ve, train_st, val_st, best_p in results:
+        ratio = val_st.avg_ret / train_st.avg_ret * 100 if train_st.avg_ret > 0 else 0
+        ratios.append(ratio)
+        warn = " ⚠️" if ratio < 50 else ""
+        if ratio < 50:
+            overfit_windows.append(idx)
+        p_summary = (
+            f"SL={best_p.atr_sl_mult:.1f} "
+            f"REV={best_p.max_hold_days_rev}d MIX={best_p.max_hold_days_mix}d"
+        )
+        log.info(
+            f"  {idx:2d}  {ts}~{te}  {vs}~{ve}  "
+            f"{train_st.avg_ret:>+8.2f}%  {val_st.avg_ret:>+8.2f}%  {ratio:>4.0f}%{warn}  {p_summary}"
+        )
+
+    log.info("-" * 100)
+    if ratios:
+        avg_ratio = sum(ratios) / len(ratios)
+        log.info(f"  평균 Val/Train AvgRet 비율: {avg_ratio:.0f}%")
+    for w in overfit_windows:
+        log.warning(f"  Window {w}: 과적합 의심 (avg_ret 비율 < 50%)")
+    log.info("=" * 100)
+
+
+def run_walkforward(
+    years: int = 2,
+    rebuild: bool = False,
+    sector: bool = True,
+    workers: int = 0,
+    train_months: int = 18,
+    val_months: int = 6,
+    step_months: int = 3,
+):
+    """Walk-Forward 검증: 롤링 윈도우별 train 최적화 → val 검증.
+
+    현재 config.py의 SIGNAL_SCORES를 고정하고, Stage 2(매매 파라미터)만
+    각 train 윈도우에서 최적화한 뒤 val 윈도우에서 검증.
+    """
+    global _WORKER_CACHE
+
+    end_date = dtutils.today()
+    start_date = dtutils.add_days(end_date, -years * 365)
+    log.info(f"Walk-Forward 검증 기간: {start_date} ~ {end_date} ({years}년)")
+    log.info(f"  Train={train_months}개월  Val={val_months}개월  Step={step_months}개월")
+
+    windows = _generate_wf_windows(start_date, end_date, train_months, val_months, step_months)
+    if not windows:
+        log.error("유효한 윈도우가 없습니다. 기간을 늘리거나 train/val 개월 수를 줄이세요.")
+        return
+    log.info(f"  윈도우 수: {len(windows)}")
+
+    if rebuild:
+        for p in CACHE_DIR.glob("opt_cache*.pkl"):
+            p.unlink()
+            log.info(f"캐시 삭제: {p}")
+
+    cache = build_or_load(start_date, end_date)
+    cache.build_arrays()
+    cache.precompute_signals()
+    cache.flatten_signals()
+
+    # numba JIT 워밍업
+    import numpy as _np
+    _dummy = _np.ones(2, dtype=_np.float64)
+    sim_one_nb(100.0, 90.0, 110.0, 120.0, 0.3, 2.0, 5.0,
+               _dummy, _dummy, _dummy, _dummy, 2, 0.002)
+    _df = _np.ones(1, dtype=_np.float64)
+    _di = _np.ones(1, dtype=_np.int64)
+    _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
+    backtest_nb(_df * 100, _df * 5, _di * 10, _df, _di * 0, _di,
+                _d2, _d2, _d2, _d2,
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+    log.info("[numba] JIT 컴파일 완료")
+
+    try:
+        from wye.blsh.database.query import engine as _db_engine
+        _db_engine.dispose()
+    except Exception:
+        pass
+
+    n_workers = workers if workers > 0 else os.cpu_count()
+    log.info(f"병렬 처리: {n_workers}코어")
+
+    t_total = time.time()
+    results = []
+
+    for w_idx, (ts, te, vs, ve) in enumerate(windows, 1):
+        log.info(f"\n{'=' * 70}")
+        log.info(f"  Window {w_idx}/{len(windows)}: Train {ts}~{te}  Val {vs}~{ve}")
+        log.info(f"{'=' * 70}")
+
+        # Train
+        train_cache = cache.slice_by_dates(ts, te)
+        train_cache.flatten_signals()
+        _WORKER_CACHE = train_cache
+
+        result = _run_param_grid(train_cache, n_workers, sector)
+        if result is None:
+            log.warning(f"  Window {w_idx}: train 유효 결과 없음 → 스킵")
+            continue
+        best_p, train_st = result
+
+        if train_st.trades < 30:
+            log.warning(f"  Window {w_idx}: train 거래 {train_st.trades}건 < 30 → 스킵")
+            continue
+
+        # Validation
+        val_cache = cache.slice_by_dates(vs, ve)
+        val_cache.flatten_signals()
+        val_st = backtest(val_cache, best_p)
+
+        if val_st.trades < 30:
+            log.warning(f"  Window {w_idx}: val 거래 {val_st.trades}건 < 30 → 스킵")
+            continue
+
+        log.info(
+            f"  Train: {train_st.trades}건  승률 {train_st.win_rate:.1f}%  평균 {train_st.avg_ret:+.2f}%"
+        )
+        log.info(
+            f"  Val:   {val_st.trades}건  승률 {val_st.win_rate:.1f}%  평균 {val_st.avg_ret:+.2f}%"
+        )
+
+        results.append((w_idx, ts, te, vs, ve, train_st, val_st, best_p))
+
+    total_elapsed = time.time() - t_total
+    log.info(f"\nWalk-Forward 검증 완료: {total_elapsed:.0f}초 ({total_elapsed / 60:.1f}분)")
+
+    if results:
+        _wf_report(results)
+    else:
+        log.warning("유효한 윈도우 결과가 없습니다.")
+
+
+# ─────────────────────────────────────────
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -1111,9 +1320,29 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-iter", type=int, default=5, help="교대 최적화 최대 반복 횟수"
     )
+    parser.add_argument(
+        "--walkforward", action="store_true",
+        help="Walk-Forward 검증 (롤링 윈도우별 train→val)"
+    )
+    parser.add_argument("--train-months", type=int, default=18, help="WF 학습 기간 (개월)")
+    parser.add_argument("--val-months", type=int, default=6, help="WF 검증 기간 (개월)")
+    parser.add_argument("--step-months", type=int, default=3, help="WF 롤링 간격 (개월)")
     args = parser.parse_args()
 
-    if args.alternating:
+    if args.alternating and args.walkforward:
+        parser.error("--alternating과 --walkforward는 동시 지정 불가")
+
+    if args.walkforward:
+        run_walkforward(
+            years=args.years,
+            rebuild=args.rebuild,
+            sector=not args.no_sector,
+            workers=args.workers,
+            train_months=args.train_months,
+            val_months=args.val_months,
+            step_months=args.step_months,
+        )
+    elif args.alternating:
         run_alternating(
             years=args.years,
             rebuild=args.rebuild,

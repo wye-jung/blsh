@@ -613,6 +613,26 @@ class OptCache:
 
         log.info(f"[flat] {n:,}건 → numpy 배열 (max_bars={max_bars})")
 
+    def slice_by_dates(self, start_date: str, end_date: str) -> "OptCache":
+        """scan_dates를 날짜 범위로 필터한 얕은 복사본 반환.
+
+        OHLCV 배열, signal dict 등은 원본 참조 공유 (read-only).
+        반환 후 flatten_signals()를 호출하여 flat 배열을 재생성해야 함.
+        """
+        sliced = OptCache()
+        sliced.scan_dates = [d for d in self.scan_dates if start_date <= d <= end_date]
+        sliced.signals = {d: self.signals[d] for d in sliced.scan_dates if d in self.signals}
+        sliced.next_biz = self.next_biz
+        sliced.forward_dates = self.forward_dates
+        sliced.ohlcv_idx = self.ohlcv_idx
+        sliced.ohlcv_arrays = self.ohlcv_arrays
+        sliced.date_to_idx = self.date_to_idx
+        sliced.name_map = self.name_map
+        sliced.ticker_market = self.ticker_market
+        sliced.ticker_sector = self.ticker_sector
+        sliced.sector_gaps = self.sector_gaps
+        return sliced
+
     def update_flat_scores(self):
         """recalc_cache_scores 이후 flat_score만 갱신."""
         idx = 0
