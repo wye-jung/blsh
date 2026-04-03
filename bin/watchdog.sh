@@ -129,26 +129,35 @@ main() {
         send_alert "🔴 트레이더 수동 종료 (stop)"
 
         # 1. 트레이더에 SIGINT (Python finally → position 저장)
+        local trader_pid=""
         if [ -f "$PID_FILE" ]; then
-            local trader_pid
             trader_pid=$(cat "$PID_FILE")
-            kill -INT "$trader_pid" 2>/dev/null
-            echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
+            if kill -0 "$trader_pid" 2>/dev/null; then
+                kill -INT "$trader_pid" 2>/dev/null
+                echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
+                # 최대 15초 대기 (finally 블록 실행)
+                for i in $(seq 1 15); do
+                    kill -0 "$trader_pid" 2>/dev/null || break
+                    sleep 1
+                done
+                # 아직 살아있으면 강제 종료
+                if kill -0 "$trader_pid" 2>/dev/null; then
+                    echo "[$(date '+%H:%M:%S')] 트레이더 강제 종료 (SIGKILL)"
+                    kill -9 "$trader_pid" 2>/dev/null
+                fi
+                echo "[$(date '+%H:%M:%S')] 트레이더 종료 완료"
+            fi
         fi
 
-        # 2. watchdog 본체 종료 → cleanup()이 트레이더 wait + 모니터 종료 처리
+        # 2. watchdog 본체 + 자식 종료
         if [ -f "$WATCHDOG_PID_FILE" ]; then
             local wd_pid
             wd_pid=$(cat "$WATCHDOG_PID_FILE")
-            kill "$wd_pid" 2>/dev/null
-            echo "[$(date '+%H:%M:%S')] watchdog 종료 요청 (PID: $wd_pid)"
-            # 최대 10초 대기
-            for i in $(seq 1 10); do
-                kill -0 "$wd_pid" 2>/dev/null || break
-                sleep 1
-            done
-            # 잔존 시 강제 종료
             if kill -0 "$wd_pid" 2>/dev/null; then
+                echo "[$(date '+%H:%M:%S')] watchdog 종료 (PID: $wd_pid)"
+                pkill -P "$wd_pid" 2>/dev/null
+                kill "$wd_pid" 2>/dev/null
+                sleep 1
                 pkill -9 -P "$wd_pid" 2>/dev/null
                 kill -9 "$wd_pid" 2>/dev/null
             fi
