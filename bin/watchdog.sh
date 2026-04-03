@@ -203,6 +203,11 @@ cleanup() {
     fi
     exit 0
 }
-trap cleanup SIGINT SIGTERM
-
-main "$@"
+# status/stop은 trap 불필요 → main 내부에서 exit 0으로 즉시 종료
+case "${1:-}" in
+    status|stop) main "$@" ;;
+    *)
+        trap cleanup SIGINT SIGTERM
+        main "$@"
+        ;;
+esac
