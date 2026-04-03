@@ -157,6 +157,7 @@ if __name__ == "__main__":
                 )
         else:
             log.info(f"오늘({today})은 KRX 휴장일입니다. PO를 생성하지 않습니다.")
+
     elif sys.argv[1] == "holiday":
         from wye.blsh.domestic import collector
 
