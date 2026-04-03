@@ -15,7 +15,7 @@ Claude Code 작업 지침. 상세 문서는 `docs/` 참조.
 **blsh** (buy low sell high) — 한국 주식(KOSPI/KOSDAQ) 자동매매 봇.
 KIS Open API로 주문 실행, KRX 데이터로 신호 생성, PostgreSQL로 OHLCV·체결 이력 저장.
 
-- **Python 3.13+**, **uv**, `wye.blsh` (src layout: `src/wye/blsh/`)
+- **Python 3.12+** (pykrx 의존성으로 3.12 권장), **uv**, `wye.blsh` (src layout: `src/wye/blsh/`)
 
 ## Commands
 
