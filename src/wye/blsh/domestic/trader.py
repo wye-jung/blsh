@@ -228,22 +228,27 @@ def _sell_or_log(
                 f"{reason} (지정가. 실제 체결가 미정)", pos.po_type,
             )
             return True
+        # 매도 API 실패 → 잔고 확인하여 이미 체결 여부 검증
+        holdings, _, _ = kis.get_balance()
+        remaining = holdings.get(pos.ticker, 0)
+        if remaining < pos.qty:
+            # 잔고 감소 = 매도 체결됨 (API 응답만 실패)
+            sold_qty = pos.qty - remaining
+            log.warning(
+                f"  ⚠️ 매도 API 실패했으나 체결 감지: {pos.ticker}"
+                f"  매도수량={sold_qty} (잔고={remaining})"
+            )
+            _save_history(
+                "sell", pos.ticker, pos.name, sold_qty, nxt_price,
+                f"{reason} (지연감지, 지정가)", pos.po_type,
+            )
+            pos.sell_fail_count = 0
+            if remaining <= 0:
+                return True
+            pos.qty = remaining
+            return False
         pos.sell_fail_count += 1
         log.critical(f"  🚨 매도 실패: {pos.ticker} [{reason}] → 다음 틱 재시도")
-        # 연속 실패 시 KIS 잔고 확인 → 유령 포지션이면 True 반환하여 포지션 제거
-        if pos.sell_fail_count >= _SELL_FAIL_BALANCE_CHECK:
-            holdings, _, _ = kis.get_balance()
-            if pos.ticker not in holdings or holdings[pos.ticker] <= 0:
-                log.warning(
-                    f"  ⚠️ 유령 포지션 감지: {pos.ticker} KIS 잔고 없음 → 포지션 제거"
-                )
-                messageutils.send_message(
-                    f"⚠️ 유령 포지션 제거: {pos.ticker} [{reason}]"
-                    f" (매도 {pos.sell_fail_count}회 실패, KIS 잔고 없음)"
-                )
-                pos.sell_fail_count = 0
-                return True
-            pos.sell_fail_count = 0
         return False
     return _sell_market(
         kis, pos.ticker, pos.name, qty, reason, today or dtutils.today(), pos.po_type
