@@ -126,38 +126,28 @@ main() {
     fi
 
     if [ "$mode" = "stop" ]; then
-        local pos_saved="true"
+        send_alert "🔴 트레이더 수동 종료 (stop)"
 
-        # 1. 트레이더에 SIGINT (Python finally → position 저장 → PID 파일 삭제)
+        # 1. 트레이더에 SIGINT (Python finally → position 저장)
         if [ -f "$PID_FILE" ]; then
             local trader_pid
             trader_pid=$(cat "$PID_FILE")
             kill -INT "$trader_pid" 2>/dev/null
             echo "[$(date '+%H:%M:%S')] 트레이더 종료 요청 (PID: $trader_pid)"
-            # PID 파일 삭제 = python finally 완료 (position 저장 포함)
-            for i in $(seq 1 60); do
-                [ -f "$PID_FILE" ] || break
-                sleep 1
-            done
-            if [ -f "$PID_FILE" ]; then
-                echo "[$(date '+%H:%M:%S')] 트레이더 응답 없음 (60초) → 강제 종료"
-                kill -9 "$trader_pid" 2>/dev/null
-                rm -f "$PID_FILE"
-                pos_saved="false"
-            else
-                echo "[$(date '+%H:%M:%S')] 트레이더 종료 완료 (position 저장됨)"
-            fi
         fi
 
-        # 2. watchdog 본체 종료
+        # 2. watchdog 본체 종료 → cleanup()이 트레이더 wait + 모니터 종료 처리
         if [ -f "$WATCHDOG_PID_FILE" ]; then
             local wd_pid
             wd_pid=$(cat "$WATCHDOG_PID_FILE")
             kill "$wd_pid" 2>/dev/null
+            echo "[$(date '+%H:%M:%S')] watchdog 종료 요청 (PID: $wd_pid)"
+            # 최대 10초 대기
             for i in $(seq 1 10); do
                 kill -0 "$wd_pid" 2>/dev/null || break
                 sleep 1
             done
+            # 잔존 시 강제 종료
             if kill -0 "$wd_pid" 2>/dev/null; then
                 pkill -9 -P "$wd_pid" 2>/dev/null
                 kill -9 "$wd_pid" 2>/dev/null
@@ -167,13 +157,6 @@ main() {
 
         # 3. PID 파일 정리
         rm -f "$PID_FILE" "$MONITOR_PID_FILE"
-
-        # 4. 결과 알림
-        if [ "$pos_saved" = "true" ]; then
-            send_alert "🔴 트레이더 종료 완료"
-        else
-            send_alert "🚨 트레이더 강제 종료 (position 저장 실패 가능)"
-        fi
         echo "[$(date '+%H:%M:%S')] 전체 종료 완료"
         exit 0
     fi
