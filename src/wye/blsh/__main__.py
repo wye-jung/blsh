@@ -155,6 +155,8 @@ if __name__ == "__main__":
                 log.warning(
                     f"최대 OHLCV 날짜 {max_ohlcv_date}가 오늘 {today} 또는 가장 가까운 영업일이 아닙니다."
                 )
+        else:
+            log.info(f"오늘({today})은 KRX 휴장일입니다. PO 생성이 필요 없습니다.")
     elif sys.argv[1] == "holiday":
         from wye.blsh.domestic import collector
 
