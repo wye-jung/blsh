@@ -15,9 +15,12 @@ CRON_LOG_DIR="$HOME/.blsh/logs"
 CRON_INIT="mkdir -p $CRON_LOG_DIR && cd $BLSH_DIR"
 
 # crontab 헤더에 선언할 환경변수 (인라인 VAR=val은 sh에서 단일 명령에만 적용됨)
+# crontab 환경변수
+# 주의: crontab은 인라인 주석(#)을 지원하지 않음 — 값의 일부로 해석됨
+# BLSH_TAG는 install 함수에서 별도 주석줄로 삽입하여 remove 시 함께 제거
 CRON_ENV_LINES=(
-    "HOME=/home/wye $BLSH_TAG"
-    "PATH=/home/wye/.local/bin:/usr/local/bin:/usr/bin:/bin $BLSH_TAG"
+    "HOME=/home/wye"
+    "PATH=/home/wye/.local/bin:/usr/local/bin:/usr/bin:/bin"
 )
 
 # 등록할 크론 작업 목록
@@ -59,9 +62,11 @@ install_cron() {
         echo "# ═══════════════════════════════════════ $BLSH_TAG"
         echo "# BLSH 자동매매 시스템 $BLSH_TAG"
         echo "# ═══════════════════════════════════════ $BLSH_TAG"
+        echo "# BLSH_ENV_BEGIN $BLSH_TAG"
         for env_line in "${CRON_ENV_LINES[@]}"; do
             echo "$env_line"
         done
+        echo "# BLSH_ENV_END $BLSH_TAG"
         echo ""
         for entry in "${CRON_ENTRIES[@]}"; do
             echo "$entry"
@@ -85,7 +90,8 @@ install_cron() {
 
 remove_cron() {
     local remaining
-    remaining=$(crontab -l 2>/dev/null | grep -v "$BLSH_TAG")
+    # BLSH_TAG 포함 줄 + BLSH_ENV 블록 내부(HOME=, PATH=) 제거
+    remaining=$(crontab -l 2>/dev/null | sed '/BLSH_ENV_BEGIN/,/BLSH_ENV_END/d' | grep -v "$BLSH_TAG")
 
     echo "$remaining" | crontab -
     echo "✅ BLSH 크론탭 항목 제거 완료"

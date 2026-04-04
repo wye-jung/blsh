@@ -45,8 +45,6 @@ PO 파일: ~/.blsh/{KIS_ENV}/data/po-{entry_date}-{po_type}.json
 """
 
 import json
-import logging
-from logging.handlers import TimedRotatingFileHandler
 import time
 from dataclasses import dataclass, asdict
 import numpy as np
@@ -76,16 +74,11 @@ from wye.blsh.domestic.config import (
 from wye.blsh.domestic.kis_client import KISClient
 from wye.blsh.domestic.ws_monitor import PriceMonitor
 from wye.blsh.common import dtutils, fileutils, messageutils
-from wye.blsh.common.env import DATA_DIR, LOG_DIR, BACKUP_DIR, KIS_ENV, USE_WEBSOCKET
+from wye.blsh.common.env import DATA_DIR, BACKUP_DIR, KIS_ENV, USE_WEBSOCKET
 from wye.blsh.database import query
+from wye.blsh import new_logger
 
-log = logging.getLogger(__name__)
-_fh = TimedRotatingFileHandler(
-    LOG_DIR / "trader.log", when="midnight", backupCount=30, encoding="utf-8"
-)
-_fh.suffix = "%Y-%m-%d"
-_fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-log.addHandler(_fh)
+log = new_logger(__file__, True)
 
 # ─────────────────────────────────────────
 # 설정
@@ -226,8 +219,13 @@ def _sell_or_log(
         if ok:
             pos.sell_fail_count = 0
             _save_history(
-                "sell", pos.ticker, pos.name, qty, nxt_price,
-                f"{reason} (지정가. 실제 체결가 미정)", pos.po_type,
+                "sell",
+                pos.ticker,
+                pos.name,
+                qty,
+                nxt_price,
+                f"{reason} (지정가. 실제 체결가 미정)",
+                pos.po_type,
             )
             return True
         # 매도 API 실패 → 잔고 확인하여 이미 체결 여부 검증
@@ -241,8 +239,13 @@ def _sell_or_log(
                 f"  매도수량={sold_qty} (잔고={remaining})"
             )
             _save_history(
-                "sell", pos.ticker, pos.name, sold_qty, nxt_price,
-                f"{reason} (지연감지, 지정가)", pos.po_type,
+                "sell",
+                pos.ticker,
+                pos.name,
+                sold_qty,
+                nxt_price,
+                f"{reason} (지연감지, 지정가)",
+                pos.po_type,
             )
             pos.sell_fail_count = 0
             if remaining <= 0:
@@ -545,11 +548,17 @@ def _process_position(
         # NXT 손절: 거래소 하한가로 지정가 매도 (사실상 시장가 효과)
         if nxt_mode:
             detail = kis.get_price_detail(pos.ticker)
-            sl_sell_price = Tick.floor_tick(detail[1]) if detail and detail[1] else Tick.floor_tick(current)
+            sl_sell_price = (
+                Tick.floor_tick(detail[1])
+                if detail and detail[1]
+                else Tick.floor_tick(current)
+            )
         else:
             sl_sell_price = 0  # KRX 시장가
         reason = f"손절 {ret_pct:+.2f}% (SL={pos.sl:,.0f})"
-        if _sell_or_log(kis, pos, pos.qty, reason, nxt_price=sl_sell_price, today=today):
+        if _sell_or_log(
+            kis, pos, pos.qty, reason, nxt_price=sl_sell_price, today=today
+        ):
             pos.realized_pnl += (
                 current - pos.buy_price
             ) * pos.qty - current * pos.qty * SELL_COST_RATE
@@ -621,9 +630,7 @@ def _submit_buy_orders(
         return failed
 
     avail = cash_limit if cash_limit is not None else cash * cash_usage
-    stock_value = sum(
-        qty * avg_prices.get(t, 0) for t, qty in holdings_api.items()
-    )
+    stock_value = sum(qty * avg_prices.get(t, 0) for t, qty in holdings_api.items())
     total_asset = cash + stock_value
     ratio = MAX_ALLOC_RATIO_DEFAULT
     for threshold, r in MAX_ALLOC_TIERS:
@@ -634,7 +641,7 @@ def _submit_buy_orders(
     alloc = min(avail / len(new_orders), max_alloc)
     log.info(
         f"[po] 총자산={total_asset:,.0f} 가용={avail:,.0f} "
-        f"종목수={len(new_orders)} 균등={avail/len(new_orders):,.0f} "
+        f"종목수={len(new_orders)} 균등={avail / len(new_orders):,.0f} "
         f"상한={max_alloc:,.0f} → 배분={alloc:,.0f}"
     )
     if alloc < MIN_ALLOC:
@@ -768,15 +775,24 @@ def _check_pending_orders(
                 )
                 try:
                     pos = _make_position(
-                        po.cand, buy_price, filled_qty, today,
+                        po.cand,
+                        buy_price,
+                        filled_qty,
+                        today,
                         po.cand.get("expiry_date") or "",
-                        po_type=po.po_type, excg_cd=po.excg_cd,
+                        po_type=po.po_type,
+                        excg_cd=po.excg_cd,
                         ticker=ticker,
                     )
                     positions[ticker] = pos
                     _save_history(
-                        "buy", ticker, pos.name, filled_qty,
-                        buy_price, "po지정가체결(지연감지)", pos.po_type,
+                        "buy",
+                        ticker,
+                        pos.name,
+                        filled_qty,
+                        buy_price,
+                        "po지정가체결(지연감지)",
+                        pos.po_type,
                     )
                     log.info(
                         f"  ✅ 지연체결: {ticker} {pos.name}  매수가={buy_price:,.0f}"
@@ -916,7 +932,9 @@ def run():
 
                 # FIN PO NXT 재발주
                 if fin_retry:
-                    log.info(f"[KRX 마감] FIN PO 미체결 {len(fin_retry)}종목 → NXT 재발주")
+                    log.info(
+                        f"[KRX 마감] FIN PO 미체결 {len(fin_retry)}종목 → NXT 재발주"
+                    )
                     _, _, cash = kis.get_balance()
                     cash_limit = cash * FIN_CASH_RATIO * CASH_USAGE
                     _submit_buy_orders(
@@ -972,7 +990,8 @@ def run():
 
                 # ── 유령 포지션 제거: positions에 있지만 KIS 잔고에 없는 종목
                 ghost = {
-                    t for t in positions
+                    t
+                    for t in positions
                     if t not in holdings_chk or holdings_chk[t] <= 0
                 }
                 if ghost:
@@ -981,8 +1000,7 @@ def run():
                         f" {list(ghost)}"
                     )
                     messageutils.send_message(
-                        f"⚠️ [{today}] 유령 포지션 {len(ghost)}건 제거:"
-                        f" {list(ghost)}"
+                        f"⚠️ [{today}] 유령 포지션 {len(ghost)}건 제거: {list(ghost)}"
                     )
                     for t in ghost:
                         del positions[t]
@@ -1109,7 +1127,9 @@ def run():
                             ini_po_bought = True
 
                 # KRX + NXT: pending 체결 확인
-                if pending_po and _check_pending_orders(pending_po, positions, kis, today):
+                if pending_po and _check_pending_orders(
+                    pending_po, positions, kis, today
+                ):
                     dirty = True
                     monitor.sync_subscriptions(list(positions.keys()))
 
@@ -1220,9 +1240,8 @@ def run():
                         avg_price, total_qty = sell_fills[t]
                         old_pnl = p.realized_pnl
                         p.realized_pnl = (
-                            (avg_price - p.buy_price) * total_qty
-                            - avg_price * total_qty * SELL_COST_RATE
-                        )
+                            avg_price - p.buy_price
+                        ) * total_qty - avg_price * total_qty * SELL_COST_RATE
                         if abs(old_pnl - p.realized_pnl) > 1:
                             log.info(
                                 f"  PnL 보정: {t}  추정={old_pnl:+,.0f} → 실제={p.realized_pnl:+,.0f}"
