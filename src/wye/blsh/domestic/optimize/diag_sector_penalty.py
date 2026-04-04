@@ -76,10 +76,10 @@ log.info(f"\n{'=' * 70}")
 log.info("  [3] E2E 패널티/보너스 (idx_clss 적용)")
 log.info("=" * 70)
 
-from wye.blsh.domestic.scanner import _load_ticker_sector_map, _get_sector_gap
+from wye.blsh.domestic.scanner import _load_kis_master, _get_sector_gap
 from wye.blsh.domestic import config as factor
 
-sector_map = _load_ticker_sector_map(base_date)
+_, _, sector_map = _load_kis_master(base_date)
 log.info(f"  종목→업종 매핑: {len(sector_map)}종목")
 
 # KOSPI 업종별

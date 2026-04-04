@@ -161,6 +161,9 @@ def _analyze_scanner(lines: list[dict]) -> dict:
         "kosdaq_skipped": False,
         "sector_adj_count": 0,
         "po_created": 0,
+        "realtime_verified": 0,
+        "realtime_dropped": 0,
+        "realtime_dropped_names": [],
         # [임시] DB vs API 수급 비교
         "supply_cmp_total": 0,
         "supply_cmp_match": 0,
@@ -210,6 +213,15 @@ def _analyze_scanner(lines: list[dict]) -> dict:
         m = re.search(r"(\d+)\s+종목\.\s+po-.*생성", msg)
         if m:
             result["po_created"] += int(m.group(1))
+
+        # 실시간 부적합 검증
+        m = re.search(r"\[실시간 검증\]\s+(\d+)종목 중\s+(\d+)종목 부적합", msg)
+        if m:
+            result["realtime_verified"] = int(m.group(1))
+            result["realtime_dropped"] = int(m.group(2))
+        m = re.search(r"\[실시간 검증\]\s+\S+\s+(\S+)\s+→\s+(.+)", msg)
+        if m:
+            result["realtime_dropped_names"].append(f"{m.group(1)}({m.group(2)})")
 
         # [임시] DB vs API 수급 비교
         if "✅" in msg and "외인: DB=" in msg:
@@ -308,6 +320,11 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
         parts.append(f"  수급 플래그: {hits}")
     if scanner["sector_adj_count"]:
         parts.append(f"  업종 점수 조정 {scanner['sector_adj_count']}종목")
+    if scanner["realtime_dropped"]:
+        names = ", ".join(scanner["realtime_dropped_names"][:5])
+        parts.append(
+            f"  🚫 실시간 검증 탈락 {scanner['realtime_dropped']}종목: {names}"
+        )
     if scanner["po_created"]:
         parts.append(f"  PO 생성 {scanner['po_created']}종목")
 
