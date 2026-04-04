@@ -72,27 +72,33 @@ def collect() -> tuple[bool, str]:
 
 def _collect(from_date, to_date):
     log.info(f"_collect from {from_date} to {to_date}")
-    for d in query.get_biz_dates(fromdate=from_date, todate=to_date):
-        date = d["d"]
-        log.info(f"Collecting data for {date}")
-        _collect_idx_data(date)
-        _collect_isu_data(date)
-        _collect_etx_data(date)
+    import pandas as pd
+
+    dates = pd.date_range(from_date, to_date)
+    for date in dates[dates.weekday < 5].strftime(dtutils.DATE_FMT).tolist():
+        if _collect_idx_data(date) > 0:
+            _collect_isu_data(date)
+            _collect_etx_data(date)
 
     _collect_base_info()
 
 
 # 지수 데이터 수집
 def _collect_idx_data(date):
+    cnt = 0
     idx = Idx(date)
     for idx_clss in [Idx.KRX, Idx.KOSPI, Idx.KOSDAQ, Idx.THEME]:
-        _recreate(
+        cnt += _recreate(
             idx.get_ohlcv(idx_clss=idx_clss),
             IdxStkOhlcv,
             trd_dd=idx.trd_dd,
             idx_clss=idx_clss,
         )
+        if cnt == 0:
+            break
         time.sleep(0.1)
+
+    return cnt
 
 
 # 종목 데이터 수집
