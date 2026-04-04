@@ -1,8 +1,8 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-03 23:47 (0분)
-    # 기간: 20240403 ~ 20260403
-    # 성과: 873건  승률 51.1%  평균 +2.47%  총 +2153.7%
+    # 수행일시: 2026-04-04 16:37 (0분)
+    # 기간: 20240404 ~ 20260404
+    # 성과: 989건  승률 51.0%  평균 +2.52%  총 +2489.1%
     # ──────────────────────────────────────────
     INVEST_MIN_SCORE: int = 9
     SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
@@ -35,7 +35,6 @@ GAP_THRESHOLD: float = 0.02
 W52_VOL_MULT: float = 1.5  # 52주 신고가 거래량 조건: 20일 평균의 N배
 LOOKBACK_DAYS: int = 365  # 52주(252거래일) 신고가 계산을 위해 365일 이상 필요
 MIN_SCORE: int = 1  # 저장 최소 점수
-ENRICH_SCORE: int = 2  # 수급 보강 최소 점수
 SUPPLY_CAP: int = 3  # 수급 가산 상한 (백테스트 검증, 2026-03-29)
 TRDVAL_MIN: int = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (10억)
 TRDVAL_DAYS: int = 20
@@ -46,6 +45,7 @@ INDEX_DROP_LIMIT: float = (
 INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE
 )  # 투자 적격 최소 점수 (백테스트 검증)
+ENRICH_SCORE: int = INVEST_MIN_SCORE - SUPPLY_CAP  # 수급 MAX 가산해도 통과 못할 종목 제외
 SECTOR_PENALTY_THRESHOLD: float = (
     Optimized.SECTOR_PENALTY_THRESHOLD
 )  # 업종지수 MA20 대비 해당값 이하
@@ -53,22 +53,43 @@ SECTOR_PENALTY_PTS: int = Optimized.SECTOR_PENALTY_PTS
 SECTOR_BONUS_THRESHOLD: float = Optimized.SECTOR_BONUS_THRESHOLD
 SECTOR_BONUS_PTS: int = Optimized.SECTOR_BONUS_PTS  # 업종지수 MA20 이상일 때
 
+# 매수부적합 필터: True인 항목이 활성화된 종목은 스캔에서 제외
+# 추후 변경 시 값만 True/False로 토글
+# 매수부적합 필터 값:
+#   True  — 플래그 활성 시 탈락
+#   False — 무시
+#   int   — 시장경고 등 등급 코드: 해당 값 이상이면 탈락
+DISQUALIFY_FLAGS: dict[str, bool | int] = {
+    "거래정지": True,
+    "정리매매": True,
+    "관리종목": True,
+    "시장경고": 2,            # 1=투자주의, 2=투자경고, 3=투자위험 (2 이상 탈락)
+    "불성실공시": True,
+    "단기과열": True,
+    "이상급등": True,
+    "SPAC": True,
+    "투자주의환기": True,     # KOSDAQ only
+    "공매도과열": False,
+    "경고예고": False,
+    "우회상장": False,
+}
+
 SIGNAL_SCORES = {
     "MGC": 0,
     "W52": 1,
-    "PB": 1,
+    "PB": 2,
     "LB": 0,
-    "MS": 1,
+    "MS": 3,
     "RBO": 3,
     "MPGC": 2,
-    "ROV": 0,
+    "ROV": 2,
     "BBL": 2,
-    "BBM": 1,
-    "VS": 0,
+    "BBM": 0,
+    "VS": 2,
     "MAA": 1,
     "SGC": 2,
     "HMR": 1,
-    "OBV": 1,
+    "OBV": 2,
 }
 
 SUPPLY_SCORES = {

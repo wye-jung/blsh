@@ -97,6 +97,8 @@ src/wye/blsh/
 - `_sim_core.py`와 `grid_search` 내부 시뮬레이션은 동일 로직 병행 유지 필요
 - `messageutils.send_message()`는 `future.result(timeout=10)` 대기 — CLI 종료 전 전송 보장
 - `_recreate()` (collector): 트랜잭션 분리 — 묶으면 커넥션 경합 발생
+- 코드 변경되면 문서도 업데이트 할 것
+- 요청이 적절하지 않다고 판단하면 의견 제시할 것
 
 ## Docs
 

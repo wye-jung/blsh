@@ -15,6 +15,7 @@ from pykrx.website import krx
 from wye.blsh.database import ModelManager, query
 from wye.blsh.common import dtutils
 from wye.blsh.domestic import Milestone
+from wye.blsh.common.env import SCAN_ETF
 from wye.blsh.database.models import (
     IsuKspOhlcv,
     IsuKsdOhlcv,
@@ -55,7 +56,8 @@ def collect() -> tuple[bool, str]:
         if Milestone.NXT_OPEN_TIME < dtutils.ctime() < Milestone.NXT_CLOSE_TIME:
             _collect_idx_data(max_ohlcv_date)
             _collect_isu_data(max_ohlcv_date)
-            # _collect_etx_data(max_ohlcv_date) # ETF는 현재 매수대상이 아니므로 개장시점에는 데이터 수집하지 않음
+            if SCAN_ETF:
+                _collect_etx_data(max_ohlcv_date)
         elif (_fetched_at := query.get_fetched_at(max_ohlcv_date)) is not None and (
             _fetched_at.strftime(dtutils.TIME_FMT) < Milestone.NXT_CLOSE_TIME
         ):
@@ -70,27 +72,33 @@ def collect() -> tuple[bool, str]:
 
 def _collect(from_date, to_date):
     log.info(f"_collect from {from_date} to {to_date}")
-    for d in query.get_biz_dates(fromdate=from_date, todate=to_date):
-        date = d["d"]
-        log.info(f"Collecting data for {date}")
-        _collect_idx_data(date)
-        _collect_isu_data(date)
-        _collect_etx_data(date)
+    import pandas as pd
+
+    dates = pd.date_range(from_date, to_date)
+    for date in dates[dates.weekday < 5].strftime(dtutils.DATE_FMT).tolist():
+        if _collect_idx_data(date) > 0:
+            _collect_isu_data(date)
+            _collect_etx_data(date)
 
     _collect_base_info()
 
 
 # 지수 데이터 수집
 def _collect_idx_data(date):
+    cnt = 0
     idx = Idx(date)
     for idx_clss in [Idx.KRX, Idx.KOSPI, Idx.KOSDAQ, Idx.THEME]:
-        _recreate(
+        cnt += _recreate(
             idx.get_ohlcv(idx_clss=idx_clss),
             IdxStkOhlcv,
             trd_dd=idx.trd_dd,
             idx_clss=idx_clss,
         )
+        if cnt == 0:
+            break
         time.sleep(0.1)
+
+    return cnt
 
 
 # 종목 데이터 수집

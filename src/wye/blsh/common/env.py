@@ -43,6 +43,7 @@ KRX_LOGIN_ID: Final = os.getenv("KRX_LOGIN_ID")
 KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
 
 USE_WEBSOCKET: Final = os.getenv("USE_WEBSOCKET", "").lower() in ("1", "true", "yes")
+SCAN_ETF: Final = os.getenv("SCAN_ETF", "").lower() in ("1", "true", "yes")
 
 _missing = [
     k

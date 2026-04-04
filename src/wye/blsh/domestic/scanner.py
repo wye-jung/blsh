@@ -114,10 +114,11 @@ from wye.blsh.domestic.config import (
     MAX_HOLD_DAYS_MOM,
     SIGNAL_SCORES,
     SUPPLY_SCORES,
+    DISQUALIFY_FLAGS,
 )
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import CACHE_DIR, LOG_DIR
+from wye.blsh.common.env import LOG_DIR, SCAN_ETF
 
 log = logging.getLogger(__name__)
 _fh = TimedRotatingFileHandler(
@@ -463,6 +464,7 @@ def scan_market(
     low_col="tdd_lwprc",
     vol_col="acc_trdvol",
     open_col="tdd_opnprc",
+    exclude=None,
 ):
     log.debug(f"[{market}] {table} 스캔 시작  (기준일: {base_date})")
 
@@ -485,6 +487,8 @@ def scan_market(
 
     results = []
     for ticker, group in df_all.groupby("isu_srt_cd"):
+        if exclude and ticker in exclude:
+            continue
         name = name_map.get(ticker, ticker)
         row = scan_dataframe(
             ticker,
@@ -508,7 +512,7 @@ def scan_market(
 # ─────────────────────────────────────────
 # [2단계] DB 수급 보강 + KIS API fallback
 # ─────────────────────────────────────────
-def fetch_investor_daily(ticker, base_date, n_days=5):
+def fetch_investor_daily(ticker, base_date, n_days=5, market="KOSPI"):
     """종목별 투자자매매동향(일별). 반환: (frgn_list, orgn_list) 오래된→최신."""
     from wye.blsh.kis import kis_auth as ka
     from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
@@ -580,7 +584,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
     candidates = [
         r
         for r in results
-        if r["buy_score"] >= ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
+        if r["buy_score"] >= ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ", "ETF")
     ]
     if not candidates:
         return results
@@ -589,6 +593,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
 
     kospi_ticks = [r["ticker"] for r in candidates if r["market"] == "KOSPI"]
     kosdaq_ticks = [r["ticker"] for r in candidates if r["market"] == "KOSDAQ"]
+    # ETF는 수급 info 테이블이 없으므로 KIS API fallback 대상
 
     def fetch_supply_from_db(table, tickers):
         if not tickers:
@@ -617,13 +622,34 @@ def enrich_with_db(results: list, base_date: str) -> list:
         **fetch_supply_from_db("isu_ksd_info", kosdaq_ticks),
     }
 
+    # [임시] 개장 시간 DB vs KIS API 수급 비교 로그
+    _ctime = dtutils.ctime()
+    if supply_db and Milestone.KRX_OPEN_TIME <= _ctime <= Milestone.KRX_CLOSE_TIME:
+        _db_tickers = [r for r in candidates if r["ticker"] in supply_db]
+        if _db_tickers:
+            log.info(f"[수급 비교] DB 보유 {len(_db_tickers)}종목 KIS API 대조 시작")
+            for row in _db_tickers:
+                t = row["ticker"]
+                fl, ol = fetch_investor_daily(t, base_date, n_days=5)
+                db = supply_db[t]
+                api_frgn = fl[-1] if fl else None
+                api_inst = ol[-1] if ol else None
+                db_frgn = db["today_frgn"]
+                db_inst = db["today_inst"]
+                match = "✅" if (db_frgn == api_frgn and db_inst == api_inst) else "❌"
+                log.info(
+                    f"  {match} {t} {row['name'][:10]}  "
+                    f"외인: DB={db_frgn:+} API={api_frgn}  "
+                    f"기관: DB={db_inst:+} API={api_inst}"
+                )
+
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}
     if missing:
         log.debug(f"  DB 미보유 {len(missing)}종목 → KIS API fallback")
         try:
             for row in missing:
-                fl, ol = fetch_investor_daily(row["ticker"], base_date, n_days=5)
+                fl, ol = fetch_investor_daily(row["ticker"], base_date, n_days=5, market=row["market"])
                 if fl or ol:
                     supply_api[row["ticker"]] = {
                         "frgn": fl,
@@ -632,6 +658,14 @@ def enrich_with_db(results: list, base_date: str) -> list:
                         "today_inst": ol[-1] if ol else 0,
                         "today_indi": None,
                     }
+                # [임시] ETF 수급 조회 결과 로그
+                if row["market"] == "ETF":
+                    has_data = bool(fl or ol)
+                    icon = "✅" if has_data else "⚠️"
+                    log.info(
+                        f"  {icon} [ETF수급] {row['ticker']} {row['name'][:10]}  "
+                        f"외인={fl}  기관={ol}  데이터={'있음' if has_data else '없음'}"
+                    )
         except Exception as e:
             log.warning(f"  KIS API fallback 오류: {e}")
 
@@ -736,23 +770,31 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
         return pd.DataFrame()
 
     start = dtutils.add_days(base_date, LOOKBACK_DAYS * -1)
-    name_map = query.get_ticker_name_map()
+    name_map, disqualified, _ = _load_kis_master(base_date)
 
     results = []
 
     if check_index_above_ma(
         "코스피", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSPI
     ):
-        results += scan_market("isu_ksp_ohlcv", "KOSPI", start, base_date, name_map)
+        results += scan_market(
+            "isu_ksp_ohlcv", "KOSPI", start, base_date, name_map, exclude=disqualified
+        )
     else:
         log.warning("[KOSPI] 지수 20MA 아래 → 스캔 스킵")
 
     if check_index_above_ma(
         "코스닥", base_date, INDEX_MA_DAYS, idx_clss=sector.IDX_CLSS_KOSDAQ
     ):
-        results += scan_market("isu_ksd_ohlcv", "KOSDAQ", start, base_date, name_map)
+        results += scan_market(
+            "isu_ksd_ohlcv", "KOSDAQ", start, base_date, name_map, exclude=disqualified
+        )
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
+
+    if SCAN_ETF:
+        etf_name_map = query.get_etf_name_map()
+        results += scan_market("etf_ohlcv", "ETF", start, base_date, etf_name_map)
 
     results = enrich_with_db(results, base_date)
 
@@ -769,30 +811,94 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────
-# 업종지수 패널티/보너스
+# KIS 마스터 (종목명 + 부적합 필터 + 업종매핑)
 # ─────────────────────────────────────────
-_SECTOR_MAP_FILE = CACHE_DIR / "sector_map.json"
+_KOSPI_FLAG_COLS: dict[str, str] = {
+    "거래정지": "거래정지",
+    "정리매매": "정리매매",
+    "관리종목": "관리종목",
+    "시장경고": "시장경고",
+    "불성실공시": "불성실공시",
+    "단기과열": "단기과열",
+    "이상급등": "이상급등",
+    "SPAC": "SPAC",
+    "공매도과열": "공매도과열",
+    "경고예고": "경고예고",
+    "우회상장": "우회상장",
+}
+
+_KOSDAQ_FLAG_COLS: dict[str, str] = {
+    "거래정지": "거래정지 여부",
+    "정리매매": "정리매매 여부",
+    "관리종목": "관리 종목 여부",
+    "시장경고": "시장 경고 구분 코드",
+    "불성실공시": "불성실 공시 여부",
+    "단기과열": "단기과열종목구분코드",
+    "이상급등": "이상급등종목여부",
+    "SPAC": "기업인수목적회사여부",
+    "투자주의환기": "(코스닥)투자주의환기종목여부",
+    "공매도과열": "공매도과열종목여부",
+    "경고예고": "시장 경고위험 예고 여부",
+    "우회상장": "우회 상장 여부",
+}
 
 
-def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
-    """KOSPI 종목코드 → 업종지수명 매핑 (캐시 파일, base_date 기준 1회 갱신).
+def _is_flag_active(val) -> bool:
+    if pd.isna(val):
+        return False
+    if isinstance(val, (int, float)):
+        return val != 0
+    s = str(val).strip()
+    return s not in ("", "0", "00", "N")
 
+
+def _check_disqualified(row, flag_cols: dict[str, str]) -> str | None:
+    """부적합 플래그 체크. 해당되면 사유(flag명) 반환, 아니면 None."""
+    for flag_name, threshold in DISQUALIFY_FLAGS.items():
+        if not threshold:
+            continue
+        col = flag_cols.get(flag_name)
+        if not col or col not in row.index:
+            continue
+        val = row[col]
+        if isinstance(threshold, bool):
+            if _is_flag_active(val):
+                return flag_name
+        elif isinstance(threshold, int):
+            # 등급 코드: threshold 이상이면 탈락
+            try:
+                if int(float(val)) >= threshold:
+                    return flag_name
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+_master_cache: dict = {}
+
+
+def _load_kis_master(
+    base_date: str = "",
+) -> tuple[dict[str, str], set[str], dict[str, str]]:
+    """KIS 마스터 → (name_map, disqualified_tickers, sector_map).
+
+    같은 날이면 캐시 재사용 (마스터 zip은 영업일 단위 갱신).
     Note: KIS 마스터는 항상 현재 데이터만 제공. 과거 base_date로 스캔 시
-    현재 업종 매핑이 적용되는 한계가 있으나, 업종 변경은 매우 드뭄.
+    현재 매핑이 적용되는 한계가 있으나, 변경은 매우 드뭄.
     """
-    import json
-
+    global _master_cache
     cache_date = base_date or dtutils.today()
-    if _SECTOR_MAP_FILE.exists():
-        try:
-            data = json.loads(_SECTOR_MAP_FILE.read_text())
-            if data.get("_date") == cache_date:
-                return data.get("map", {})
-        except Exception:
-            pass
+    if _master_cache.get("_date") == cache_date:
+        return (
+            _master_cache["name_map"],
+            _master_cache["disqualified"],
+            _master_cache["sector_map"],
+        )
 
-    log.debug("[업종매핑] KIS 마스터 다운로드…")
-    result: dict[str, str] = {}
+    log.debug("[KIS 마스터] 다운로드 시작…")
+    name_map: dict[str, str] = {}
+    disqualified: set[str] = set()
+    sector_map: dict[str, str] = {}
 
     # KOSPI
     try:
@@ -801,13 +907,20 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
         kp = get_kospi_info()
         for _, row in kp.iterrows():
             ticker = str(row["단축코드"]).strip()
+            name_map[ticker] = str(row["한글명"]).strip()
+
+            reason = _check_disqualified(row, _KOSPI_FLAG_COLS)
+            if reason:
+                disqualified.add(ticker)
+                log.debug(f"  🚫 부적합: {ticker} {name_map[ticker]} ({reason})")
+
             mid = int(row.get("지수업종중분류", 0) or 0)
             big = int(row.get("지수업종대분류", 0) or 0)
             idx_nm = sector.KOSPI_MID_TO_IDX.get(mid) or sector.KOSPI_BIG_TO_IDX.get(
                 big
             )
             if idx_nm:
-                result[ticker] = idx_nm
+                sector_map[ticker] = idx_nm
     except Exception as e:
         log.warning(f"  KOSPI 마스터 로드 실패: {e}")
 
@@ -818,27 +931,40 @@ def _load_ticker_sector_map(base_date: str = "") -> dict[str, str]:
         kd = get_kosdaq_info()
         for _, row in kd.iterrows():
             ticker = str(row["단축코드"]).strip()
+            name_map[ticker] = str(row["한글종목명"]).strip()
+
+            reason = _check_disqualified(row, _KOSDAQ_FLAG_COLS)
+            if reason:
+                disqualified.add(ticker)
+                log.debug(f"  🚫 부적합: {ticker} {name_map[ticker]} ({reason})")
+
             mid = int(row.get("지수 업종 중분류 코드", 0) or 0)
             big = int(row.get("지수업종 대분류 코드", 0) or 0)
             idx_nm = sector.KOSDAQ_MID_TO_IDX.get(mid) or sector.KOSDAQ_BIG_TO_IDX.get(
                 big
             )
             if idx_nm:
-                result[ticker] = idx_nm
+                sector_map[ticker] = idx_nm
     except Exception as e:
         log.warning(f"  KOSDAQ 마스터 로드 실패: {e}")
 
-    # 캐시 저장 (빈 결과면 저장 스킵)
-    if result:
-        _SECTOR_MAP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SECTOR_MAP_FILE.write_text(
-            json.dumps({"_date": cache_date, "map": result}, ensure_ascii=False)
-        )
-        log.debug(f"  KOSPI+KOSDAQ 업종매핑: {len(result)}종목 캐시 저장")
-    else:
-        log.warning("  업종매핑 0건 → 캐시 미저장")
+    # DB fallback (마스터 다운로드 실패 시)
+    if not name_map:
+        log.warning("[KIS 마스터] 다운로드 실패 → DB fallback")
+        name_map = query.get_ticker_name_map()
 
-    return result
+    log.debug(
+        f"[KIS 마스터] 종목 {len(name_map)}건, 부적합 {len(disqualified)}건, "
+        f"업종매핑 {len(sector_map)}건"
+    )
+
+    _master_cache = {
+        "_date": cache_date,
+        "name_map": name_map,
+        "disqualified": disqualified,
+        "sector_map": sector_map,
+    }
+    return name_map, disqualified, sector_map
 
 
 def _get_sector_gap(
@@ -860,10 +986,12 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     if SECTOR_PENALTY_PTS == 0 and SECTOR_BONUS_PTS == 0:
         return df
 
-    sector_map = _load_ticker_sector_map(base_date)
+    _, _, sector_map = _load_kis_master(base_date)
     gap_cache: dict[tuple[str, str], float] = {}  # (sec_nm, idx_clss) → gap
 
     def get_gap(ticker: str, market: str) -> float:
+        if market == "ETF":
+            return 0.0  # ETF는 업종 패널티/보너스 미적용
         # KOSPI 미매핑 → "코스피" 전체 지수, KOSDAQ → "코스닥" 전체 지수
         fallback = "코스피" if market == "KOSPI" else "코스닥"
         sec_nm = sector_map.get(ticker, fallback)
@@ -893,6 +1021,59 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     return df
 
 
+# ─────────────────────────────────────────
+# 2차 실시간 부적합 검증 (KIS API)
+# ─────────────────────────────────────────
+# search_stock_info 응답 중 부적합 판정 필드
+_REALTIME_DISQUALIFY = {
+    "tr_stop_yn": "거래정지",
+    "admn_item_yn": "관리종목",
+    "etf_etn_ivst_heed_item_yn": "ETF/ETN투자유의",
+    "nxt_tr_stop_yn": "NXT거래정지",
+}
+
+
+def _verify_tradable(df: pd.DataFrame) -> pd.DataFrame:
+    """최종 후보에 대해 KIS API로 실시간 거래 가능 여부 검증."""
+    from wye.blsh.kis import kis_auth as ka
+    from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
+
+    try:
+        if not ka.getTREnv():
+            ka.auth()
+    except Exception as e:
+        log.warning(f"[실시간 검증] 인증 실패, 검증 스킵: {e}")
+        return df
+
+    drop_tickers: list[str] = []
+    for _, row in df.iterrows():
+        ticker = row["ticker"]
+        try:
+            result = ds.search_stock_info(prdt_type_cd="300", pdno=ticker)
+            if result is None or result.empty:
+                continue
+            info = result.iloc[0]
+            for field, reason in _REALTIME_DISQUALIFY.items():
+                val = info.get(field, "")
+                if str(val).strip().upper() == "Y":
+                    drop_tickers.append(ticker)
+                    log.info(
+                        f"  🚫 [실시간 검증] {ticker} {row['name']} → {reason}"
+                    )
+                    break
+        except Exception as e:
+            log.debug(f"  [실시간 검증] {ticker} 조회 실패: {e}")
+
+    if drop_tickers:
+        before = len(df)
+        df = df[~df["ticker"].isin(drop_tickers)]
+        log.info(f"[실시간 검증] {before}종목 중 {len(drop_tickers)}종목 부적합 제거")
+    else:
+        log.debug(f"[실시간 검증] {len(df)}종목 전량 통과")
+
+    return df
+
+
 def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     if base_date is None:
         base_date = dtutils.get_latest_biz_date()
@@ -906,10 +1087,15 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 
     cand_mask = (
         (sdf["buy_score"] >= INVEST_MIN_SCORE)
-        & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
+        & (sdf["mode"].isin(["MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
     )
     df = sdf[cand_mask].copy()
+
+    # 2차 실시간 부적합 검증 (KIS API)
+    if not df.empty:
+        df = _verify_tradable(df)
+
     if report:
         reporter.print_invest_report(df)
 
