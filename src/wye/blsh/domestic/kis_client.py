@@ -61,16 +61,24 @@ class KISClient:
             raise RuntimeError("인증 실패 — 토큰을 확인하고 다시 실행하세요.")
         log.info(f"계좌: {self.trenv.my_acct}-{self.trenv.my_prod}")
 
-    def get_price(self, ticker: str) -> float | None:
+    def get_price_detail(self, ticker: str) -> tuple[float, int] | None:
+        """현재가 + 하한가 동시 조회 (inquire_price 1회). 실패 시 None."""
         try:
             self.rate_limiter.wait()
             with _api_sem:
                 df = ds.inquire_price(self.env_dv, "J", ticker)
             if df is not None and not df.empty:
-                return float(df.iloc[0]["stck_prpr"])
+                row = df.iloc[0]
+                price = float(row["stck_prpr"])
+                lower_limit = int(row.get("stck_llam", 0) or 0)
+                return (price, lower_limit)
         except Exception as e:
             log.debug(f"현재가 조회 실패 ({ticker}): {e}")
         return None
+
+    def get_price(self, ticker: str) -> float | None:
+        result = self.get_price_detail(ticker)
+        return result[0] if result else None
 
     def fetch_prices(self, tickers: list[str]) -> dict[str, float]:
         """여러 종목 현재가 병렬 조회"""
@@ -194,8 +202,8 @@ class KISClient:
             log.error(f"  시장가 매수 오류 ({ticker}): {e}")
         return None
 
-    def sell(self, ticker: str, qty: int, reason: str = "") -> bool:
-        """시장가 매도. 성공 시 True."""
+    def sell(self, ticker: str, qty: int, reason: str = "") -> str | None:
+        """KRX 시장가 매도. 성공 시 주문번호(odno) 반환, 실패 시 None."""
         try:
             self.rate_limiter.wait()
             with _api_sem:
@@ -212,11 +220,133 @@ class KISClient:
                     sll_type="01",
                 )
             if df is not None and not df.empty:
-                log.info(f"  📤 매도완료: {ticker}  수량={qty}  [{reason}]")
-                return True
+                odno = str(df.iloc[0].get("odno", ""))
+                log.info(f"  📤 매도완료: {ticker}  수량={qty}  no={odno}  [{reason}]")
+                return odno
         except Exception as e:
             log.error(f"  매도 오류 ({ticker}): {e}")
-        return False
+        return None
+
+    def get_filled_price(self, ticker: str, odno: str, today: str) -> float | None:
+        """시장가 매도 주문의 실제 체결가 조회.
+
+        Args:
+            ticker: 종목코드
+            odno: 주문번호 (sell() 반환값)
+            today: 조회일자 (YYYYMMDD)
+
+        Returns:
+            체결가 (float) 또는 미체결/조회실패 시 None
+        """
+        try:
+            self.rate_limiter.wait()
+            with _api_sem:
+                df1, _ = ds.inquire_daily_ccld(
+                    env_dv=self.env_dv,
+                    pd_dv="inner",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    inqr_strt_dt=today,
+                    inqr_end_dt=today,
+                    sll_buy_dvsn_cd="01",  # 매도만
+                    ccld_dvsn="01",        # 체결만
+                    inqr_dvsn="00",
+                    inqr_dvsn_3="00",
+                    pdno=ticker,
+                    odno=odno,
+                )
+            if df1 is None or df1.empty:
+                return None
+            # 주문번호로 필터 (API가 종목 전체를 반환할 수 있으므로)
+            row = df1[df1["odno"].astype(str) == odno]
+            if row.empty:
+                log.debug(f"체결가 조회: odno={odno} 매칭 없음")
+                return None
+            price = float(row.iloc[0].get("avg_prvs", 0) or row.iloc[0].get("ccld_unpr", 0))
+            return price if price > 0 else None
+        except Exception as e:
+            log.debug(f"체결가 조회 실패 ({ticker} no={odno}): {e}")
+        return None
+
+    def get_sell_fills(self, today: str) -> dict[str, tuple[float, int]]:
+        """당일 매도 체결 내역 일괄 조회. {종목코드: (가중평균체결가, 총수량)} 반환."""
+        try:
+            self.rate_limiter.wait()
+            with _api_sem:
+                df1, _ = ds.inquire_daily_ccld(
+                    env_dv=self.env_dv,
+                    pd_dv="inner",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    inqr_strt_dt=today,
+                    inqr_end_dt=today,
+                    sll_buy_dvsn_cd="01",  # 매도만
+                    ccld_dvsn="01",        # 체결만
+                    inqr_dvsn="00",
+                    inqr_dvsn_3="00",
+                    excg_id_dvsn_cd="ALL",
+                )
+            if df1 is None or df1.empty:
+                return {}
+            # 종목별 총 체결금액·수량 집계 (TP1 + TP2 등 분할 매도 대응)
+            totals: dict[str, list[float]] = {}  # {ticker: [총금액, 총수량]}
+            for _, row in df1.iterrows():
+                ticker = str(row.get("pdno", ""))
+                qty = int(row.get("ccld_qty", 0) or 0)
+                price = float(row.get("ccld_unpr", 0) or 0)
+                if ticker and qty > 0 and price > 0:
+                    if ticker not in totals:
+                        totals[ticker] = [0.0, 0]
+                    totals[ticker][0] += price * qty
+                    totals[ticker][1] += qty
+            return {
+                t: (amt / q, int(q))
+                for t, (amt, q) in totals.items() if q > 0
+            }
+        except Exception as e:
+            log.debug(f"당일 매도 체결 일괄 조회 실패: {e}")
+        return {}
+
+    def get_pending_orders(self, today: str) -> list[dict]:
+        """당일 미체결 주문 조회. [{ticker, name, side, qty, price, odno}, ...]"""
+        try:
+            self.rate_limiter.wait()
+            with _api_sem:
+                df1, _ = ds.inquire_daily_ccld(
+                    env_dv=self.env_dv,
+                    pd_dv="inner",
+                    cano=self.trenv.my_acct,
+                    acnt_prdt_cd=self.trenv.my_prod,
+                    inqr_strt_dt=today,
+                    inqr_end_dt=today,
+                    sll_buy_dvsn_cd="00",  # 전체
+                    ccld_dvsn="02",        # 미체결만
+                    inqr_dvsn="00",
+                    inqr_dvsn_3="00",
+                    excg_id_dvsn_cd="ALL",
+                )
+            if df1 is None or df1.empty:
+                return []
+            results = []
+            for _, row in df1.iterrows():
+                ord_qty = int(row.get("ord_qty", 0) or 0)
+                ccld_qty = int(row.get("tot_ccld_qty", 0) or row.get("ccld_qty", 0) or 0)
+                rmn = ord_qty - ccld_qty
+                if rmn <= 0:
+                    continue
+                side = "매수" if str(row.get("sll_buy_dvsn_cd", "")) == "02" else "매도"
+                results.append({
+                    "ticker": str(row.get("pdno", "")),
+                    "name": str(row.get("prdt_name", "")),
+                    "side": side,
+                    "qty": rmn,
+                    "price": int(float(row.get("ord_unpr", 0) or 0)),
+                    "odno": str(row.get("odno", "")),
+                })
+            return results
+        except Exception as e:
+            log.debug(f"미체결 조회 실패: {e}")
+        return []
 
     def sell_nxt(self, ticker: str, qty: int, price: int, reason: str = "") -> bool:
         """NXT 지정가 매도. NXT는 시장가 불가이므로 지정가만 지원. 성공 시 True."""
@@ -250,7 +380,7 @@ class KISClient:
         try:
             self.rate_limiter.wait()
             with _api_sem:
-                ds.order_rvsecncl(
+                df = ds.order_rvsecncl(
                     env_dv=self.env_dv,
                     cano=self.trenv.my_acct,
                     acnt_prdt_cd=self.trenv.my_prod,
@@ -263,8 +393,11 @@ class KISClient:
                     qty_all_ord_yn="Y",
                     excg_id_dvsn_cd=excg_id_dvsn_cd,
                 )
-            log.info(f"  🚫 주문취소: {ticker}  no={odno}  [{excg_id_dvsn_cd}]")
-            return True
+            if df is not None and not df.empty:
+                log.info(f"  🚫 주문취소: {ticker}  no={odno}  [{excg_id_dvsn_cd}]")
+                return True
+            log.warning(f"  주문 취소 응답 없음 ({ticker} no={odno})")
+            return False
         except Exception as e:
             log.warning(f"  주문 취소 실패 ({ticker}, {excg_id_dvsn_cd}): {e}")
             return False

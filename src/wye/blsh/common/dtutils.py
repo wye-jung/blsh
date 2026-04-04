@@ -1,15 +1,18 @@
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+_KST = ZoneInfo("Asia/Seoul")
 
 DATE_FMT = "%Y%m%d"
 TIME_FMT = "%H%M%S"
 
 
 def ctime(fmt: str = TIME_FMT) -> str:
-    return datetime.now().strftime(fmt)
+    return datetime.now(_KST).strftime(fmt)
 
 
 def today(fmt: str = DATE_FMT) -> str:
-    return date.today().strftime(fmt)
+    return datetime.now(_KST).date().strftime(fmt)
 
 
 def add_time(time_str, fmt: str = TIME_FMT, **kwargs):
@@ -59,6 +62,25 @@ def next_biz_date(date_str=None, fmt=DATE_FMT):
     if the_date and fmt != DATE_FMT:
         the_date = datetime.strptime(the_date, DATE_FMT).strftime(fmt)
     return the_date
+
+
+def prev_biz_date(date_str=None, fmt=DATE_FMT):
+    date_str = date_str if date_str else today()
+    if fmt != DATE_FMT:
+        date_str = datetime.strptime(date_str, fmt).strftime(DATE_FMT)
+
+    from wye.blsh.database import query
+
+    the_date = query.find_prev_biz_date(date_str)
+    if the_date and fmt != DATE_FMT:
+        the_date = datetime.strptime(the_date, DATE_FMT).strftime(fmt)
+    return the_date
+
+
+def max_ohlcv_date():
+    from wye.blsh.database import query
+
+    return query.get_max_ohlcv_date()
 
 
 def get_latest_biz_date():

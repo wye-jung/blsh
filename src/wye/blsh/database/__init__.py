@@ -1,14 +1,53 @@
 import pandas as pd
 from sqlalchemy import create_engine, delete as _delete, select, text
 from sqlalchemy.orm import Session
-from wye.blsh.common.env import DB_URL
 
-engine = create_engine(DB_URL)
+
+def _make_engine():
+    from wye.blsh.common.env import DB_URL
+
+    return create_engine(DB_URL)
+
+
+class _LazyEngine:
+    """DB 연결을 첫 사용 시점에 생성 (import 시 연결 없음)."""
+
+    def __init__(self):
+        self._engine = None
+
+    def _get(self):
+        if self._engine is None:
+            self._engine = _make_engine()
+        return self._engine
+
+    # SQLAlchemy Engine 위임 메서드
+    def connect(self):
+        return self._get().connect()
+
+    def raw_connection(self):
+        return self._get().raw_connection()
+
+    def dispose(self):
+        if self._engine is not None:
+            self._engine.dispose()
+
+    # Session(engine) 용 dialect 접근
+    def __getattr__(self, name):
+        return getattr(self._get(), name)
+
+
+engine = _LazyEngine()
+
+import atexit
+
+atexit.register(lambda: engine.dispose())
 
 
 def create(table_name, df, if_exists="append"):
-    df.to_sql(table_name, con=engine, if_exists=if_exists, index=False)
-    print(f"Inserted {len(df)} rows into {table_name} table")
+    with engine.connect() as conn:
+        df.to_sql(table_name, con=conn, if_exists=if_exists, index=False)
+        conn.commit()
+    return len(df)
 
 
 def select_one(sql, **params):
@@ -43,7 +82,7 @@ class ModelManager:
         self.model = model
 
     def create(self, df):
-        create(self.model.__tablename__, df)
+        return create(self.model.__tablename__, df)
 
     def read(self, **filters) -> pd.DataFrame:
         with Session(engine) as session:
@@ -63,7 +102,4 @@ class ModelManager:
             stmt = _delete(self.model).filter_by(**filters)
             result = session.execute(stmt)
             session.commit()
-            print(
-                f"Deleted {result.rowcount} rows from {self.model.__tablename__} table"
-            )
             return result.rowcount

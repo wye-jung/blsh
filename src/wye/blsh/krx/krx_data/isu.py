@@ -40,7 +40,7 @@ class Isu(Base):
             "TDD_HGPRC": np.int32,
             "TDD_LWPRC": np.int32,
             "TDD_CLSPRC": np.int32,
-            "ACC_TRDVOL": np.int32,
+            "ACC_TRDVOL": np.int64,
             "ACC_TRDVAL": np.int64,
             "CMPPREVDD_PRC": np.int32,
             "FLUC_RT": np.float32,

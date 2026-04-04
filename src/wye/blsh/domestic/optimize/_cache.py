@@ -16,11 +16,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import text
-from sqlalchemy.orm import Session
-
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import DATA_DIR
+from wye.blsh.common.env import CACHE_DIR as _BLSH_CACHE_DIR
 from wye.blsh.database.query import engine, select_all
 from wye.blsh.domestic import sector, Tick
 from wye.blsh.domestic.scanner import (
@@ -44,27 +41,29 @@ from wye.blsh.domestic.scanner import (
     MACD_SIGNAL,
     MIN_SCORE,
     ENRICH_SCORE,
+    SUPPLY_CAP,
 )
 
 
-
-# 업종코드 → DB 지수명 매핑은 factor.py에서 참조
+# 업종코드 → DB 지수명 매핑은 sector.py에서 참조
 _KOSPI_MID_TO_IDX = sector.KOSPI_MID_TO_IDX
 _KOSPI_BIG_TO_IDX = sector.KOSPI_BIG_TO_IDX
 _KOSDAQ_MID_TO_IDX = sector.KOSDAQ_MID_TO_IDX
 _KOSDAQ_BIG_TO_IDX = sector.KOSDAQ_BIG_TO_IDX
 
 log = logging.getLogger(__name__)
-CACHE_DIR = DATA_DIR / "cache" / "optimize"
+CACHE_DIR = _BLSH_CACHE_DIR / "optimize"
 
-# scanner.evaluate_buy 와 동일한 점수표
-_SCORES = {
-    "MGC": 2, "MPGC": 1, "RBO": 2, "ROV": 1, "BBL": 1,
-    "BBM": 1, "VS": 1, "MAA": 1, "SGC": 1, "W52": 2,
-    "PB": 2, "HMR": 1, "LB": 2, "MS": 2, "OBV": 1,
-}
+from wye.blsh.domestic.config import SIGNAL_SCORES as _SCORES, SUPPLY_CAP
 _SIGNAL_COLS = list(_SCORES.keys())
 _ALL_FLAGS = _MOMENTUM_FLAGS | _REVERSAL_FLAGS  # 중립 = 전체 - 이 집합
+
+# 플래그 비트마스크 상수 (backtest_scores_nb용)
+FLAG_ORDER = list(_SCORES.keys())
+FLAG_IDX = {name: i for i, name in enumerate(FLAG_ORDER)}
+N_FLAGS = len(FLAG_ORDER)
+MOM_MASK = sum(1 << FLAG_IDX[f] for f in _MOMENTUM_FLAGS if f in FLAG_IDX)
+REV_MASK = sum(1 << FLAG_IDX[f] for f in _REVERSAL_FLAGS if f in FLAG_IDX)
 
 
 # ─────────────────────────────────────────
@@ -158,7 +157,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     out["BBM"] = (c0 > bbm0) & (c1 <= bbm1)
 
     # 7. VS: 거래량 급증 + 양봉 (+1)
-    vol_avg = v.shift(1).rolling(19, min_periods=10).mean()
+    vol_avg = v.shift(1).rolling(19, min_periods=19).mean()
     out["VS"] = (v > vol_avg * 2) & (c0 > c1)
 
     # 8. MAA: 이동평균 정배열 전환 (+1)
@@ -169,7 +168,8 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     out["SGC"] = (sk0 > sd0) & (sk1 < sd1) & (sk0 < 50)
 
     # 10. W52: 52주 신고가 돌파 (+2)
-    w52_high = h.rolling(252, min_periods=200).max().shift(1)
+    # scanner.py와 동일: 전일까지의 251일 최고가 (당일 제외)
+    w52_high = h.shift(1).rolling(251, min_periods=200).max()
     vol_20_avg = v.rolling(20).mean().shift(1)
     out["W52"] = (h > w52_high) & (v > vol_20_avg * W52_VOL_MULT)
 
@@ -233,7 +233,10 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
             "WHERE idx_nm = :nm AND idx_clss = :clss "
             "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, clss=clss, s=start, e=end,
+            nm=idx_nm,
+            clss=clss,
+            s=start,
+            e=end,
         )
         if not rows:
             continue
@@ -273,7 +276,10 @@ def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str, str], flo
             "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
             "WHERE idx_nm = :nm AND idx_clss = :clss "
             "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm, clss=clss, s=start, e=end,
+            nm=idx_nm,
+            clss=clss,
+            s=start,
+            e=end,
         )
         if not rows:
             continue
@@ -296,7 +302,8 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
     KOSDAQ: 중분류 우선, 대분류 fallback, 미매핑 → "코스닥"
     """
     from wye.blsh.kis.domestic_stock.domestic_stock_info import (
-        get_kospi_info, get_kosdaq_info,
+        get_kospi_info,
+        get_kosdaq_info,
     )
 
     result: dict[str, str] = {}
@@ -315,7 +322,9 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
             idx_nm = _KOSPI_MID_TO_IDX.get(mid) or _KOSPI_BIG_TO_IDX.get(big)
             result[ticker] = idx_nm or "코스피"  # 미매핑 → 전체 지수
         kp_mapped = sum(1 for t in kospi_tickers if result.get(t, "코스피") != "코스피")
-        log.info(f"  KOSPI 업종매핑: {kp_mapped}/{len(kospi_tickers)}종목 (미매핑→코스피)")
+        log.info(
+            f"  KOSPI 업종매핑: {kp_mapped}/{len(kospi_tickers)}종목 (미매핑→코스피)"
+        )
 
         # KOSDAQ
         kd = get_kosdaq_info()
@@ -327,8 +336,12 @@ def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
             big = int(row.get("지수업종 대분류 코드", 0) or 0)
             idx_nm = _KOSDAQ_MID_TO_IDX.get(mid) or _KOSDAQ_BIG_TO_IDX.get(big)
             result[ticker] = idx_nm or "코스닥"  # 미매핑 → 전체 지수
-        kd_mapped = sum(1 for t in kosdaq_tickers if result.get(t, "코스닥") != "코스닥")
-        log.info(f"  KOSDAQ 업종매핑: {kd_mapped}/{len(kosdaq_tickers)}종목 (미매핑→코스닥)")
+        kd_mapped = sum(
+            1 for t in kosdaq_tickers if result.get(t, "코스닥") != "코스닥"
+        )
+        log.info(
+            f"  KOSDAQ 업종매핑: {kd_mapped}/{len(kosdaq_tickers)}종목 (미매핑→코스닥)"
+        )
     except Exception as e:
         log.warning(f"  마스터 로드 실패: {e}")
         # fallback: 미매핑 종목 전체 지수
@@ -357,7 +370,8 @@ def _bulk_supply(start: str, end: str, scan_dates: list[str]) -> dict:
                 f"indi_netbid_trdvol AS indi "
                 f"FROM {table} WHERE trd_dd >= :s AND trd_dd <= :e "
                 f"ORDER BY isu_srt_cd, trd_dd",
-                s=pad_start, e=end,
+                s=pad_start,
+                e=end,
             )
         except Exception as e:
             log.warning(f"수급 로드 실패 ({table}): {e}")
@@ -401,8 +415,7 @@ def _bulk_supply(start: str, end: str, scan_dates: list[str]) -> dict:
                     recent["inst"].iloc[-1],
                 )
                 if ti > 0 and tf <= 0 and to_ <= 0 and ti > abs(tf) + abs(to_):
-                    bonus -= 1
-                    has_pov = True
+                    has_pov = True  # P_OV 패널티는 signal 빌딩에서 캡 적용 후 차감
 
                 if bonus != 0 or has_pov:
                     result[(ticker, date)] = (bonus, flags, has_pov)
@@ -426,7 +439,208 @@ class OptCache:
         self.name_map: dict[str, str] = {}
         self.ticker_market: dict[str, str] = {}
         self.ticker_sector: dict[str, str] = {}  # ticker → 업종지수명
-        self.sector_gaps: dict[tuple[str, str, str], float] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
+        self.sector_gaps: dict[
+            tuple[str, str, str], float
+        ] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
+        # numba용 (build_arrays()로 생성)
+        self.ohlcv_arrays: dict[str, np.ndarray] | None = None
+        self.date_to_idx: dict[str, int] | None = None
+
+    def build_arrays(self):
+        """ohlcv_idx를 종목별 numpy 배열로 변환 (numba sim용)."""
+        all_dates = sorted({d for _, d in self.ohlcv_idx})
+        self.date_to_idx = {d: i for i, d in enumerate(all_dates)}
+        n_dates = len(all_dates)
+
+        # 종목별 (N, 4) 배열 생성 — sentinel -1.0 = 데이터 없음
+        tickers = {t for t, _ in self.ohlcv_idx}
+        self.ohlcv_arrays = {}
+        for ticker in tickers:
+            self.ohlcv_arrays[ticker] = np.full(
+                (n_dates, 4), -1.0, dtype=np.float64
+            )
+        for (t, d), ohv in self.ohlcv_idx.items():
+            idx = self.date_to_idx[d]
+            self.ohlcv_arrays[t][idx] = [
+                ohv["open"], ohv["high"], ohv["low"], ohv["close"],
+            ]
+        log.info(
+            f"[numpy] OHLCV 배열 변환 완료: {len(tickers)}종목 × {n_dates}일"
+        )
+
+    def precompute_signals(self, min_score: int = 0, max_sector_bonus: int = 1):
+        """signal별 OHLCV 슬라이스를 사전 계산 (backtest 루프 최적화).
+
+        Args:
+            min_score: GRID 최소 invest_min_score. score + max_sector_bonus < min_score인 signal 제거.
+            max_sector_bonus: sector 보너스 최대값 (GRID에서 추출).
+
+        각 signal dict에 _buy, _opens, _highs, _lows, _closes, _n_bars, _mode_id 추가.
+        _skip=True인 signal은 backtest에서 건너뜀.
+        """
+        _MODE_MAP = {"REV": 0, "MIX": 1, "MOM": 2}
+        d2i = self.date_to_idx
+        total, skipped = 0, 0
+
+        for base_date, sigs in self.signals.items():
+            entry_date = self.next_biz.get(base_date)
+            if not entry_date:
+                for sig in sigs:
+                    sig["_skip"] = True
+                total += len(sigs)
+                skipped += len(sigs)
+                continue
+            hold_dates = self.forward_dates.get(entry_date, [entry_date])
+            # 보유 기간 인덱스 (entry_date 이후, 전체 기간)
+            indices = [d2i[d] for d in hold_dates if d >= entry_date and d in d2i]
+            if not indices:
+                for sig in sigs:
+                    sig["_skip"] = True
+                total += len(sigs)
+                skipped += len(sigs)
+                continue
+            idx_arr = np.array(indices)
+
+            for sig in sigs:
+                total += 1
+
+                # score 사전 필터: 최대 가능 점수가 min_score 미달이면 스킵
+                if min_score > 0 and sig["score"] + max_sector_bonus < min_score:
+                    sig["_skip"] = True
+                    skipped += 1
+                    continue
+
+                ticker = sig["ticker"]
+                arr = self.ohlcv_arrays.get(ticker)
+                entry_idx = d2i.get(entry_date)
+
+                if (
+                    arr is None
+                    or entry_idx is None
+                    or arr[entry_idx, 0] <= 0
+                    or arr[entry_idx, 0] > sig["entry_price"]
+                ):
+                    sig["_skip"] = True
+                    skipped += 1
+                    continue
+
+                sig["_skip"] = False
+                sig["_buy"] = arr[entry_idx, 0]
+                sig["_opens"] = arr[idx_arr, 0].copy()
+                sig["_highs"] = arr[idx_arr, 1].copy()
+                sig["_lows"] = arr[idx_arr, 2].copy()
+                sig["_closes"] = arr[idx_arr, 3].copy()
+                sig["_n_bars"] = len(idx_arr)
+                mode = sig.get("mode", "REV")
+                if mode not in _MODE_MAP:
+                    sig["_skip"] = True
+                    skipped += 1
+                    continue
+                sig["_mode_id"] = _MODE_MAP[mode]
+
+        log.info(
+            f"[사전계산] signal OHLCV 슬라이스: {total - skipped:,}건 유효"
+            f" / {skipped:,}건 스킵 (총 {total:,}건)"
+        )
+
+    def flatten_signals(self):
+        """비스킵 신호를 flat numpy 배열로 변환 (numba backtest용)."""
+        sigs_flat = []
+        for sigs in self.signals.values():
+            for sig in sigs:
+                if not sig.get("_skip", True):
+                    sigs_flat.append(sig)
+
+        n = len(sigs_flat)
+        if n == 0:
+            self.flat_buy = np.empty(0, dtype=np.float64)
+            self.flat_atr = np.empty(0, dtype=np.float64)
+            self.flat_score = np.empty(0, dtype=np.int64)
+            self.flat_sec_gap = np.empty(0, dtype=np.float64)
+            self.flat_mode_id = np.empty(0, dtype=np.int64)
+            self.flat_n_bars = np.empty(0, dtype=np.int64)
+            self.flat_opens = np.empty((0, 1), dtype=np.float64)
+            self.flat_highs = np.empty((0, 1), dtype=np.float64)
+            self.flat_lows = np.empty((0, 1), dtype=np.float64)
+            self.flat_closes = np.empty((0, 1), dtype=np.float64)
+            self.flat_flag_mask = np.empty(0, dtype=np.int64)
+            self.flat_supply_bonus = np.empty(0, dtype=np.int64)
+            self.flat_has_pov = np.empty(0, dtype=np.int64)
+            return
+
+        max_bars = max(s["_n_bars"] for s in sigs_flat)
+
+        self.flat_buy = np.empty(n, dtype=np.float64)
+        self.flat_atr = np.empty(n, dtype=np.float64)
+        self.flat_score = np.empty(n, dtype=np.int64)
+        self.flat_sec_gap = np.empty(n, dtype=np.float64)
+        self.flat_mode_id = np.empty(n, dtype=np.int64)
+        self.flat_n_bars = np.empty(n, dtype=np.int64)
+        self.flat_opens = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_highs = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_lows = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_closes = np.zeros((n, max_bars), dtype=np.float64)
+        self.flat_flag_mask = np.empty(n, dtype=np.int64)
+        self.flat_supply_bonus = np.empty(n, dtype=np.int64)
+        self.flat_has_pov = np.empty(n, dtype=np.int64)
+
+        for i, sig in enumerate(sigs_flat):
+            self.flat_buy[i] = sig["_buy"]
+            self.flat_atr[i] = sig["atr"]
+            self.flat_score[i] = sig["score"]
+            self.flat_sec_gap[i] = sig.get("sector_gap", 0.0)
+            self.flat_mode_id[i] = sig["_mode_id"]
+            nb = sig["_n_bars"]
+            self.flat_n_bars[i] = nb
+            self.flat_opens[i, :nb] = sig["_opens"]
+            self.flat_highs[i, :nb] = sig["_highs"]
+            self.flat_lows[i, :nb] = sig["_lows"]
+            self.flat_closes[i, :nb] = sig["_closes"]
+
+            # 플래그 비트마스크 인코딩
+            flag_str = sig.get("flags", "")
+            flags = set(flag_str.split(",")) if flag_str else set()
+            mask = 0
+            for f in flags:
+                idx = FLAG_IDX.get(f)
+                if idx is not None:
+                    mask |= 1 << idx
+            self.flat_flag_mask[i] = mask
+            self.flat_supply_bonus[i] = min(
+                sig.get("raw_supply_bonus", 0), SUPPLY_CAP,
+            )
+            self.flat_has_pov[i] = 1 if "P_OV" in flags else 0
+
+        log.info(f"[flat] {n:,}건 → numpy 배열 (max_bars={max_bars})")
+
+    def slice_by_dates(self, start_date: str, end_date: str) -> "OptCache":
+        """scan_dates를 날짜 범위로 필터한 얕은 복사본 반환.
+
+        OHLCV 배열, signal dict 등은 원본 참조 공유 (read-only).
+        반환 후 flatten_signals()를 호출하여 flat 배열을 재생성해야 함.
+        """
+        sliced = OptCache()
+        sliced.scan_dates = [d for d in self.scan_dates if start_date <= d <= end_date]
+        sliced.signals = {d: self.signals[d] for d in sliced.scan_dates if d in self.signals}
+        sliced.next_biz = self.next_biz
+        sliced.forward_dates = self.forward_dates
+        sliced.ohlcv_idx = self.ohlcv_idx
+        sliced.ohlcv_arrays = self.ohlcv_arrays
+        sliced.date_to_idx = self.date_to_idx
+        sliced.name_map = self.name_map
+        sliced.ticker_market = self.ticker_market
+        sliced.ticker_sector = self.ticker_sector
+        sliced.sector_gaps = self.sector_gaps
+        return sliced
+
+    def update_flat_scores(self):
+        """recalc_cache_scores 이후 flat_score만 갱신."""
+        idx = 0
+        for sigs in self.signals.values():
+            for sig in sigs:
+                if not sig.get("_skip", True):
+                    self.flat_score[idx] = sig["score"]
+                    idx += 1
 
     # ── pickle I/O
     def save(self, tag: str = ""):
@@ -443,7 +657,9 @@ class OptCache:
         t0 = time.time()
         obj = cls()
         obj.__dict__.update(pickle.loads(path.read_bytes()))
-        log.info(f"캐시 로드: {path} ({len(obj.scan_dates)}일, {time.time() - t0:.1f}초)")
+        log.info(
+            f"캐시 로드: {path} ({len(obj.scan_dates)}일, {time.time() - t0:.1f}초)"
+        )
         return obj
 
 
@@ -485,7 +701,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
         for r in select_all(
             "SELECT DISTINCT trd_dd AS d FROM idx_stk_ohlcv "
             "WHERE trd_dd >= :s AND trd_dd <= :e ORDER BY 1",
-            s=lookback_start, e=end_date,
+            s=lookback_start,
+            e=end_date,
         )
     ]
     cache.scan_dates = [d for d in all_biz if start_date <= d <= end_date]
@@ -495,7 +712,9 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     # forward_dates: 각 날짜 이후 20 영업일
     for i, d in enumerate(all_biz):
         cache.forward_dates[d] = all_biz[i : i + 21]
-    log.info(f"  스캔 대상 {len(cache.scan_dates)}일  ({cache.scan_dates[0]} ~ {cache.scan_dates[-1]})")
+    log.info(
+        f"  스캔 대상 {len(cache.scan_dates)}일  ({cache.scan_dates[0]} ~ {cache.scan_dates[-1]})"
+    )
 
     # ── 2. 종목명
     cache.name_map = {
@@ -514,7 +733,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             f"tdd_clsprc AS close, acc_trdvol AS volume, acc_trdval AS trdval "
             f"FROM {table} "
             f"WHERE trd_dd >= :s AND trd_dd <= :e ORDER BY isu_srt_cd, trd_dd",
-            s=lookback_start, e=end_date,
+            s=lookback_start,
+            e=end_date,
         )
         df = pd.DataFrame(rows)
         if df.empty:
@@ -555,7 +775,11 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     for ticker, df in ohlcv_by_ticker.items():
         avg20 = df["trdval"].rolling(20, min_periods=10).mean()
         for d in cache.scan_dates:
-            if d in avg20.index and pd.notna(avg20.loc[d]) and avg20.loc[d] >= TRDVAL_MIN:
+            if (
+                d in avg20.index
+                and pd.notna(avg20.loc[d])
+                and avg20.loc[d] >= TRDVAL_MIN
+            ):
                 trdval_pass.setdefault(d, set()).add(ticker)
 
     # ── 6. 벡터화 신호 계산
@@ -601,20 +825,23 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                 continue
 
             mode = _classify_mode(flags)
-            score = _calc_score(flags, mode)
-            if score < MIN_SCORE:
+            tech_score = _calc_score(flags, mode)
+            if tech_score < MIN_SCORE:
                 continue
 
-            # 수급 보강 (score >= ENRICH_SCORE 인 경우만)
-            if score >= ENRICH_SCORE:
+            # 수급 보강 (tech_score >= ENRICH_SCORE 인 경우만)
+            raw_supply_bonus = 0  # 캡 미적용 원본 수급 점수 (supply_cap_test용)
+            score = tech_score
+            if tech_score >= ENRICH_SCORE:
                 sup = supply.get((ticker, date))
                 if sup:
                     bonus, bonus_flags, has_pov = sup
-                    score += bonus
+                    raw_supply_bonus = bonus
+                    score += min(bonus, SUPPLY_CAP)  # scanner.py와 동일한 수급 상한
                     flags |= bonus_flags
                     if has_pov:
                         flags.add("P_OV")
-                        score -= 1
+                        score -= 1  # 캡 적용 후 P_OV 패널티 (scanner.py 순서 일치)
 
             atr_val = float(row["_atr"]) if pd.notna(row["_atr"]) else 0
             close_val = float(row["_close"]) if pd.notna(row["_close"]) else 0
@@ -626,7 +853,9 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             # 업종지수 MA20 괴리율 (없으면 0.0 = 중립)
             sec_nm = cache.ticker_sector.get(ticker, "")
             idx_clss = sector.get_idx_clss(mkt)
-            sec_gap = cache.sector_gaps.get((sec_nm, idx_clss, date), 0.0) if sec_nm else 0.0
+            sec_gap = (
+                cache.sector_gaps.get((sec_nm, idx_clss, date), 0.0) if sec_nm else 0.0
+            )
 
             day_sigs.append(
                 {
@@ -634,6 +863,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                     "name": cache.name_map.get(ticker, ticker),
                     "market": mkt,
                     "score": score,
+                    "tech_score": tech_score,  # 기술 점수만 (수급 제외)
+                    "raw_supply_bonus": raw_supply_bonus,  # 캡 미적용 수급 점수 원본
                     "flags": ",".join(sorted(flags)),
                     "mode": mode,
                     "atr": atr_val,

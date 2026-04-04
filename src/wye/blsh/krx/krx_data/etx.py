@@ -25,7 +25,7 @@ class Etx(Base):
             "ISU_SRT_CD": str,
             "TDD_CLSPRC": np.int32,
             "CMPPREVDD_PRC": np.int32,
-            "FLUC_RT": np.int32,
+            "FLUC_RT": np.float64,
             "NAV": np.float64,
             "TDD_OPNPRC": np.int32,
             "TDD_HGPRC": np.int32,

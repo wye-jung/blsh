@@ -53,7 +53,7 @@ config_root = CONFIG_DIR
 
 def get_token_file_path(svr):
     path = os.path.join(
-        config_root, f"KIS{datetime.today().strftime('%Y%m%d')}{svr}"
+        config_root, svr, f"KIS{datetime.today().strftime('%Y%m%d')}"
     )  # 토큰 로컬저장시 파일명 년월일
     # 접근토큰 관리하는 파일 존재여부 체크, 없으면 생성
     if not os.path.exists(path):

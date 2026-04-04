@@ -1,29 +1,49 @@
 """
 Grid Search 최적화
 ──────────────────────────────────
-데이트레이딩(DAY) / 스윙트레이딩(SWING) 최적 파라미터 탐색
+최적 파라미터 탐색
 
 실행:
     uv run python -m wye.blsh.domestic.optimize.grid_search
-    uv run python -m wye.blsh.domestic.optimize.grid_search --mode DAY
-    uv run python -m wye.blsh.domestic.optimize.grid_search --mode SWING
     uv run python -m wye.blsh.domestic.optimize.grid_search --years 2
     uv run python -m wye.blsh.domestic.optimize.grid_search --rebuild
 """
 
 import argparse
 import logging
+import multiprocessing as mp
+import os
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import product
 from pathlib import Path
 
 from wye.blsh.common import dtutils
-from wye.blsh.domestic.optimize._cache import build_or_load, OptCache, CACHE_DIR
+from wye.blsh.domestic import Tick
+from wye.blsh.domestic._sim_core import (
+    sim_one,
+    sim_one_nb, floor_tick_nb, ceil_tick_nb,
+    backtest_nb, backtest_scores_nb,
+    RESULT_LABELS, RES_HOLD,
+)
+from wye.blsh.domestic.config import SELL_COST_RATE, SIGNAL_SCORES, SUPPLY_CAP
+from wye.blsh.domestic.optimize._cache import (
+    build_or_load, OptCache, CACHE_DIR,
+    _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS, _classify_mode,
+    FLAG_ORDER, N_FLAGS, MOM_MASK, REV_MASK,
+)
 
 log = logging.getLogger(__name__)
 
-SELL_COST_RATE = 0.002
+# fork 방식으로 캐시를 자식 프로세스에 공유 (복사 없이 CoW)
+_WORKER_CACHE: OptCache | None = None
+
+
+def _backtest_worker(args: tuple) -> tuple["Params", "Stats"]:
+    keys, combo = args
+    p = Params(**dict(zip(keys, combo)))
+    return p, backtest(_WORKER_CACHE, p)
 
 
 # ─────────────────────────────────────────
@@ -37,27 +57,30 @@ class Params:
     max_hold_days_rev: int
     max_hold_days_mix: int
     max_hold_days_mom: int
-    tp1_mult: float                  # 1차 익절 ATR 배수 (e.g. 0.7, 1.0, 1.5)
-    tp1_ratio: float                 # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
-    gap_down_limit: float            # 갭하락 한계 (e.g. 0.03 = entry 대비 3% 이상 하락 시 스킵)
+    tp1_mult: float  # 1차 익절 ATR 배수 (e.g. 0.7, 1.0, 1.5)
+    tp1_ratio: float  # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
     sector_penalty_threshold: float  # 업종지수 MA20 괴리율 패널티 임계값 (e.g. -0.03)
-    sector_penalty_pts: int          # 임계값 이하 시 점수 패널티 (e.g. -2)
-    sector_bonus_pts: int            # 업종지수 MA20 이상일 때 보너스 (e.g. +1)
+    sector_penalty_pts: int  # 임계값 이하 시 점수 패널티 (e.g. -2)
+    sector_bonus_threshold: float  # 업종지수 MA20 괴리율 보너스 임계값 (e.g. 0.0)
+    sector_bonus_pts: int  # 임계값 이상 시 보너스 (e.g. +1)
 
     def label(self) -> str:
         parts = []
         if self.sector_penalty_pts != 0:
-            parts.append(f"pen={self.sector_penalty_threshold:.0%}/{self.sector_penalty_pts:+d}")
+            parts.append(
+                f"pen={self.sector_penalty_threshold:.0%}/{self.sector_penalty_pts:+d}"
+            )
         if self.sector_bonus_pts != 0:
-            parts.append(f"bon=+0%/{self.sector_bonus_pts:+d}")
-        sec = ' '.join(parts) if parts else "sec=off"
-        gap = f"gap={self.gap_down_limit:.0%}" if self.gap_down_limit > 0 else ""
+            parts.append(
+                f"bon={self.sector_bonus_threshold:+.0%}/{self.sector_bonus_pts:+d}"
+            )
+        sec = " ".join(parts) if parts else "sec=off"
         return (
             f"score≥{self.invest_min_score} "
             f"SL={self.atr_sl_mult:.1f} TP1={self.tp1_mult:.1f}({self.tp1_ratio:.0%}) "
             f"TP2={self.atr_tp_mult:.1f} "
             f"REV={self.max_hold_days_rev}d MIX={self.max_hold_days_mix}d "
-            f"MOM={self.max_hold_days_mom}d {gap} {sec}".rstrip()
+            f"MOM={self.max_hold_days_mom}d {sec}".rstrip()
         )
 
 
@@ -68,6 +91,7 @@ class Stats:
     losses: int = 0
     holds: int = 0
     total_ret: float = 0.0
+    ret_sq: float = 0.0
 
     @property
     def win_rate(self) -> float:
@@ -79,10 +103,15 @@ class Stats:
 
     @property
     def metric(self) -> float:
-        """최적화 지표: 총수익 × min(1, trades/100). 거래 30건 미만 패널티."""
+        """최적화 지표: avg_ret × sqrt(trades).
+
+        신호 품질(평균 수익률)을 우선하면서, 거래 수가 적으면
+        sqrt로 자연스럽게 불이익. 30건 미만은 통계 무의미로 제외.
+        """
         if self.trades < 30:
             return -9999
-        return self.total_ret * min(1.0, self.trades / 100)
+        import math
+        return self.avg_ret * math.sqrt(self.trades)
 
 
 # ─────────────────────────────────────────
@@ -95,28 +124,68 @@ def _simulate_one(
     params: Params,
     hold_dates: list[str],
 ) -> tuple[str, float] | None:
-    """1개 후보 시뮬레이션. (result_type, ret_pct) 반환, 스킵이면 None."""
+    """1개 후보 시뮬레이션 (numba JIT). (result_type, ret_pct) 반환, 스킵이면 None."""
     ticker = sig["ticker"]
     atr = sig["atr"]
+    cache: OptCache = _WORKER_CACHE
 
+    # numba 경로: numpy 배열 사용
+    if cache.ohlcv_arrays is not None:
+        entry_idx = cache.date_to_idx.get(entry_date)
+        if entry_idx is None:
+            return None
+        arr = cache.ohlcv_arrays.get(ticker)
+        if arr is None or arr[entry_idx, 0] <= 0:
+            return None
+        if arr[entry_idx, 0] > sig["entry_price"]:
+            return None
+
+        buy = arr[entry_idx, 0]
+        sl = float(floor_tick_nb(buy - params.atr_sl_mult * atr))
+        tp1 = float(ceil_tick_nb(buy + params.tp1_mult * atr))
+        tp2 = float(ceil_tick_nb(buy + params.atr_tp_mult * atr))
+
+        mode = sig["mode"]
+        if mode == "MOM":
+            max_d = params.max_hold_days_mom
+        elif mode == "MIX":
+            max_d = params.max_hold_days_mix
+        else:
+            max_d = params.max_hold_days_rev
+
+        # hold_dates → 인덱스 배열 (거래정지 등으로 비연속일 수 있음)
+        import numpy as _np
+        d2i = cache.date_to_idx
+        indices = [d2i[d] for d in hold_dates if d >= entry_date and d in d2i]
+        indices = indices[: max_d + 1]
+        if not indices:
+            return None
+
+        idx_arr = _np.array(indices)
+        res_id, ret, _, _ = sim_one_nb(
+            buy, sl, tp1, tp2, params.tp1_ratio,
+            params.atr_sl_mult, atr,
+            arr[idx_arr, 0], arr[idx_arr, 1],
+            arr[idx_arr, 2], arr[idx_arr, 3],
+            len(idx_arr), SELL_COST_RATE,
+        )
+
+        label = RESULT_LABELS[res_id]
+        if label == "미확정" and max_d == 0:
+            label = "데이청산"
+        return label, ret
+
+    # fallback: 기존 dict 경로
     t1 = ohlcv_idx.get((ticker, entry_date))
     if t1 is None:
         return None
-
-    # 갭 상승 → 매수 불가
     if t1["open"] > sig["entry_price"]:
         return None
 
-    # 갭 하락 필터: entry 대비 gap_down_limit 이상 하락 시 스킵
     buy = t1["open"]
-    if params.gap_down_limit > 0:
-        gap_floor = sig["entry_price"] * (1 - params.gap_down_limit)
-        if buy < gap_floor:
-            return None
-
-    sl = buy - params.atr_sl_mult * atr
-    tp1 = buy + params.tp1_mult * atr
-    tp2 = buy + params.atr_tp_mult * atr
+    sl = Tick.floor_tick(buy - params.atr_sl_mult * atr)
+    tp1 = Tick.ceil_tick(buy + params.tp1_mult * atr)
+    tp2 = Tick.ceil_tick(buy + params.atr_tp_mult * atr)
 
     mode = sig["mode"]
     if mode == "MOM":
@@ -126,61 +195,20 @@ def _simulate_one(
     else:
         max_d = params.max_hold_days_rev
 
-    # 보유 기간 날짜
     dates = [d for d in hold_dates if d >= entry_date][: max_d + 1]
     if not dates:
         return None
 
-    remaining = 1.0
-    pnl = 0.0
-    t1_done = False
-    result_type = None
-    prev_high = t1["high"]
-    last_close = t1["close"]
+    result_type, ret, _, _, _ = sim_one(
+        buy=buy, sl=sl, tp1=tp1, tp2=tp2,
+        tp1_ratio=params.tp1_ratio,
+        atr_sl_mult=params.atr_sl_mult,
+        atr=atr, dates=dates,
+        get_ohv=lambda d: ohlcv_idx.get((ticker, d)),
+    )
 
-    for d in dates:
-        ohv = ohlcv_idx.get((ticker, d))
-        if ohv is None:
-            continue
-        last_close = ohv["close"]
-
-        # 트레일링 SL (전일 high 기준 — 보수적)
-        if d != dates[0]:
-            trail = prev_high - params.atr_sl_mult * atr
-            if trail > sl and trail < prev_high:
-                sl = trail
-
-        # 손절
-        if ohv["low"] <= sl:
-            pnl += (sl - buy) * remaining - sl * remaining * SELL_COST_RATE
-            result_type = "손절"
-            remaining = 0
-            break
-
-        # TP1 (분할 매도)
-        if not t1_done and ohv["high"] >= tp1:
-            sell_r = params.tp1_ratio
-            pnl += (tp1 - buy) * sell_r - tp1 * sell_r * SELL_COST_RATE
-            remaining -= sell_r
-            t1_done = True
-            if buy > sl:
-                sl = buy
-
-        prev_high = max(prev_high, ohv["high"])
-
-        # TP2 (잔량)
-        if ohv["high"] >= tp2 and remaining > 0:
-            pnl += (tp2 - buy) * remaining - tp2 * remaining * SELL_COST_RATE
-            result_type = "익절"
-            remaining = 0
-            break
-
-    # 미확정 → 종가 청산
-    if result_type is None:
-        pnl += (last_close - buy) * remaining - last_close * remaining * SELL_COST_RATE
-        result_type = "데이청산" if max_d == 0 else "미확정"
-
-    ret = (pnl / buy) * 100 if buy else 0
+    if result_type == "미확정" and max_d == 0:
+        result_type = "데이청산"
     return result_type, ret
 
 
@@ -188,44 +216,89 @@ def _simulate_one(
 # 전체 기간 백테스트
 # ─────────────────────────────────────────
 def backtest(cache: OptCache, params: Params) -> Stats:
-    """캐시 데이터로 전체 기간 백테스트."""
+    """캐시 데이터로 전체 기간 백테스트.
+
+    flat numpy 배열이 있으면 numba JIT 경로 사용, 없으면 dict 경로 fallback.
+    """
+    # ── numba 경로: flat 배열 사용
+    if hasattr(cache, "flat_buy") and cache.flat_buy is not None:
+        trades, wins, losses, holds, total_ret, ret_sq = backtest_nb(
+            cache.flat_buy, cache.flat_atr, cache.flat_score,
+            cache.flat_sec_gap, cache.flat_mode_id, cache.flat_n_bars,
+            cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
+            params.invest_min_score,
+            params.atr_sl_mult, params.tp1_mult, params.atr_tp_mult,
+            params.tp1_ratio,
+            params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom,
+            params.sector_penalty_pts, params.sector_penalty_threshold,
+            params.sector_bonus_pts, params.sector_bonus_threshold,
+            SELL_COST_RATE,
+        )
+        st = Stats()
+        st.trades = trades
+        st.wins = wins
+        st.losses = losses
+        st.holds = holds
+        st.total_ret = total_ret
+        st.ret_sq = ret_sq
+        return st
+
+    # ── fallback: dict 경로
     st = Stats()
+    _max_hold = (params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom)
+    _pen_pts = params.sector_penalty_pts
+    _pen_th = params.sector_penalty_threshold
+    _bon_pts = params.sector_bonus_pts
+    _bon_th = params.sector_bonus_threshold
+    _min_score = params.invest_min_score
+    _sl_mult = params.atr_sl_mult
+    _tp1_mult = params.tp1_mult
+    _tp2_mult = params.atr_tp_mult
+    _tp1_ratio = params.tp1_ratio
+    _cost = SELL_COST_RATE
 
     for base_date in cache.scan_dates:
-        entry_date = cache.next_biz.get(base_date)
-        if not entry_date:
+        sigs = cache.signals.get(base_date)
+        if not sigs:
             continue
 
-        sigs = cache.signals.get(base_date, [])
-        hold_dates = cache.forward_dates.get(entry_date, [entry_date])
-
         for sig in sigs:
-            # 업종 패널티/보너스 적용
+            if sig.get("_skip", True):
+                continue
+
             effective_score = sig["score"]
             sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
-                effective_score += params.sector_bonus_pts
+            if _pen_pts != 0 and sec_gap < _pen_th:
+                effective_score += _pen_pts
+            elif _bon_pts != 0 and sec_gap >= _bon_th:
+                effective_score += _bon_pts
 
-            if effective_score < params.invest_min_score:
-                continue
-            if sig["mode"] not in ("MOM", "MIX", "REV"):
-                continue
-            if "P_OV" in sig["flags"]:
+            if effective_score < _min_score:
                 continue
 
-            res = _simulate_one(sig, entry_date, cache.ohlcv_idx, params, hold_dates)
-            if res is None:
-                continue
+            buy = sig["_buy"]
+            atr = sig["atr"]
+            sl = float(floor_tick_nb(buy - _sl_mult * atr))
+            tp1 = float(ceil_tick_nb(buy + _tp1_mult * atr))
+            tp2 = float(ceil_tick_nb(buy + _tp2_mult * atr))
 
-            result_type, ret_pct = res
+            max_d = _max_hold[sig["_mode_id"]]
+            n = min(max_d + 1, sig["_n_bars"])
+
+            res_id, ret_pct, _, _ = sim_one_nb(
+                buy, sl, tp1, tp2, _tp1_ratio, _sl_mult, atr,
+                sig["_opens"], sig["_highs"], sig["_lows"], sig["_closes"],
+                n, _cost,
+            )
+
             st.trades += 1
             st.total_ret += ret_pct
-            if result_type.startswith("익절"):
-                st.wins += 1
-            elif result_type == "손절":
-                st.losses += 1
+            st.ret_sq += ret_pct * ret_pct
+            if res_id <= 3:
+                if res_id == 0:
+                    st.losses += 1
+                else:
+                    st.wins += 1
             else:
                 st.holds += 1
 
@@ -233,47 +306,295 @@ def backtest(cache: OptCache, params: Params) -> Stats:
 
 
 # ─────────────────────────────────────────
+# 1단계: 신호 점수 최적화 (승률 기준)
+# ─────────────────────────────────────────
+SCORE_GRID_A = {
+    # 고배점 신호 (6개): 0~3 탐색 (0 = 비활성화)
+    "MGC": [0, 1, 2, 3],
+    "W52": [0, 1, 2, 3],
+    "PB":  [0, 1, 2, 3],
+    "LB":  [0, 1, 2, 3],
+    "MS":  [0, 1, 2, 3],
+    "RBO": [0, 1, 2, 3],
+}  # 4^6 = 4,096 콤보
+
+SCORE_GRID_B = {
+    # 저배점 신호 (9개): 0~2 탐색
+    "MPGC": [0, 1, 2],
+    "ROV":  [0, 1, 2],
+    "BBL":  [0, 1, 2],
+    "BBM":  [0, 1, 2],
+    "VS":   [0, 1, 2],
+    "MAA":  [0, 1, 2],
+    "SGC":  [0, 1, 2],
+    "HMR":  [0, 1, 2],
+    "OBV":  [0, 1, 2],
+}  # 3^9 = 19,683 콤보
+
+SCORE_GRID = SCORE_GRID_A  # 하위 호환
+
+
+def _calc_score_with(flags: set, mode: str, scores: dict) -> int:
+    """scores dict로 tech_score 재계산."""
+    mom = sum(scores.get(f, 0) for f in flags & _MOMENTUM_FLAGS)
+    rev = sum(scores.get(f, 0) for f in flags & _REVERSAL_FLAGS)
+    neu = sum(scores.get(f, 0) for f in flags - _ALL_FLAGS)
+    if mode == "MOM":
+        return mom + neu
+    if mode == "REV":
+        return rev + neu
+    if mode == "MIX":
+        return max(mom, rev) + neu
+    return mom + rev + neu
+
+
+def backtest_scores(
+    cache: OptCache, params: Params, scores: dict, min_score: int,
+) -> Stats:
+    """SIGNAL_SCORES를 변경하여 백테스트 (사전 계산된 OHLCV 사용)."""
+    st = Stats()
+    _MODE_MAP = {"MOM": 2, "MIX": 1, "REV": 0}
+    _max_hold = (params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom)
+    _pen_pts = params.sector_penalty_pts
+    _pen_th = params.sector_penalty_threshold
+    _bon_pts = params.sector_bonus_pts
+    _bon_th = params.sector_bonus_threshold
+    _sl_mult = params.atr_sl_mult
+    _tp1_mult = params.tp1_mult
+    _tp2_mult = params.atr_tp_mult
+    _tp1_ratio = params.tp1_ratio
+    _cost = SELL_COST_RATE
+
+    for base_date in cache.scan_dates:
+        sigs = cache.signals.get(base_date)
+        if not sigs:
+            continue
+
+        for sig in sigs:
+            if sig.get("_skip", True):
+                continue
+
+            # 신호 점수 재계산
+            flag_str = sig.get("flags", "")
+            flags = set(flag_str.split(",")) if flag_str else set()
+            flags.discard("")
+            mode = _classify_mode(flags)
+            if mode not in _MODE_MAP:
+                continue
+
+            tech_score = _calc_score_with(flags, mode, scores)
+            supply_bonus = min(sig.get("raw_supply_bonus", 0), SUPPLY_CAP)
+            effective_score = tech_score + supply_bonus
+            if "P_OV" in flags:
+                effective_score -= 1
+
+            sec_gap = sig.get("sector_gap", 0.0)
+            if _pen_pts != 0 and sec_gap < _pen_th:
+                effective_score += _pen_pts
+            elif _bon_pts != 0 and sec_gap >= _bon_th:
+                effective_score += _bon_pts
+
+            if effective_score < min_score:
+                continue
+
+            buy = sig["_buy"]
+            atr = sig["atr"]
+            sl = float(floor_tick_nb(buy - _sl_mult * atr))
+            tp1 = float(ceil_tick_nb(buy + _tp1_mult * atr))
+            tp2 = float(ceil_tick_nb(buy + _tp2_mult * atr))
+
+            max_d = _max_hold[_MODE_MAP[mode]]
+            n = min(max_d + 1, sig["_n_bars"])
+
+            res_id, ret_pct, _, _ = sim_one_nb(
+                buy, sl, tp1, tp2, _tp1_ratio, _sl_mult, atr,
+                sig["_opens"], sig["_highs"], sig["_lows"], sig["_closes"],
+                n, _cost,
+            )
+
+            st.trades += 1
+            st.total_ret += ret_pct
+            st.ret_sq += ret_pct * ret_pct
+            if res_id == 0:
+                st.losses += 1
+            elif res_id <= 3:
+                st.wins += 1
+            else:
+                st.holds += 1
+
+    return st
+
+
+def _score_worker(args):
+    """1단계 워커: (score_keys, score_combo, params_dict, base_scores)."""
+    score_keys, score_combo, params_dict, base_scores = args
+    scores = {**base_scores, **dict(zip(score_keys, score_combo))}
+    params = Params(**params_dict)
+
+    cache = _WORKER_CACHE
+    if hasattr(cache, "flat_flag_mask") and cache.flat_flag_mask is not None:
+        import numpy as _np
+        sv = _np.array([scores.get(f, 0) for f in FLAG_ORDER], dtype=_np.int64)
+        trades, wins, losses, holds, total_ret, ret_sq = backtest_scores_nb(
+            cache.flat_flag_mask, cache.flat_supply_bonus, cache.flat_has_pov,
+            cache.flat_buy, cache.flat_atr, cache.flat_sec_gap, cache.flat_n_bars,
+            cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
+            sv, MOM_MASK, REV_MASK, N_FLAGS,
+            _WORKER_MIN_SCORE,
+            params.atr_sl_mult, params.tp1_mult, params.atr_tp_mult,
+            params.tp1_ratio,
+            params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom,
+            params.sector_penalty_pts, params.sector_penalty_threshold,
+            params.sector_bonus_pts, params.sector_bonus_threshold,
+            SELL_COST_RATE,
+        )
+        st = Stats()
+        st.trades = trades
+        st.wins = wins
+        st.losses = losses
+        st.holds = holds
+        st.total_ret = total_ret
+        st.ret_sq = ret_sq
+    else:
+        st = backtest_scores(cache, params, scores, _WORKER_MIN_SCORE)
+
+    return scores, st
+
+
+def optimize_scores(
+    cache: OptCache, params: Params, n_workers: int,
+    min_score: int | None = None,
+    current_scores: dict | None = None,
+    score_grid: dict | None = None,
+    label: str = "",
+) -> dict:
+    """신호 점수 그리드 탐색. best_scores (전체 15개 신호) 반환.
+
+    Args:
+        min_score: 진입 최소 점수. None이면 GRID 최소값 사용.
+        current_scores: 전체 신호의 현재 점수. None이면 SIGNAL_SCORES 초기값.
+        score_grid: 탐색 대상 그리드. None이면 SCORE_GRID_A.
+        label: 로그 라벨 (e.g. "A: 고배점", "B: 저배점").
+    """
+    global _WORKER_MIN_SCORE
+    _min = min_score if min_score is not None else _SCORE_MIN_SCORE
+    _WORKER_MIN_SCORE = _min
+
+    grid = score_grid if score_grid is not None else SCORE_GRID_A
+    score_keys = list(grid.keys())
+    all_score_combos = list(product(*[grid[k] for k in score_keys]))
+
+    params_dict = {
+        "invest_min_score": params.invest_min_score,
+        "atr_sl_mult": params.atr_sl_mult,
+        "atr_tp_mult": params.atr_tp_mult,
+        "max_hold_days_rev": params.max_hold_days_rev,
+        "max_hold_days_mix": params.max_hold_days_mix,
+        "max_hold_days_mom": params.max_hold_days_mom,
+        "tp1_mult": params.tp1_mult,
+        "tp1_ratio": params.tp1_ratio,
+        "sector_penalty_threshold": params.sector_penalty_threshold,
+        "sector_penalty_pts": params.sector_penalty_pts,
+        "sector_bonus_threshold": params.sector_bonus_threshold,
+        "sector_bonus_pts": params.sector_bonus_pts,
+    }
+
+    # 탐색 대상 외 신호: current_scores에서 고정
+    src = current_scores if current_scores is not None else dict(SIGNAL_SCORES)
+    base_scores = {k: v for k, v in src.items() if k not in grid}
+
+    tasks = [
+        (score_keys, combo, params_dict, base_scores)
+        for combo in all_score_combos
+    ]
+    tag = f" {label}" if label else ""
+    log.info(f"\n{'─' * 70}")
+    log.info(
+        f"  [1단계{tag}] 신호 점수 최적화: {len(tasks):,}개 조합"
+        f"  (min_score={_min})"
+    )
+    log.info(f"{'─' * 70}")
+
+    results: list[tuple[dict, Stats]] = []
+    t0 = time.time()
+    chunk = max(10, min(200, len(tasks) // (n_workers * 32)))
+
+    with mp.Pool(processes=n_workers) as pool:
+        for i, (scores, st) in enumerate(
+            pool.imap_unordered(_score_worker, tasks, chunksize=chunk)
+        ):
+            results.append((scores, st))
+            n = i + 1
+            if n % 500 == 0 or n == len(tasks):
+                elapsed = time.time() - t0
+                log.info(f"  {n:>6d}/{len(tasks)}  ({elapsed:.0f}초)")
+
+    results.sort(key=lambda x: x[1].metric, reverse=True)
+
+    elapsed = time.time() - t0
+    if results and results[0][1].metric > -9999:
+        best_scores, best_st = results[0]
+        log.info(
+            f"\n  ★ 1단계{tag} 최적:"
+            f"  {best_st.trades}건  승률 {best_st.win_rate:.1f}%"
+            f"  평균 {best_st.avg_ret:+.2f}%  총 {best_st.total_ret:+.1f}%"
+            f"  [{elapsed:.0f}초]"
+        )
+        changed = {k: v for k, v in best_scores.items() if v != src.get(k)}
+        if changed:
+            log.info(f"    변경: {changed}")
+        return best_scores
+    log.warning(f"  1단계{tag}: 유효 결과 없음 → 기존 값 유지")
+    return dict(src)
+
+
+def recalc_cache_scores(cache: OptCache, scores: dict):
+    """캐시 signal의 score를 새 SIGNAL_SCORES로 재계산."""
+    for date, sigs in cache.signals.items():
+        for sig in sigs:
+            flag_str = sig.get("flags", "")
+            flags = set(flag_str.split(",")) if flag_str else set()
+            flags.discard("")
+            mode = _classify_mode(flags)
+            sig["mode"] = mode
+            tech_score = _calc_score_with(flags, mode, scores)
+            sig["tech_score"] = tech_score
+            supply_bonus = min(sig.get("raw_supply_bonus", 0), SUPPLY_CAP)
+            score = tech_score + supply_bonus
+            if "P_OV" in flags:
+                score -= 1
+            sig["score"] = score
+
+
+# ─────────────────────────────────────────
 # 그리드 정의
 # ─────────────────────────────────────────
-# DAY/초단기 모드: max_hold 0~2일 탐색 (0=당일청산, 1~2=오버나이트)
-DAY_GRID = {
-    "invest_min_score": [10, 11, 12, 13, 14],
-    "atr_sl_mult": [1.5, 2.0, 2.5, 3.0],
-    "atr_tp_mult": [1.5, 2.0, 2.5, 3.0],
-    "max_hold_days_rev": [0, 1, 2],
-    "max_hold_days_mix": [0, 1, 2],
-    "max_hold_days_mom": [0, 1],
-    "tp1_mult": [0.5, 0.7, 1.0, 1.5],
-    "tp1_ratio": [0.3, 0.5, 0.7, 1.0],  # 1.0 = TP1에서 전량 청산
-    "gap_down_limit": [0.0, 0.03, 0.05],  # 0 = 필터 없음
-    "sector_penalty_threshold": [-0.03, -0.05],
-    "sector_penalty_pts": [0, -2],
-    "sector_bonus_pts": [0, 1],
-}  # 552,960조합 (~3분)  --no-sector 시 69,120
-
-SWING_GRID = {
+GRID = {
     "invest_min_score": [9, 10, 11, 12, 13],
-    "atr_sl_mult": [1.5, 2.0, 2.5, 3.0],
-    "atr_tp_mult": [1.5, 2.0, 2.5, 3.0],
-    "max_hold_days_rev": [3, 5, 7, 10],
-    "max_hold_days_mix": [2, 3, 5],
+    "atr_sl_mult": [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
+    "atr_tp_mult": [1.5, 2.0, 2.5, 3.0, 4.0, 5.0],
+    "max_hold_days_rev": [3, 5, 7, 10, 15, 20],
+    "max_hold_days_mix": [2, 3, 5, 7, 10],
     "max_hold_days_mom": [1, 2, 3],
     "tp1_mult": [0.7, 1.0, 1.5],
-    "tp1_ratio": [0.3, 0.5, 0.7],
-    "gap_down_limit": [0.0, 0.03, 0.05],
+    "tp1_ratio": [0.3, 0.5, 0.7, 1.0],
     "sector_penalty_threshold": [-0.03, -0.05],
     "sector_penalty_pts": [0, -2],
+    "sector_bonus_threshold": [0.0, 0.02],
     "sector_bonus_pts": [0, 1],
-}  # 5×4×4×4×3×3×3×3×3×2×2×2 = 233,280 → --no-sector 시 25,920
+}  # 5×7×6×6×5×3×3×4×2×2×2×2 = 3,628,800 → _dedup + --no-sector 시 ~230,000
+
+_SCORE_MIN_SCORE = min(GRID["invest_min_score"])  # 1단계 진입 기준: GRID 최소값
+_WORKER_MIN_SCORE: int = _SCORE_MIN_SCORE  # 1단계 워커용 min_score (동적 갱신)
 
 
 # ─────────────────────────────────────────
 # 리포트
 # ─────────────────────────────────────────
-def _report(trade_mode: str, ranked: list[tuple[Params, Stats]], elapsed: float):
+def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
     log.info("")
     log.info("=" * 100)
-    log.info(f"  {trade_mode} 최적화 결과  (Top 15)   [{elapsed:.0f}초]")
+    log.info(f"  최적화 결과  (Top 15)   [{elapsed:.0f}초]")
     log.info("=" * 100)
     log.info(
         f"  {'#':>3s}  {'거래':>6s}  {'승률':>6s}  {'평균수익':>8s}  {'총수익':>10s}  │ 파라미터"
@@ -289,33 +610,65 @@ def _report(trade_mode: str, ranked: list[tuple[Params, Stats]], elapsed: float)
     log.info("-" * 100)
     if ranked:
         best_p, best_s = ranked[0]
-        log.info(f"\n  ★ {trade_mode} 최적 파라미터:")
+        log.info(f"\n  ★ 최적 파라미터:")
         log.info(f"    INVEST_MIN_SCORE = {best_p.invest_min_score}")
         log.info(f"    ATR_SL_MULT      = {best_p.atr_sl_mult}")
-        log.info(f"    TP1_MULT         = {best_p.tp1_mult}  (매도비율 {best_p.tp1_ratio:.0%})")
+        log.info(
+            f"    TP1_MULT         = {best_p.tp1_mult}  (매도비율 {best_p.tp1_ratio:.0%})"
+        )
         log.info(f"    ATR_TP_MULT      = {best_p.atr_tp_mult}")
-        log.info(f"    GAP_DOWN_LIMIT   = {best_p.gap_down_limit:.0%}{'  (OFF)' if best_p.gap_down_limit == 0 else ''}")
-        if trade_mode == "SWING":
-            log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
-            log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
-            log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
+        log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
+        log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
+        log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
         sec_parts = []
         if best_p.sector_penalty_pts != 0:
-            sec_parts.append(f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점")
+            sec_parts.append(
+                f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점"
+            )
         if best_p.sector_bonus_pts != 0:
-            sec_parts.append(f"보너스: 업종MA20≥0% → {best_p.sector_bonus_pts:+d}점")
-        log.info(f"    SECTOR_ADJUST    = {', '.join(sec_parts) if sec_parts else 'off'}")
+            sec_parts.append(
+                f"보너스: 업종MA20괴리≥{best_p.sector_bonus_threshold:.0%} → {best_p.sector_bonus_pts:+d}점"
+            )
+        log.info(
+            f"    SECTOR_ADJUST    = {', '.join(sec_parts) if sec_parts else 'off'}"
+        )
         log.info(
             f"    → {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
             f"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%"
         )
     log.info("=" * 100)
 
+    if ranked:
+        _check_boundaries(ranked[0][0])
+
+
+def _check_boundaries(best_p: Params):
+    """최적 파라미터가 GRID 경계값에 도달했는지 확인하고 경고."""
+    _PARAM_TO_GRID = {
+        "invest_min_score": "invest_min_score",
+        "atr_sl_mult": "atr_sl_mult",
+        "atr_tp_mult": "atr_tp_mult",
+        "max_hold_days_rev": "max_hold_days_rev",
+        "max_hold_days_mix": "max_hold_days_mix",
+        "max_hold_days_mom": "max_hold_days_mom",
+        "tp1_mult": "tp1_mult",
+        "tp1_ratio": "tp1_ratio",
+    }
+    for attr, grid_key in _PARAM_TO_GRID.items():
+        grid_vals = GRID.get(grid_key)
+        if not grid_vals:
+            continue
+        val = getattr(best_p, attr)
+        if val == min(grid_vals):
+            log.warning(f"  [BOUNDARY] {grid_key}={val} hits GRID min ({min(grid_vals)}) — consider expanding")
+        elif val == max(grid_vals):
+            log.warning(f"  [BOUNDARY] {grid_key}={val} hits GRID max ({max(grid_vals)}) — consider expanding")
+
 
 # ─────────────────────────────────────────
-# factor.py 자동 갱신
+# config.py 자동 갱신
 # ─────────────────────────────────────────
-_FACTOR_PATH = Path(__file__).resolve().parent.parent / "factor.py"
+_FACTOR_PATH = Path(__file__).resolve().parent.parent / "config.py"
 
 
 def _params_to_dict(p: Params) -> dict:
@@ -325,143 +678,104 @@ def _params_to_dict(p: Params) -> dict:
         "ATR_TP_MULT": p.atr_tp_mult,
         "TP1_MULT": p.tp1_mult,
         "TP1_RATIO": p.tp1_ratio,
-        "GAP_DOWN_LIMIT": p.gap_down_limit,
         "MAX_HOLD_DAYS": p.max_hold_days_rev,
         "MAX_HOLD_DAYS_MIX": p.max_hold_days_mix,
         "MAX_HOLD_DAYS_MOM": p.max_hold_days_mom,
         "SECTOR_PENALTY_THRESHOLD": p.sector_penalty_threshold,
         "SECTOR_PENALTY_PTS": p.sector_penalty_pts,
+        "SECTOR_BONUS_THRESHOLD": p.sector_bonus_threshold,
         "SECTOR_BONUS_PTS": p.sector_bonus_pts,
     }
 
 
 def _fmt_val(key: str, val) -> str:
-    """factor.py dict 값 포매팅."""
     if isinstance(val, float):
-        if val == int(val) and key != "SECTOR_PENALTY_THRESHOLD":
+        if val == int(val) and "THRESHOLD" not in key:
             return str(int(val)) if val == 0 else str(val)
         return str(val)
     return str(val)
 
 
-def _update_factor_file(best: dict[str, tuple[Params, Stats]], years: int):
-    """DAY/SWING 최적 파라미터로 factor.py 재생성."""
-    day_d = _params_to_dict(best["DAY"][0]) if "DAY" in best else None
-    swing_d = _params_to_dict(best["SWING"][0]) if "SWING" in best else None
+def _update_config_file(
+    best_p: Params, best_s: Stats, start_date: str, end_date: str, elapsed: float,
+    best_scores: dict | None = None,
+):
+    """최적 파라미터로 config.py의 Optimized 클래스 속성 갱신. best_scores 지정 시 SIGNAL_SCORES도 갱신."""
+    import re
+    from datetime import datetime
 
-    # 기존 factor.py에서 변경되지 않는 모드는 유지
-    if not day_d or not swing_d:
-        try:
-            from wye.blsh.domestic.factor import _DAY, _SWING
-            if not day_d:
-                day_d = dict(_DAY)
-            if not swing_d:
-                swing_d = dict(_SWING)
-        except ImportError:
-            log.warning("factor.py import 실패 — 두 모드 모두 최적화해야 합니다.")
-            return
+    d = _params_to_dict(best_p)
+    content = _FACTOR_PATH.read_text(encoding="utf-8")
 
-    today = dtutils.today()
+    # 파라미터 갱신
+    for k, v in d.items():
+        val_str = _fmt_val(k, v)
+        type_hint = "int" if isinstance(v, int) else "float"
+        content = re.sub(
+            rf"^(    {k}: \w+ = )\S+(  # .*)?$",
+            lambda m, vs=val_str, th=type_hint, key=k: (
+                f"    {key}: {th} = {vs}{m.group(2) or ''}"
+            ),
+            content,
+            flags=re.MULTILINE,
+        )
 
-    def fmt_pct(v):
-        """0.05 → '5%', 0 → '0'"""
-        if v == 0:
-            return "0"
-        return f"{abs(v)*100:.0f}%"
+    # 백테스트 결과 주석 갱신
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    elapsed_min = elapsed / 60
+    content = re.sub(
+        r"^(    # 수행일시:).*$",
+        rf"\g<1> {ts} ({elapsed_min:.0f}분)",
+        content,
+        flags=re.MULTILINE,
+    )
+    content = re.sub(
+        r"^(    # 기간:).*$",
+        rf"\g<1> {start_date} ~ {end_date}",
+        content,
+        flags=re.MULTILINE,
+    )
+    content = re.sub(
+        r"^(    # 성과:).*$",
+        rf"\g<1> {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
+        rf"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%",
+        content,
+        flags=re.MULTILINE,
+    )
 
-    def fmt_penalty(d):
-        t = d["SECTOR_PENALTY_THRESHOLD"]
-        p = d["SECTOR_PENALTY_PTS"]
-        return f"-{fmt_pct(t)}/{p:+d}"
-
-    # docstring 파라미터 테이블
-    rows = [
-        ("INVEST_MIN_SCORE", day_d, swing_d),
-        ("ATR_SL_MULT", day_d, swing_d),
-        ("ATR_TP_MULT", day_d, swing_d),
-        ("TP1_MULT", day_d, swing_d),
-        ("TP1_RATIO", day_d, swing_d),
-        ("GAP_DOWN_LIMIT", day_d, swing_d),
-    ]
-    doc_lines = []
-    for key, dd, sd in rows:
-        doc_lines.append(f"{key:<20s} {_fmt_val(key, dd[key]):<8s}{_fmt_val(key, sd[key])}")
-    doc_lines.append(f"{'MAX_HOLD_DAYS(REV)':<20s} {day_d['MAX_HOLD_DAYS']:<8}{swing_d['MAX_HOLD_DAYS']}")
-    doc_lines.append(f"{'MAX_HOLD_DAYS_MIX':<20s} {day_d['MAX_HOLD_DAYS_MIX']:<8}{swing_d['MAX_HOLD_DAYS_MIX']}")
-    doc_lines.append(f"{'MAX_HOLD_DAYS_MOM':<20s} {day_d['MAX_HOLD_DAYS_MOM']:<8}{swing_d['MAX_HOLD_DAYS_MOM']}")
-    doc_lines.append(f"{'SECTOR_PENALTY':<20s} {fmt_penalty(day_d):<8s}{fmt_penalty(swing_d)}")
-    doc_lines.append(f"{'SECTOR_BONUS':<20s} +{day_d['SECTOR_BONUS_PTS']:<7}+{swing_d['SECTOR_BONUS_PTS']}")
-    doc_table = "\n".join(doc_lines)
-
-    def dict_block(name: str, d: dict) -> str:
-        items = []
-        comments = {
-            "TP1_MULT": "1차 익절: buy + ATR × TP1_MULT",
-            "TP1_RATIO": "1차 익절 매도 비율 (1.0 = 전량)",
-            "SECTOR_PENALTY_THRESHOLD": "업종지수 MA20 대비 해당값 이하",
-            "SECTOR_BONUS_PTS": "업종지수 MA20 이상일 때",
-        }
-        for k, v in d.items():
-            val_str = _fmt_val(k, v)
-            comment = comments.get(k, "")
-            line = f'    "{k}": {val_str},'
-            if comment:
-                line = f"{line}  # {comment}"
-            items.append(line)
-        return f"{name} = {{\n" + "\n".join(items) + "\n}"
-
-    content = f'''"""\n최적 파라미터 ({today} 기준, 최근 {years}년 백테스트)
-
-파라미터              DAY     SWING
-──────────────────────────────────────
-{doc_table}
-
-실행 후 grid_search 최적값으로 자동 갱신:
-  uv run python -m wye.blsh.domestic.optimize.grid_search
-"""\nfrom wye.blsh.common.env import TRADE_FLAG
-
-# ─────────────────────────────────────────
-# 모드별 factor (grid_search 최적화 결과 반영)
-# ─────────────────────────────────────────
-{dict_block("_DAY", day_d)}
-
-{dict_block("_SWING", swing_d)}
-
-# ─────────────────────────────────────────
-# 활성 factor 적용
-# ─────────────────────────────────────────
-_active = _DAY if TRADE_FLAG == "DAY" else _SWING
-
-INVEST_MIN_SCORE = _active["INVEST_MIN_SCORE"]
-ATR_SL_MULT = _active["ATR_SL_MULT"]
-ATR_TP_MULT = _active["ATR_TP_MULT"]
-TP1_MULT = _active["TP1_MULT"]
-TP1_RATIO = _active["TP1_RATIO"]
-GAP_DOWN_LIMIT = _active["GAP_DOWN_LIMIT"]
-MAX_HOLD_DAYS = _active["MAX_HOLD_DAYS"]
-MAX_HOLD_DAYS_MIX = _active["MAX_HOLD_DAYS_MIX"]
-MAX_HOLD_DAYS_MOM = _active["MAX_HOLD_DAYS_MOM"]
-SECTOR_PENALTY_THRESHOLD = _active["SECTOR_PENALTY_THRESHOLD"]
-SECTOR_PENALTY_PTS = _active["SECTOR_PENALTY_PTS"]
-SECTOR_BONUS_PTS = _active["SECTOR_BONUS_PTS"]
-'''
+    # SIGNAL_SCORES 갱신
+    if best_scores:
+        scores_str = "SIGNAL_SCORES = {\n"
+        for k, v in best_scores.items():
+            scores_str += f'    "{k}": {v},\n'
+        scores_str += "}"
+        content = re.sub(
+            r"^SIGNAL_SCORES = \{[^}]+\}",
+            scores_str,
+            content,
+            flags=re.MULTILINE | re.DOTALL,
+        )
 
     _FACTOR_PATH.write_text(content, encoding="utf-8")
-    log.info(f"\n  💾 factor.py 자동 갱신: {_FACTOR_PATH}")
-    for mode_name in ["DAY", "SWING"]:
-        if mode_name in best:
-            p, s = best[mode_name]
-            log.info(
-                f"    {mode_name}: {s.trades}건  승률 {s.win_rate:.1f}%  "
-                f"평균 {s.avg_ret:+.2f}%  총 {s.total_ret:+.1f}%"
-            )
+    log.info(f"\n  💾 config.py 자동 갱신: {_FACTOR_PATH}")
+    log.info(
+        f"    {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
+        f"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%"
+    )
 
 
 # ─────────────────────────────────────────
 # 메인
 # ─────────────────────────────────────────
-def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool = True,
-       apply: bool = True):
+def run(
+    years: int = 2,
+    rebuild: bool = False,
+    sector: bool = True,
+    apply: bool = True,
+    workers: int = 0,
+):
+    global _WORKER_CACHE
+
     end_date = dtutils.today()
     start_date = dtutils.add_days(end_date, -years * 365)
 
@@ -469,61 +783,514 @@ def run(mode: str = "BOTH", years: int = 2, rebuild: bool = False, sector: bool 
 
     # 캐시 빌드/로드
     if rebuild:
-        # 기존 캐시 삭제
         for p in CACHE_DIR.glob("opt_cache*.pkl"):
             p.unlink()
             log.info(f"캐시 삭제: {p}")
 
     cache = build_or_load(start_date, end_date)
+    cache.build_arrays()  # numba sim용 numpy 배열 변환
+    cache.precompute_signals(
+        min_score=_SCORE_MIN_SCORE,
+        max_sector_bonus=max(GRID.get("sector_bonus_pts", [0])),
+    )
+    cache.flatten_signals()
 
-    best_results: dict[str, tuple[Params, Stats]] = {}
+    # numba JIT 워밍업 (fork 전에 컴파일 완료)
+    import numpy as _np
+    _dummy = _np.ones(2, dtype=_np.float64)
+    sim_one_nb(100.0, 90.0, 110.0, 120.0, 0.3, 2.0, 5.0,
+               _dummy, _dummy, _dummy, _dummy, 2, 0.002)
+    _df = _np.ones(1, dtype=_np.float64)
+    _di = _np.ones(1, dtype=_np.int64)
+    _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
+    backtest_nb(_df * 100, _df * 5, _di * 10, _df, _di * 0, _di,
+                _d2, _d2, _d2, _d2,
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+    _sv = _np.ones(N_FLAGS, dtype=_np.int64)
+    backtest_scores_nb(_di, _di * 0, _di * 0,
+                       _df * 100, _df * 5, _df, _di,
+                       _d2, _d2, _d2, _d2,
+                       _sv, MOM_MASK, REV_MASK, N_FLAGS,
+                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+    log.info("[numba] JIT 컴파일 완료")
 
-    for trade_mode, grid in [("DAY", DAY_GRID), ("SWING", SWING_GRID)]:
-        if mode != "BOTH" and mode != trade_mode:
+    # fork 전에 캐시를 전역 변수로 설정 (CoW — 자식 프로세스에 복사 없이 공유)
+    _WORKER_CACHE = cache
+
+    # DB 연결 풀 해제: fork 전 SQLAlchemy 백그라운드 스레드 락 제거 (Linux hang 방지)
+    try:
+        from wye.blsh.database.query import engine as _db_engine
+
+        _db_engine.dispose()
+    except Exception:
+        pass
+
+    n_workers = workers if workers > 0 else os.cpu_count()
+    log.info(f"병렬 처리: {n_workers}코어")
+
+    grid = GRID.copy()
+    if not sector:
+        grid.update({
+            "sector_penalty_threshold": [-0.03],
+            "sector_penalty_pts": [0],
+            "sector_bonus_threshold": [0.0],
+            "sector_bonus_pts": [0],
+        })
+
+    keys, combos = _dedup_combos(grid)
+    results, elapsed = _grid_search_pass(keys, combos, n_workers)
+    _report(results, elapsed)
+
+    if results and results[0][1].metric > -9999:
+        best_p, best_s = results[0]
+        if apply:
+            _update_config_file(best_p, best_s, start_date, end_date, elapsed)
+        else:
+            log.info("\n  ⚠️  --no-apply: config.py 갱신 생략")
+
+
+# ─────────────────────────────────────────
+# 교대 최적화 (신호점수 ↔ 매매파라미터 수렴)
+# ─────────────────────────────────────────
+def _grid_search_pass(keys, combos, n_workers, label=""):
+    """GRID 조합 병렬 탐색 공통 루틴. sorted results 반환."""
+    log.info(f"\n{'─' * 70}")
+    log.info(f"  [2단계{label}] {len(combos):,}개 조합")
+    log.info(f"{'─' * 70}")
+
+    results = []
+    t0 = time.time()
+    chunk = max(10, min(200, len(combos) // (n_workers * 32))) if n_workers > 0 else 10
+
+    with mp.Pool(processes=n_workers) as pool:
+        for i, (p, s) in enumerate(
+            pool.imap_unordered(
+                _backtest_worker, ((keys, c) for c in combos), chunksize=chunk
+            )
+        ):
+            results.append((p, s))
+            n = i + 1
+            if n % 5000 == 0 or n == len(combos):
+                elapsed = time.time() - t0
+                log.info(f"  {n:>6d}/{len(combos)}  ({elapsed:.0f}초)")
+
+    elapsed = time.time() - t0
+    results.sort(key=lambda x: x[1].metric, reverse=True)
+    return results, elapsed
+
+
+def _dedup_combos(grid):
+    """중복 조합 제거."""
+    keys = list(grid.keys())
+    _first = {k: grid[k][0] for k in keys}
+    combos = []
+    for c in product(*[grid[k] for k in keys]):
+        d = dict(zip(keys, c))
+        if d["tp1_ratio"] == 1.0 and d["atr_tp_mult"] != _first["atr_tp_mult"]:
+            continue
+        if d["tp1_mult"] >= d["atr_tp_mult"] and d["tp1_ratio"] != 1.0:
+            continue
+        if d["sector_penalty_pts"] == 0 and d["sector_penalty_threshold"] != _first["sector_penalty_threshold"]:
+            continue
+        if d["sector_bonus_pts"] == 0 and d["sector_bonus_threshold"] != _first["sector_bonus_threshold"]:
+            continue
+        combos.append(c)
+    return keys, combos
+
+
+def _run_param_grid(cache, n_workers, sector=True):
+    """2단계: 매매파라미터 GRID 탐색 (2-pass). (best_params, best_stats) 반환."""
+    # Pass 1: 핵심 파라미터만 탐색 (sector OFF)
+    grid_core = GRID.copy()
+    grid_core.update({
+        "sector_penalty_threshold": [-0.03],
+        "sector_penalty_pts": [0],
+        "sector_bonus_threshold": [0.0],
+        "sector_bonus_pts": [0],
+    })
+    keys, combos = _dedup_combos(grid_core)
+    results, elapsed = _grid_search_pass(keys, combos, n_workers, " Pass1: 핵심파라미터")
+    _report(results, elapsed)
+
+    if not results or results[0][1].metric <= -9999:
+        return None
+
+    best_p, best_s = results[0]
+
+    if not sector:
+        return best_p, best_s
+
+    # Pass 2: 핵심 파라미터 고정 + sector만 탐색
+    grid_sec = {
+        "invest_min_score": [best_p.invest_min_score],
+        "atr_sl_mult": [best_p.atr_sl_mult],
+        "atr_tp_mult": [best_p.atr_tp_mult],
+        "max_hold_days_rev": [best_p.max_hold_days_rev],
+        "max_hold_days_mix": [best_p.max_hold_days_mix],
+        "max_hold_days_mom": [best_p.max_hold_days_mom],
+        "tp1_mult": [best_p.tp1_mult],
+        "tp1_ratio": [best_p.tp1_ratio],
+        "sector_penalty_threshold": GRID["sector_penalty_threshold"],
+        "sector_penalty_pts": GRID["sector_penalty_pts"],
+        "sector_bonus_threshold": GRID["sector_bonus_threshold"],
+        "sector_bonus_pts": GRID["sector_bonus_pts"],
+    }
+    keys_sec, combos_sec = _dedup_combos(grid_sec)
+    results_sec, elapsed_sec = _grid_search_pass(
+        keys_sec, combos_sec, n_workers, " Pass2: sector"
+    )
+
+    if results_sec and results_sec[0][1].metric > best_s.metric:
+        best_p, best_s = results_sec[0]
+        log.info(
+            f"  sector 적용 개선: {best_s.trades}건  "
+            f"총 {best_s.total_ret:+.1f}%  ({best_p.label()})"
+        )
+    else:
+        log.info(f"  sector 미적용이 최적")
+
+    return best_p, best_s
+
+
+def run_alternating(
+    years: int = 2,
+    rebuild: bool = False,
+    sector: bool = True,
+    apply: bool = True,
+    workers: int = 0,
+    max_iter: int = 5,
+):
+    """교대 최적화: 1단계(신호점수/승률) ↔ 2단계(매매파라미터/수익률) 수렴."""
+    global _WORKER_CACHE
+
+    end_date = dtutils.today()
+    start_date = dtutils.add_days(end_date, -years * 365)
+    log.info(f"교대 최적화 기간: {start_date} ~ {end_date} ({years}년)")
+
+    if rebuild:
+        for p in CACHE_DIR.glob("opt_cache*.pkl"):
+            p.unlink()
+            log.info(f"캐시 삭제: {p}")
+
+    cache = build_or_load(start_date, end_date)
+    cache.build_arrays()
+    cache.precompute_signals()
+    cache.flatten_signals()
+
+    import numpy as _np
+    _dummy = _np.ones(2, dtype=_np.float64)
+    sim_one_nb(100.0, 90.0, 110.0, 120.0, 0.3, 2.0, 5.0,
+               _dummy, _dummy, _dummy, _dummy, 2, 0.002)
+    _df = _np.ones(1, dtype=_np.float64)
+    _di = _np.ones(1, dtype=_np.int64)
+    _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
+    backtest_nb(_df * 100, _df * 5, _di * 10, _df, _di * 0, _di,
+                _d2, _d2, _d2, _d2,
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+    _sv = _np.ones(N_FLAGS, dtype=_np.int64)
+    backtest_scores_nb(_di, _di * 0, _di * 0,
+                       _df * 100, _df * 5, _df, _di,
+                       _d2, _d2, _d2, _d2,
+                       _sv, MOM_MASK, REV_MASK, N_FLAGS,
+                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+    log.info("[numba] JIT 컴파일 완료")
+
+    _WORKER_CACHE = cache
+
+    try:
+        from wye.blsh.database.query import engine as _db_engine
+        _db_engine.dispose()
+    except Exception:
+        pass
+
+    n_workers = workers if workers > 0 else os.cpu_count()
+    log.info(f"병렬 처리: {n_workers}코어")
+
+    # 초기값
+    from wye.blsh.domestic import config as _f
+    current_scores = dict(SIGNAL_SCORES)
+    current_params = Params(
+        invest_min_score=_f.INVEST_MIN_SCORE,
+        atr_sl_mult=_f.ATR_SL_MULT,
+        atr_tp_mult=_f.ATR_TP_MULT,
+        max_hold_days_rev=_f.MAX_HOLD_DAYS,
+        max_hold_days_mix=_f.MAX_HOLD_DAYS_MIX,
+        max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
+        tp1_mult=_f.TP1_MULT,
+        tp1_ratio=_f.TP1_RATIO,
+        sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
+        sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
+        sector_bonus_threshold=_f.SECTOR_BONUS_THRESHOLD,
+        sector_bonus_pts=_f.SECTOR_BONUS_PTS,
+    )
+
+    t_total = time.time()
+    best_stats = None
+    prev_metric = -9999.0
+    # 진동 감지용: (scores, params, stats) 이력
+    history: list[tuple[dict, Params, Stats]] = []
+
+    for iteration in range(1, max_iter + 1):
+        log.info(f"\n{'=' * 70}")
+        log.info(f"  교대 최적화 [{iteration}/{max_iter}]")
+        log.info(f"{'=' * 70}")
+
+        # ── 1단계: 신호 점수 최적화 (A: 고배점 → B: 저배점)
+        score_min = (
+            current_params.invest_min_score if iteration > 1
+            else _SCORE_MIN_SCORE
+        )
+        scores_a = optimize_scores(
+            cache, current_params, n_workers,
+            min_score=score_min,
+            current_scores=current_scores,
+            score_grid=SCORE_GRID_A,
+            label="A: 고배점",
+        )
+        new_scores = optimize_scores(
+            cache, current_params, n_workers,
+            min_score=score_min,
+            current_scores=scores_a,
+            score_grid=SCORE_GRID_B,
+            label="B: 저배점",
+        )
+
+        # ── 캐시 score 재계산 + flat 배열 동기화
+        recalc_cache_scores(cache, new_scores)
+        cache.update_flat_scores()
+
+        # ── 2단계: 매매파라미터 최적화 (min_score 포함)
+        result = _run_param_grid(cache, n_workers, sector)
+        if result is None:
+            log.warning("  2단계 유효 결과 없음 → 중단")
+            break
+        new_params, best_stats = result
+        history.append((new_scores, new_params, best_stats))
+
+        # ── 수렴 체크: 완전 일치
+        if new_scores == current_scores and new_params == current_params:
+            log.info(f"\n  수렴 완료 (iteration {iteration})")
+            current_scores = new_scores
+            current_params = new_params
+            break
+
+        # ── metric 변화율 수렴: 개선폭 < 1% → 실질 수렴 (#4)
+        cur_metric = best_stats.metric
+        if prev_metric > 0 and cur_metric > 0:
+            improvement = (cur_metric - prev_metric) / prev_metric
+            if abs(improvement) < 0.01:
+                log.info(
+                    f"\n  metric 수렴 (변화 {improvement:+.2%},"
+                    f" {prev_metric:.1f} → {cur_metric:.1f})"
+                )
+                current_scores = new_scores
+                current_params = new_params
+                break
+        prev_metric = cur_metric
+
+        # ── 2-cycle 진동 감지: 2회 전과 동일하면 더 나은 쪽 선택 후 종료
+        if len(history) >= 3:
+            prev2_scores, prev2_params, prev2_stats = history[-3]
+            if new_scores == prev2_scores and new_params == prev2_params:
+                prev1_scores, prev1_params, prev1_stats = history[-2]
+                if best_stats.metric >= prev1_stats.metric:
+                    log.info(f"\n  진동 감지 → 현재 iteration 선택 (metric {best_stats.metric:.1f})")
+                    current_scores = new_scores
+                    current_params = new_params
+                else:
+                    log.info(f"\n  진동 감지 → 이전 iteration 선택 (metric {prev1_stats.metric:.1f})")
+                    current_scores = prev1_scores
+                    current_params = prev1_params
+                    best_stats = prev1_stats
+                    recalc_cache_scores(cache, current_scores)
+                break
+
+        current_scores = new_scores
+        current_params = new_params
+
+    total_elapsed = time.time() - t_total
+    log.info(f"\n교대 최적화 완료: {total_elapsed:.0f}초 ({total_elapsed / 60:.1f}분)")
+
+    if apply and best_stats:
+        _update_config_file(
+            current_params, best_stats, start_date, end_date, total_elapsed,
+            best_scores=current_scores,
+        )
+    elif not apply:
+        log.info("\n  ⚠️  --no-apply: config.py 갱신 생략")
+
+
+# ─────────────────────────────────────────
+# Walk-Forward 검증
+# ─────────────────────────────────────────
+def _generate_wf_windows(start_date, end_date, train_months=18, val_months=6, step_months=3):
+    """롤링 윈도우 생성. (train_start, train_end, val_start, val_end) 리스트 반환."""
+    from dateutil.relativedelta import relativedelta
+    from datetime import datetime
+
+    fmt = "%Y%m%d"
+    cursor = datetime.strptime(start_date, fmt)
+    end_dt = datetime.strptime(end_date, fmt)
+    windows = []
+    while True:
+        train_end = cursor + relativedelta(months=train_months) - relativedelta(days=1)
+        val_start = train_end + relativedelta(days=1)
+        val_end = val_start + relativedelta(months=val_months) - relativedelta(days=1)
+        if val_end > end_dt:
+            break
+        windows.append((
+            cursor.strftime(fmt), train_end.strftime(fmt),
+            val_start.strftime(fmt), val_end.strftime(fmt),
+        ))
+        cursor += relativedelta(months=step_months)
+    return windows
+
+
+def _wf_report(results: list[tuple[int, str, str, str, str, Stats, Stats, Params]]):
+    """Walk-Forward 검증 리포트 출력."""
+    log.info("")
+    log.info("=" * 100)
+    log.info("  Walk-Forward 검증 결과")
+    log.info("=" * 100)
+    log.info(
+        f"  {'#':>2s}  {'Train Period':<21s}  {'Val Period':<21s}  "
+        f"{'AvgRet(T)':>9s}  {'AvgRet(V)':>9s}  {'Ratio':>5s}  Params"
+    )
+    log.info("-" * 100)
+
+    ratios = []
+    overfit_windows = []
+    for idx, ts, te, vs, ve, train_st, val_st, best_p in results:
+        ratio = val_st.avg_ret / train_st.avg_ret * 100 if train_st.avg_ret > 0 else 0
+        ratios.append(ratio)
+        warn = " ⚠️" if ratio < 50 else ""
+        if ratio < 50:
+            overfit_windows.append(idx)
+        p_summary = (
+            f"SL={best_p.atr_sl_mult:.1f} "
+            f"REV={best_p.max_hold_days_rev}d MIX={best_p.max_hold_days_mix}d"
+        )
+        log.info(
+            f"  {idx:2d}  {ts}~{te}  {vs}~{ve}  "
+            f"{train_st.avg_ret:>+8.2f}%  {val_st.avg_ret:>+8.2f}%  {ratio:>4.0f}%{warn}  {p_summary}"
+        )
+
+    log.info("-" * 100)
+    if ratios:
+        avg_ratio = sum(ratios) / len(ratios)
+        log.info(f"  평균 Val/Train AvgRet 비율: {avg_ratio:.0f}%")
+    for w in overfit_windows:
+        log.warning(f"  Window {w}: 과적합 의심 (avg_ret 비율 < 50%)")
+    log.info("=" * 100)
+
+
+def run_walkforward(
+    years: int = 2,
+    rebuild: bool = False,
+    sector: bool = True,
+    workers: int = 0,
+    train_months: int = 18,
+    val_months: int = 6,
+    step_months: int = 3,
+):
+    """Walk-Forward 검증: 롤링 윈도우별 train 최적화 → val 검증.
+
+    현재 config.py의 SIGNAL_SCORES를 고정하고, Stage 2(매매 파라미터)만
+    각 train 윈도우에서 최적화한 뒤 val 윈도우에서 검증.
+    """
+    global _WORKER_CACHE
+
+    end_date = dtutils.today()
+    start_date = dtutils.add_days(end_date, -years * 365)
+    log.info(f"Walk-Forward 검증 기간: {start_date} ~ {end_date} ({years}년)")
+    log.info(f"  Train={train_months}개월  Val={val_months}개월  Step={step_months}개월")
+
+    windows = _generate_wf_windows(start_date, end_date, train_months, val_months, step_months)
+    if not windows:
+        log.error("유효한 윈도우가 없습니다. 기간을 늘리거나 train/val 개월 수를 줄이세요.")
+        return
+    log.info(f"  윈도우 수: {len(windows)}")
+
+    if rebuild:
+        for p in CACHE_DIR.glob("opt_cache*.pkl"):
+            p.unlink()
+            log.info(f"캐시 삭제: {p}")
+
+    cache = build_or_load(start_date, end_date)
+    cache.build_arrays()
+    cache.precompute_signals()
+    cache.flatten_signals()
+
+    # numba JIT 워밍업
+    import numpy as _np
+    _dummy = _np.ones(2, dtype=_np.float64)
+    sim_one_nb(100.0, 90.0, 110.0, 120.0, 0.3, 2.0, 5.0,
+               _dummy, _dummy, _dummy, _dummy, 2, 0.002)
+    _df = _np.ones(1, dtype=_np.float64)
+    _di = _np.ones(1, dtype=_np.int64)
+    _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
+    backtest_nb(_df * 100, _df * 5, _di * 10, _df, _di * 0, _di,
+                _d2, _d2, _d2, _d2,
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+    log.info("[numba] JIT 컴파일 완료")
+
+    try:
+        from wye.blsh.database.query import engine as _db_engine
+        _db_engine.dispose()
+    except Exception:
+        pass
+
+    n_workers = workers if workers > 0 else os.cpu_count()
+    log.info(f"병렬 처리: {n_workers}코어")
+
+    t_total = time.time()
+    results = []
+
+    for w_idx, (ts, te, vs, ve) in enumerate(windows, 1):
+        log.info(f"\n{'=' * 70}")
+        log.info(f"  Window {w_idx}/{len(windows)}: Train {ts}~{te}  Val {vs}~{ve}")
+        log.info(f"{'=' * 70}")
+
+        # Train
+        train_cache = cache.slice_by_dates(ts, te)
+        train_cache.flatten_signals()
+        _WORKER_CACHE = train_cache
+
+        result = _run_param_grid(train_cache, n_workers, sector)
+        if result is None:
+            log.warning(f"  Window {w_idx}: train 유효 결과 없음 → 스킵")
+            continue
+        best_p, train_st = result
+
+        if train_st.trades < 30:
+            log.warning(f"  Window {w_idx}: train 거래 {train_st.trades}건 < 30 → 스킵")
             continue
 
-        keys = list(grid.keys())
-        if not sector:
-            grid = {
-                **grid,
-                "sector_penalty_threshold": [-0.03],
-                "sector_penalty_pts": [0],
-                "sector_bonus_pts": [0],
-            }
-        combos = list(product(*[grid[k] for k in keys]))
+        # Validation
+        val_cache = cache.slice_by_dates(vs, ve)
+        val_cache.flatten_signals()
+        val_st = backtest(val_cache, best_p)
 
-        sector_label = '' if sector else ' (업종패널티 OFF)'
-        log.info(f"\n{'─' * 70}")
-        log.info(f"  {trade_mode} 모드: {len(combos):,}개 조합 백테스트{sector_label}")
-        log.info(f"{'─' * 70}")
+        if val_st.trades < 30:
+            log.warning(f"  Window {w_idx}: val 거래 {val_st.trades}건 < 30 → 스킵")
+            continue
 
-        results: list[tuple[Params, Stats]] = []
-        t0 = time.time()
+        log.info(
+            f"  Train: {train_st.trades}건  승률 {train_st.win_rate:.1f}%  평균 {train_st.avg_ret:+.2f}%"
+        )
+        log.info(
+            f"  Val:   {val_st.trades}건  승률 {val_st.win_rate:.1f}%  평균 {val_st.avg_ret:+.2f}%"
+        )
 
-        for i, combo in enumerate(combos):
-            p = Params(**dict(zip(keys, combo)))
-            s = backtest(cache, p)
-            results.append((p, s))
+        results.append((w_idx, ts, te, vs, ve, train_st, val_st, best_p))
 
-            if (i + 1) % 500 == 0 or (i + 1) == len(combos):
-                elapsed = time.time() - t0
-                log.info(
-                    f"  {i + 1:>5d}/{len(combos)}  ({elapsed:.0f}초, "
-                    f"{(i + 1) / elapsed:.0f} combo/s)"
-                )
+    total_elapsed = time.time() - t_total
+    log.info(f"\nWalk-Forward 검증 완료: {total_elapsed:.0f}초 ({total_elapsed / 60:.1f}분)")
 
-        # metric 기준 정렬
-        results.sort(key=lambda x: x[1].metric, reverse=True)
-        _report(trade_mode, results, time.time() - t0)
-
-        if results and results[0][1].metric > -9999:
-            best_results[trade_mode] = results[0]
-
-    # factor.py 자동 갱신
-    if apply and best_results:
-        _update_factor_file(best_results, years)
-    elif not apply and best_results:
-        log.info("\n  ⚠️  --no-apply: factor.py 갱신 생략")
+    if results:
+        _wf_report(results)
+    else:
+        log.warning("유효한 윈도우 결과가 없습니다.")
 
 
 # ─────────────────────────────────────────
@@ -535,17 +1302,60 @@ if __name__ == "__main__":
     )
 
     parser = argparse.ArgumentParser(description="Factor 최적화 Grid Search")
-    parser.add_argument("--mode", default="BOTH", choices=["DAY", "SWING", "BOTH"])
-    parser.add_argument("--years", type=int, default=2, help="백테스트 기간 (년)")
+    parser.add_argument("--years", type=float, default=2, help="백테스트 기간 (년, 소수 가능)")
     parser.add_argument("--rebuild", action="store_true", help="캐시 강제 재빌드")
-    parser.add_argument("--no-sector", action="store_true", help="업종지수 패널티 비활성화 (기존 방식)")
-    parser.add_argument("--no-apply", action="store_true", help="factor.py 자동 갱신 생략")
+    parser.add_argument(
+        "--no-sector", action="store_true", help="업종지수 패널티 비활성화"
+    )
+    parser.add_argument(
+        "--no-apply", action="store_true", help="config.py 자동 갱신 생략"
+    )
+    parser.add_argument(
+        "--workers", type=int, default=0, help="병렬 프로세스 수 (0=자동)"
+    )
+    parser.add_argument(
+        "--alternating", action="store_true",
+        help="교대 최적화 (신호점수 ↔ 매매파라미터 수렴)"
+    )
+    parser.add_argument(
+        "--max-iter", type=int, default=5, help="교대 최적화 최대 반복 횟수"
+    )
+    parser.add_argument(
+        "--walkforward", action="store_true",
+        help="Walk-Forward 검증 (롤링 윈도우별 train→val)"
+    )
+    parser.add_argument("--train-months", type=int, default=18, help="WF 학습 기간 (개월)")
+    parser.add_argument("--val-months", type=int, default=6, help="WF 검증 기간 (개월)")
+    parser.add_argument("--step-months", type=int, default=3, help="WF 롤링 간격 (개월)")
     args = parser.parse_args()
 
-    run(
-        mode=args.mode,
-        years=args.years,
-        rebuild=args.rebuild,
-        sector=not args.no_sector,
-        apply=not args.no_apply,
-    )
+    if args.alternating and args.walkforward:
+        parser.error("--alternating과 --walkforward는 동시 지정 불가")
+
+    if args.walkforward:
+        run_walkforward(
+            years=args.years,
+            rebuild=args.rebuild,
+            sector=not args.no_sector,
+            workers=args.workers,
+            train_months=args.train_months,
+            val_months=args.val_months,
+            step_months=args.step_months,
+        )
+    elif args.alternating:
+        run_alternating(
+            years=args.years,
+            rebuild=args.rebuild,
+            sector=not args.no_sector,
+            apply=not args.no_apply,
+            workers=args.workers,
+            max_iter=args.max_iter,
+        )
+    else:
+        run(
+            years=args.years,
+            rebuild=args.rebuild,
+            sector=not args.no_sector,
+            apply=not args.no_apply,
+            workers=args.workers,
+        )

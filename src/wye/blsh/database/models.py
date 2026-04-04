@@ -9,6 +9,7 @@ from sqlalchemy import (
     Numeric,
     DateTime,
     func,
+    text,
 )
 from wye.blsh.database import engine
 
@@ -177,21 +178,24 @@ class TradeCandidates(Base):
     """
     거래 후보 종목
     """
+
     __tablename__ = "trade_candidates"
-    __table_args__ = ({"comment": "거래 후보 종목 (PK: entry_date + po_type + ticker)"},)
+    __table_args__ = (
+        {"comment": "거래 후보 종목 (PK: entry_date + po_type + ticker)"},
+    )
 
     # 기본 키 (Composite Primary Key)
     entry_date = Column(
         String(8),
         primary_key=True,
         nullable=False,
-        comment="매수 목표일 (base_date 다음 영업일)"
+        comment="매수 목표일 (base_date 다음 영업일)",
     )
     po_type = Column(
         String(7),
         primary_key=True,
         nullable=False,
-        comment="po type (1: pre, 2: regular, 3: final)"
+        comment="po type (1: pre, 2: regular, 3: final)",
     )
     ticker = Column(
         String(20),
@@ -225,6 +229,10 @@ class TradeCandidates(Base):
     atr_tp_mult = Column(Numeric, comment="ATR_TP_MULT")
     max_hold_days = Column(SmallInteger, comment="최대 보유 영업일수")
     expiry_date = Column(String(8), comment="청산일(매수일 + 최대 보유 영업일수)")
+    buy_flags = Column(
+        String(200),
+        comment="매수 신호 (콤마로 구분된 신호 코드 목록, 예: 'MAA,VS')",
+    )
     created_at = Column(DateTime, server_default=func.now(), comment="레코드 생성일시")
 
 
@@ -239,9 +247,10 @@ class TradeHistory(Base):
     ticker = Column(String(20), nullable=False, index=True, comment="종목코드")
     name = Column(String(100), comment="종목명")
     qty = Column(Integer, comment="체결 수량")
-    price = Column(Numeric, comment="체결가 (매수: 지정가, 매도: 0=시장가)")
+    price = Column(Numeric, comment="체결가 (매수: 지정가, 매도: NULL=시장가 미조회)")
     reason = Column(String(200), comment="사유 (손절/1차익절/만기청산 등)")
     po_type = Column(String(10), comment="PO 유형 (pre/morning/final)")
+    kis_env = Column(String(10), comment="KIS 환경 (demo/real)")
     traded_at = Column(
         DateTime, server_default=func.now(), index=True, comment="체결 시각"
     )
