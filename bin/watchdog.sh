@@ -78,37 +78,29 @@ start_log_monitor() {
     echo "[$(date '+%H:%M:%S')] 로그 모니터 시작 (PID: $(cat "$MONITOR_PID_FILE"))"
 }
 
-# ── 프로세스 감시 루프
+# ── 프로세스 감시
 watch_trader() {
     local trader_pid="$1"
     echo "[$(date '+%H:%M:%S')] 트레이더 감시 시작 (PID: $trader_pid)"
 
-    while true; do
-        sleep "$CHECK_INTERVAL"
+    # 트레이더 종료 즉시 감지 (wait은 프로세스 종료까지 블로킹)
+    wait "$trader_pid" 2>/dev/null
+    local exit_code=$?
 
-        # 트레이더 프로세스 생존 확인
-        if ! kill -0 "$trader_pid" 2>/dev/null; then
-            # 정상 종료(exit 0) vs 비정상 종료 구분
-            wait "$trader_pid" 2>/dev/null
-            local exit_code=$?
+    if [ "$exit_code" -eq 0 ]; then
+        echo "[$(date '+%H:%M:%S')] 트레이더 정상 종료 (exit 0)"
+        send_alert "✅ 트레이더 정상 종료"
+    else
+        echo "[$(date '+%H:%M:%S')] 🚨 트레이더 비정상 종료 (exit $exit_code)"
+        send_alert "🚨 트레이더 비정상 종료 (exit code: $exit_code)\n마지막 로그:\n$(tail -5 "$LOG_FILE")"
+    fi
 
-            if [ "$exit_code" -eq 0 ]; then
-                echo "[$(date '+%H:%M:%S')] 트레이더 정상 종료 (exit 0)"
-                send_alert "✅ 트레이더 정상 종료"
-            else
-                echo "[$(date '+%H:%M:%S')] 🚨 트레이더 비정상 종료 (exit $exit_code)"
-                send_alert "🚨 트레이더 비정상 종료 (exit code: $exit_code)\n마지막 로그:\n$(tail -5 "$LOG_FILE")"
-            fi
-
-            # 모니터 종료
-            if [ -f "$MONITOR_PID_FILE" ]; then
-                kill "$(cat "$MONITOR_PID_FILE")" 2>/dev/null
-                rm -f "$MONITOR_PID_FILE"
-            fi
-            rm -f "$PID_FILE"
-            break
-        fi
-    done
+    # 모니터 종료
+    if [ -f "$MONITOR_PID_FILE" ]; then
+        kill "$(cat "$MONITOR_PID_FILE")" 2>/dev/null
+        rm -f "$MONITOR_PID_FILE"
+    fi
+    rm -f "$PID_FILE"
 }
 
 # ── 메인

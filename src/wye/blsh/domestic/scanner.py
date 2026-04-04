@@ -72,7 +72,6 @@
 """
 
 import logging
-from logging.handlers import TimedRotatingFileHandler
 import numpy as np
 import pandas as pd
 from wye.blsh.database import query, ModelManager
@@ -118,19 +117,11 @@ from wye.blsh.domestic.config import (
 )
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import LOG_DIR, SCAN_ETF
+from wye.blsh.common.env import SCAN_ETF
+from wye.blsh import new_logger
 
-log = logging.getLogger(__name__)
-_fh = TimedRotatingFileHandler(
-    LOG_DIR / "scanner.log",
-    when="midnight",
-    backupCount=30,
-    encoding="utf-8",
-)
-_fh.suffix = "%Y-%m-%d"
-_fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-log.addHandler(_fh)
 
+log = new_logger(__file__, True)
 
 # ─────────────────────────────────────────
 # 신호 분류 맵 (flag → 성격)
@@ -649,7 +640,9 @@ def enrich_with_db(results: list, base_date: str) -> list:
         log.debug(f"  DB 미보유 {len(missing)}종목 → KIS API fallback")
         try:
             for row in missing:
-                fl, ol = fetch_investor_daily(row["ticker"], base_date, n_days=5, market=row["market"])
+                fl, ol = fetch_investor_daily(
+                    row["ticker"], base_date, n_days=5, market=row["market"]
+                )
                 if fl or ol:
                     supply_api[row["ticker"]] = {
                         "frgn": fl,
@@ -1057,9 +1050,7 @@ def _verify_tradable(df: pd.DataFrame) -> pd.DataFrame:
                 val = info.get(field, "")
                 if str(val).strip().upper() == "Y":
                     drop_tickers.append(ticker)
-                    log.info(
-                        f"  🚫 [실시간 검증] {ticker} {row['name']} → {reason}"
-                    )
+                    log.info(f"  🚫 [실시간 검증] {ticker} {row['name']} → {reason}")
                     break
         except Exception as e:
             log.debug(f"  [실시간 검증] {ticker} 조회 실패: {e}")
@@ -1184,5 +1175,6 @@ if __name__ == "__main__":
     from wye.blsh.krx.krx_auth import login_krx
 
     login_krx()
-    # log.setLevel(logging.DEBUG)
+    log.setLevel(logging.DEBUG)
     find_candidates(report=True)
+    log.info("스캔 완료")
