@@ -276,6 +276,11 @@ def get_ticker_name_map():
     return {row["isu_srt_cd"]: row["isu_abbrv"] for row in result}
 
 
+def get_etf_name_map():
+    result = select_all("SELECT isu_srt_cd, isu_abbrv FROM etf_base_info")
+    return {row["isu_srt_cd"]: row["isu_abbrv"] for row in result}
+
+
 def get_max_hold_dates(target_date, max_hold_days):
     return select_all(
         """

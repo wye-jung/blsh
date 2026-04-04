@@ -35,7 +35,6 @@ GAP_THRESHOLD: float = 0.02
 W52_VOL_MULT: float = 1.5  # 52주 신고가 거래량 조건: 20일 평균의 N배
 LOOKBACK_DAYS: int = 365  # 52주(252거래일) 신고가 계산을 위해 365일 이상 필요
 MIN_SCORE: int = 1  # 저장 최소 점수
-ENRICH_SCORE: int = 2  # 수급 보강 최소 점수
 SUPPLY_CAP: int = 3  # 수급 가산 상한 (백테스트 검증, 2026-03-29)
 TRDVAL_MIN: int = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (10억)
 TRDVAL_DAYS: int = 20
@@ -46,6 +45,7 @@ INDEX_DROP_LIMIT: float = (
 INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE
 )  # 투자 적격 최소 점수 (백테스트 검증)
+ENRICH_SCORE: int = INVEST_MIN_SCORE - SUPPLY_CAP  # 수급 MAX 가산해도 통과 못할 종목 제외
 SECTOR_PENALTY_THRESHOLD: float = (
     Optimized.SECTOR_PENALTY_THRESHOLD
 )  # 업종지수 MA20 대비 해당값 이하

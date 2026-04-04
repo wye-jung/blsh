@@ -15,6 +15,7 @@ from pykrx.website import krx
 from wye.blsh.database import ModelManager, query
 from wye.blsh.common import dtutils
 from wye.blsh.domestic import Milestone
+from wye.blsh.common.env import SCAN_ETF
 from wye.blsh.database.models import (
     IsuKspOhlcv,
     IsuKsdOhlcv,
@@ -55,7 +56,8 @@ def collect() -> tuple[bool, str]:
         if Milestone.NXT_OPEN_TIME < dtutils.ctime() < Milestone.NXT_CLOSE_TIME:
             _collect_idx_data(max_ohlcv_date)
             _collect_isu_data(max_ohlcv_date)
-            # _collect_etx_data(max_ohlcv_date) # ETF는 현재 매수대상이 아니므로 개장시점에는 데이터 수집하지 않음
+            if SCAN_ETF:
+                _collect_etx_data(max_ohlcv_date)
         elif (_fetched_at := query.get_fetched_at(max_ohlcv_date)) is not None and (
             _fetched_at.strftime(dtutils.TIME_FMT) < Milestone.NXT_CLOSE_TIME
         ):

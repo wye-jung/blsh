@@ -117,7 +117,7 @@ from wye.blsh.domestic.config import (
 )
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import CACHE_DIR, LOG_DIR
+from wye.blsh.common.env import CACHE_DIR, LOG_DIR, SCAN_ETF
 
 log = logging.getLogger(__name__)
 _fh = TimedRotatingFileHandler(
@@ -508,7 +508,7 @@ def scan_market(
 # ─────────────────────────────────────────
 # [2단계] DB 수급 보강 + KIS API fallback
 # ─────────────────────────────────────────
-def fetch_investor_daily(ticker, base_date, n_days=5):
+def fetch_investor_daily(ticker, base_date, n_days=5, market="KOSPI"):
     """종목별 투자자매매동향(일별). 반환: (frgn_list, orgn_list) 오래된→최신."""
     from wye.blsh.kis import kis_auth as ka
     from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
@@ -580,7 +580,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
     candidates = [
         r
         for r in results
-        if r["buy_score"] >= ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ")
+        if r["buy_score"] >= ENRICH_SCORE and r["market"] in ("KOSPI", "KOSDAQ", "ETF")
     ]
     if not candidates:
         return results
@@ -589,6 +589,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
 
     kospi_ticks = [r["ticker"] for r in candidates if r["market"] == "KOSPI"]
     kosdaq_ticks = [r["ticker"] for r in candidates if r["market"] == "KOSDAQ"]
+    # ETF는 수급 info 테이블이 없으므로 KIS API fallback 대상
 
     def fetch_supply_from_db(table, tickers):
         if not tickers:
@@ -617,13 +618,34 @@ def enrich_with_db(results: list, base_date: str) -> list:
         **fetch_supply_from_db("isu_ksd_info", kosdaq_ticks),
     }
 
+    # [임시] 개장 시간 DB vs KIS API 수급 비교 로그
+    _ctime = dtutils.ctime()
+    if supply_db and Milestone.KRX_OPEN_TIME <= _ctime <= Milestone.KRX_CLOSE_TIME:
+        _db_tickers = [r for r in candidates if r["ticker"] in supply_db]
+        if _db_tickers:
+            log.info(f"[수급 비교] DB 보유 {len(_db_tickers)}종목 KIS API 대조 시작")
+            for row in _db_tickers:
+                t = row["ticker"]
+                fl, ol = fetch_investor_daily(t, base_date, n_days=5)
+                db = supply_db[t]
+                api_frgn = fl[-1] if fl else None
+                api_inst = ol[-1] if ol else None
+                db_frgn = db["today_frgn"]
+                db_inst = db["today_inst"]
+                match = "✅" if (db_frgn == api_frgn and db_inst == api_inst) else "❌"
+                log.info(
+                    f"  {match} {t} {row['name'][:10]}  "
+                    f"외인: DB={db_frgn:+} API={api_frgn}  "
+                    f"기관: DB={db_inst:+} API={api_inst}"
+                )
+
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}
     if missing:
         log.debug(f"  DB 미보유 {len(missing)}종목 → KIS API fallback")
         try:
             for row in missing:
-                fl, ol = fetch_investor_daily(row["ticker"], base_date, n_days=5)
+                fl, ol = fetch_investor_daily(row["ticker"], base_date, n_days=5, market=row["market"])
                 if fl or ol:
                     supply_api[row["ticker"]] = {
                         "frgn": fl,
@@ -632,6 +654,14 @@ def enrich_with_db(results: list, base_date: str) -> list:
                         "today_inst": ol[-1] if ol else 0,
                         "today_indi": None,
                     }
+                # [임시] ETF 수급 조회 결과 로그
+                if row["market"] == "ETF":
+                    has_data = bool(fl or ol)
+                    icon = "✅" if has_data else "⚠️"
+                    log.info(
+                        f"  {icon} [ETF수급] {row['ticker']} {row['name'][:10]}  "
+                        f"외인={fl}  기관={ol}  데이터={'있음' if has_data else '없음'}"
+                    )
         except Exception as e:
             log.warning(f"  KIS API fallback 오류: {e}")
 
@@ -754,6 +784,10 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
     else:
         log.warning("[KOSDAQ] 지수 20MA 아래 → 스캔 스킵")
 
+    if SCAN_ETF:
+        etf_name_map = query.get_etf_name_map()
+        results += scan_market("etf_ohlcv", "ETF", start, base_date, etf_name_map)
+
     results = enrich_with_db(results, base_date)
 
     df = pd.DataFrame(results)
@@ -864,6 +898,8 @@ def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
     gap_cache: dict[tuple[str, str], float] = {}  # (sec_nm, idx_clss) → gap
 
     def get_gap(ticker: str, market: str) -> float:
+        if market == "ETF":
+            return 0.0  # ETF는 업종 패널티/보너스 미적용
         # KOSPI 미매핑 → "코스피" 전체 지수, KOSDAQ → "코스닥" 전체 지수
         fallback = "코스피" if market == "KOSPI" else "코스닥"
         sec_nm = sector_map.get(ticker, fallback)
