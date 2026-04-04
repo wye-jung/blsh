@@ -1087,7 +1087,7 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 
     cand_mask = (
         (sdf["buy_score"] >= INVEST_MIN_SCORE)
-        & (sdf["mode"].isin(["MIX", "MOM", "REV"]))
+        & (sdf["mode"].isin(["MOM", "REV"]))
         & (~sdf["buy_flags"].str.contains("P_OV", na=False))
     )
     df = sdf[cand_mask].copy()

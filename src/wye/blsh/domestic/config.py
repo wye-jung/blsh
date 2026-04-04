@@ -1,8 +1,8 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-04 10:00 (0분)
+    # 수행일시: 2026-04-04 11:15 (0분)
     # 기간: 20240404 ~ 20260404
-    # 성과: 874건  승률 51.0%  평균 +2.46%  총 +2148.3%
+    # 성과: 1124건  승률 49.5%  평균 +2.39%  총 +2687.4%
     # ──────────────────────────────────────────
     INVEST_MIN_SCORE: int = 9
     SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
@@ -75,21 +75,21 @@ DISQUALIFY_FLAGS: dict[str, bool | int] = {
 }
 
 SIGNAL_SCORES = {
-    "MGC": 0,
+    "MGC": 1,
     "W52": 1,
-    "PB": 1,
+    "PB": 3,
     "LB": 0,
-    "MS": 1,
+    "MS": 3,
     "RBO": 3,
     "MPGC": 2,
-    "ROV": 0,
+    "ROV": 2,
     "BBL": 2,
-    "BBM": 1,
-    "VS": 0,
-    "MAA": 1,
+    "BBM": 0,
+    "VS": 1,
+    "MAA": 0,
     "SGC": 2,
     "HMR": 1,
-    "OBV": 1,
+    "OBV": 2,
 }
 
 SUPPLY_SCORES = {
