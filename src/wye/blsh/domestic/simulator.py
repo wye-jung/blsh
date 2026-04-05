@@ -129,6 +129,9 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
 
         # [FIX] 실제 매수가 기준 SL/TP 재계산 (trader _make_position과 동일)
         buy_price = t1_ohv["open"]
+        if buy_price <= 0:
+            rows_miss.append(sig.to_dict())
+            continue
         sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
         tp1 = Tick.ceil_tick(buy_price + TP1_MULT * atr)
         tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
