@@ -613,9 +613,14 @@ def enrich_with_db(results: list, base_date: str) -> list:
         **fetch_supply_from_db("isu_ksd_info", kosdaq_ticks),
     }
 
-    # [임시] 개장 시간 DB vs KIS API 수급 비교 로그
+    # [임시] 개장 시간 DB vs KIS API 수급 비교 로그 (KIS API는 당일만 유효)
     _ctime = dtutils.ctime()
-    if supply_db and Milestone.KRX_OPEN_TIME <= _ctime <= Milestone.KRX_CLOSE_TIME:
+    _is_today = base_date == dtutils.today()
+    if (
+        supply_db
+        and _is_today
+        and Milestone.KRX_OPEN_TIME <= _ctime <= Milestone.KRX_CLOSE_TIME
+    ):
         _db_tickers = [r for r in candidates if r["ticker"] in supply_db]
         if _db_tickers:
             log.info(f"[수급 비교] DB 보유 {len(_db_tickers)}종목 KIS API 대조 시작")
@@ -636,7 +641,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
 
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}
-    if missing:
+    if missing and _is_today:
         log.debug(f"  DB 미보유 {len(missing)}종목 → KIS API fallback")
         try:
             for row in missing:
@@ -889,6 +894,7 @@ def _load_kis_master(
         )
 
     log.debug("[KIS 마스터] 다운로드 시작…")
+    _check_today = (base_date or dtutils.today()) == dtutils.today()
     name_map: dict[str, str] = {}
     disqualified: set[str] = set()
     sector_map: dict[str, str] = {}
@@ -902,10 +908,11 @@ def _load_kis_master(
             ticker = str(row["단축코드"]).strip()
             name_map[ticker] = str(row["한글명"]).strip()
 
-            reason = _check_disqualified(row, _KOSPI_FLAG_COLS)
-            if reason:
-                disqualified.add(ticker)
-                log.debug(f"  🚫 부적합: {ticker} {name_map[ticker]} ({reason})")
+            if _check_today:
+                reason = _check_disqualified(row, _KOSPI_FLAG_COLS)
+                if reason:
+                    disqualified.add(ticker)
+                    log.debug(f"  🚫 부적합: {ticker} {name_map[ticker]} ({reason})")
 
             mid = int(row.get("지수업종중분류", 0) or 0)
             big = int(row.get("지수업종대분류", 0) or 0)
@@ -926,10 +933,11 @@ def _load_kis_master(
             ticker = str(row["단축코드"]).strip()
             name_map[ticker] = str(row["한글종목명"]).strip()
 
-            reason = _check_disqualified(row, _KOSDAQ_FLAG_COLS)
-            if reason:
-                disqualified.add(ticker)
-                log.debug(f"  🚫 부적합: {ticker} {name_map[ticker]} ({reason})")
+            if _check_today:
+                reason = _check_disqualified(row, _KOSDAQ_FLAG_COLS)
+                if reason:
+                    disqualified.add(ticker)
+                    log.debug(f"  🚫 부적합: {ticker} {name_map[ticker]} ({reason})")
 
             mid = int(row.get("지수 업종 중분류 코드", 0) or 0)
             big = int(row.get("지수업종 대분류 코드", 0) or 0)
@@ -1083,8 +1091,8 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     )
     df = sdf[cand_mask].copy()
 
-    # 2차 실시간 부적합 검증 (KIS API)
-    if not df.empty:
+    # 2차 실시간 부적합 검증 (KIS API) — 현재 시점 상태 조회이므로 당일만 유효
+    if not df.empty and base_date == dtutils.today():
         df = _verify_tradable(df)
 
     if report:
@@ -1173,8 +1181,10 @@ def issue_po(base_date=None):
 
 if __name__ == "__main__":
     from wye.blsh.krx.krx_auth import login_krx
+    import sys
 
     login_krx()
-    log.setLevel(logging.DEBUG)
-    find_candidates(report=True)
+    # log.setLevel(logging.DEBUG)
+    dt = sys.argv[1] if len(sys.argv) > 1 else dtutils.max_ohlcv_date()
+    find_candidates(dt, report=True)
     log.info("스캔 완료")
