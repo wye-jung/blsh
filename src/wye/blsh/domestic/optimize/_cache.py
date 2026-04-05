@@ -39,8 +39,6 @@ from wye.blsh.domestic.scanner import (
     TRDVAL_MIN,
     MACD_LONG,
     MACD_SIGNAL,
-    MIN_SCORE,
-    ENRICH_SCORE,
     SUPPLY_CAP,
 )
 
@@ -826,22 +824,19 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
             mode = _classify_mode(flags)
             tech_score = _calc_score(flags, mode)
-            if tech_score < MIN_SCORE:
-                continue
 
-            # 수급 보강 (tech_score >= ENRICH_SCORE 인 경우만)
-            raw_supply_bonus = 0  # 캡 미적용 원본 수급 점수 (supply_cap_test용)
+            # 수급 보강 (SIGNAL_SCORES 독립: 모든 신호에 수급 부착)
+            raw_supply_bonus = 0
             score = tech_score
-            if tech_score >= ENRICH_SCORE:
-                sup = supply.get((ticker, date))
-                if sup:
-                    bonus, bonus_flags, has_pov = sup
-                    raw_supply_bonus = bonus
-                    score += min(bonus, SUPPLY_CAP)  # scanner.py와 동일한 수급 상한
-                    flags |= bonus_flags
-                    if has_pov:
-                        flags.add("P_OV")
-                        score -= 1  # 캡 적용 후 P_OV 패널티 (scanner.py 순서 일치)
+            sup = supply.get((ticker, date))
+            if sup:
+                bonus, bonus_flags, has_pov = sup
+                raw_supply_bonus = bonus
+                score += min(bonus, SUPPLY_CAP)
+                flags |= bonus_flags
+                if has_pov:
+                    flags.add("P_OV")
+                    score -= 1
 
             atr_val = float(row["_atr"]) if pd.notna(row["_atr"]) else 0
             close_val = float(row["_close"]) if pd.notna(row["_close"]) else 0
