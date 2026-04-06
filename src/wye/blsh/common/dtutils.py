@@ -42,10 +42,14 @@ def add_biz_days(date_str, days: int, fmt=DATE_FMT) -> str | None:
 
     # 연휴(추석/설 최대 9일) 감안하여 days*3으로 여유있게 검증
     check_dt = add_days(date_str, days * 3, fmt)
-    if query.get_krx_holiday(check_dt) is None:
-        raise RuntimeError(f"krx_holiday에 {check_dt}까지 데이터가 없습니다.")
+    if query.get_max_ohlcv_date() >= check_dt:
+        rows = query.get_max_hold_dates_from_ohlcv(date_str, days)
+    else:
+        if query.get_krx_holiday(check_dt) is None:
+            raise RuntimeError(f"krx_holiday에 {check_dt}까지 데이터가 없습니다.")
 
-    rows = query.get_max_hold_dates(date_str, days)
+        rows = query.get_max_hold_dates(date_str, days)
+
     if not rows:
         return None
     return rows[-1]["d"]

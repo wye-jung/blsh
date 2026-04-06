@@ -281,6 +281,19 @@ def get_etf_name_map():
     return {row["isu_srt_cd"]: row["isu_abbrv"] for row in result}
 
 
+def get_max_hold_dates_from_ohlcv(target_date, max_hold_days):
+    return select_all(
+        """
+        SELECT DISTINCT trd_dd as d
+        FROM idx_stk_ohlcv
+        WHERE trd_dd > :start
+        ORDER BY trd_dd
+        LIMIT :n
+        """,
+        **{"start": target_date, "n": max_hold_days},
+    )
+
+
 def get_max_hold_dates(target_date, max_hold_days):
     return select_all(
         """
