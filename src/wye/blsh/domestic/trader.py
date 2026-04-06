@@ -267,7 +267,7 @@ def _load_positions() -> dict[str, Position]:
     source = POSITIONS_FILE
     if not source.exists():
         if POSITIONS_BAK.exists():
-            log.warning(f"positions.json 없음 → .bak에서 복원 시도")
+            log.warning("positions.json 없음 → .bak에서 복원 시도")
             source = POSITIONS_BAK
         else:
             return {}
@@ -645,7 +645,9 @@ def _submit_buy_orders(
         f"상한={max_alloc:,.0f} → 배분={alloc:,.0f}"
     )
     if alloc < MIN_ALLOC:
-        log.warning(f"[po] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 스킵")
+        msg = f"[po] 배분액 {alloc:,.0f}원 < 최소 {MIN_ALLOC:,}원 → 스킵"
+        log.warning(msg)
+        messageutils.send_message(msg)
         return failed
 
     deadline = time.monotonic() + PO_CANCEL_MIN * 60
@@ -821,7 +823,6 @@ def _cancel_all_pending(pending: dict[str, PendingOrder], kis: KISClient):
 # 메인
 # ─────────────────────────────────────────
 def run():
-    log.info(">>>>> START TRADER <<<<<<")
     today = dtutils.today()
 
     kh = query.get_krx_holiday(today)
@@ -837,7 +838,7 @@ def run():
         return
 
     mode_label = "🚨 실전투자" if KIS_ENV == "real" else "📋 모의투자"
-    messageutils.send_message(f"[{today}] 트레이더 시작 ({mode_label})")
+    log.info(f"[{today}] 트레이더 시작 ({mode_label})")
 
     try:
         kis = KISClient(KIS_ENV, FETCH_TIMEOUT)
@@ -996,12 +997,10 @@ def run():
                 }
                 if ghost:
                     log.warning(
-                        f"[유령 포지션] KIS 잔고에 없는 종목 {len(ghost)}건 제거:"
+                        f"[유령 포지션] KIS 잔고에 없는 종목 {len(ghost)}건 → 제거:"
                         f" {list(ghost)}"
                     )
-                    messageutils.send_message(
-                        f"⚠️ [{today}] 유령 포지션 {len(ghost)}건 제거: {list(ghost)}"
-                    )
+
                     for t in ghost:
                         del positions[t]
                     dirty = True
@@ -1012,14 +1011,10 @@ def run():
                 }
                 if orphans:
                     log.warning(
-                        f"[추적불가] positions에 없는 보유종목 {len(orphans)}건 발견"
-                        f" → DB 복원 시도"
+                        f"[추적불가] positions에 없는 보유종목 {len(orphans)}건 → 복원 시도"
+                        f" {list(orphans.keys())}"
                     )
-                    msg = (
-                        f"⚠️ [{today}] 추적불가 종목 {len(orphans)}건 감지"
-                        f" → DB 복원 시도: {list(orphans.keys())}"
-                    )
-                    messageutils.send_message(msg)
+
                     restored = _restore_positions_from_db(
                         orphans, avg_prices_chk, today
                     )
@@ -1028,8 +1023,8 @@ def run():
                         dirty = True
                     if restored:
                         monitor.sync_subscriptions(list(positions.keys()))
-                        messageutils.send_message(
-                            f"✅ [{today}] {len(restored)}건 복원 성공:"
+                        log.info(
+                            f"✅ [추적불가 복원] 복원 성공 {len(restored)}건"
                             f" {list(restored.keys())}"
                         )
                     unrestorable = {
@@ -1037,12 +1032,12 @@ def run():
                     }
                     if unrestorable:
                         log.warning(
-                            f"[추적불가 청산] 복원 실패 {len(unrestorable)}건 → 시장가 청산"
+                            f"🚨 [추적불가 청산] 복원 실패 {len(unrestorable)}건 → 시장가 청산"
                         )
                         for ticker, qty in unrestorable.items():
                             reason = "추적불가(복원실패)"
                             if _sell_market(kis, ticker, ticker, qty, reason, today):
-                                log.info(f"  🚨 추적불가 청산: {ticker}  수량={qty}")
+                                log.info(f"  추적불가 청산: {ticker}  수량={qty}")
                             else:
                                 log.warning(
                                     f"  추적불가 청산 실패: {ticker}  수량={qty}"
@@ -1135,7 +1130,7 @@ def run():
 
             # ── 3. 만기 청산 (1회)
             if not liquidated and now >= Milestone.LIQUIDATE_TIME:
-                log.info(f"만기 청산 시작")
+                log.info("만기 청산 시작")
                 to_liq = [
                     (t, p)
                     for t, p in list(positions.items())
@@ -1260,6 +1255,10 @@ def run():
 
                 for t, p in session_closed.items():
                     log.info(f"  {t} {p.name}  {p.realized_pnl:+,.0f}원")
+            else:
+                message = "[당일 결과] 거래 없음"
+                log.info(message)
+                messageutils.send_message(message)
         except Exception as e:
             log.warning(f"당일 결과 요약 실패 (position은 이미 저장됨): {e}")
         swing_remaining = {t: p for t, p in positions.items() if p.max_hold_days > 0}
