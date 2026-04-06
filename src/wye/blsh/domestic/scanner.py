@@ -1147,9 +1147,9 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
 
 
 def issue_po(base_date=None):
-    df = find_candidates(base_date, True)
-    if not df.empty:
-        df = df[
+    candidates = find_candidates(base_date, True)
+    if not candidates.empty:
+        df = candidates[
             [
                 "base_date",
                 "ticker",
@@ -1166,7 +1166,7 @@ def issue_po(base_date=None):
                 "entry_date",
                 "expiry_date",
             ]
-        ]
+        ].copy()
         po_type = df.iloc[0]["po_type"]
         entry_date = df.iloc[0]["entry_date"]
 
@@ -1176,6 +1176,7 @@ def issue_po(base_date=None):
 
             model_manager = ModelManager(TradeCandidates)
             model_manager.delete(entry_date=entry_date, po_type=po_type)
+            df["buy_flags"] = candidates["buy_flags"]
             model_manager.create(df)
 
 
@@ -1187,4 +1188,3 @@ if __name__ == "__main__":
     # log.setLevel(logging.DEBUG)
     dt = sys.argv[1] if len(sys.argv) > 1 else dtutils.max_ohlcv_date()
     find_candidates(dt, report=True)
-    log.info("스캔 완료")
