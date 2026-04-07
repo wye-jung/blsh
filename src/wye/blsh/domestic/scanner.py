@@ -1084,6 +1084,9 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     # 업종 패널티/보너스 적용
     sdf = _apply_sector_penalty(sdf, base_date)
 
+    # MIX 제외: 2년 백테스트 51건 승률 37.3% avg +0.76% (전체 avg +2.23% 대비 저조)
+    # 특히 MIX+MGC 조합 avg -4.48%. 전환+모멘텀 혼합은 방향 불확실. (2026-04-04 분석)
+    # grid_search 백테스트에는 MIX 포함 유지 → 재활성화 시 이 줄만 복원
     cand_mask = (
         (sdf["buy_score"] >= INVEST_MIN_SCORE)
         & (sdf["mode"].isin(["MOM", "REV"]))
@@ -1172,12 +1175,14 @@ def issue_po(base_date=None):
 
         if po_type and entry_date:
             po = PO(po_type, entry_date)
-            po.create(df.set_index("ticker").to_dict("index"))
+            if po.create(df.set_index("ticker").to_dict("index")):
+                model_manager = ModelManager(TradeCandidates)
+                model_manager.delete(entry_date=entry_date, po_type=po_type)
+                df["buy_flags"] = candidates["buy_flags"]
+                model_manager.create(df)
+                return po.path, df
 
-            model_manager = ModelManager(TradeCandidates)
-            model_manager.delete(entry_date=entry_date, po_type=po_type)
-            df["buy_flags"] = candidates["buy_flags"]
-            model_manager.create(df)
+    return None, pd.DataFrame()
 
 
 if __name__ == "__main__":
