@@ -151,11 +151,7 @@ if __name__ == "__main__":
         elif kh["opnd_yn"] == "Y":
             collected, max_ohlcv_date = collector.collect()
             if collected:
-                po_path, df = scanner.issue_po(max_ohlcv_date)
-                if po_path is not None:
-                    messageutils.send_message(f"[PO] {po_path}, {len(df)}종목")
-                else:
-                    messageutils.send_message("[PO] 후보 종목이 없습니다.")
+                scanner.issue_po(max_ohlcv_date)
             else:
                 log.warning(
                     f"최대 OHLCV 날짜 {max_ohlcv_date}가 오늘 {today} 또는 가장 가까운 영업일이 아닙니다."

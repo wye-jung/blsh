@@ -47,7 +47,7 @@ def print_invest_report(df):
         log.info("─── 투자 대상 없음 ───")
         return
     else:
-        log.info(f"entry_date: {df.iloc[0]['entry_date']}  |  총 {len(df)}종목")
+        log.info(f"base_date: {df.iloc[0]['base_date']}  |  총 {len(df)}종목")
 
     candidates = df.copy()
     candidates["_mode_rank"] = candidates["mode"].map({"MIX": 0, "MOM": 1}).fillna(2)
