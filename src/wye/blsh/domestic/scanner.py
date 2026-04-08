@@ -63,7 +63,7 @@
   gap ≥ SECTOR_BONUS_THRESHOLD  → SECTOR_BONUS_PTS
 
 [4단계] PO 후보 선별 및 파일 생성
-  조건: buy_score ≥ INVEST_MIN_SCORE, mode ∈ {MOM, MIX, REV}, P_OV 없음
+  조건: buy_score ≥ INVEST_MIN_SCORE, mode ∈ {MOM, REV}, P_OV 없음
   entry_price = ceil_tick(close + 0.5 × ATR)
 
   po-{date}-pre.json — 전일 스캔 (NXT 08:00 매수, 30%)
@@ -71,9 +71,9 @@
   po-{date}-fin.json — 청산 후 스캔 (KRX 15:15 매수 → 미체결분 NXT 재발주, 55%, max_hold_days +1)
 """
 
-import logging
 import numpy as np
 import pandas as pd
+from wye.blsh.common import messageutils
 from wye.blsh.database import query, ModelManager
 from wye.blsh.domestic import reporter, Tick, Milestone
 from wye.blsh.domestic import sector
@@ -1114,43 +1114,31 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     days = [MAX_HOLD_DAYS_MIX, MAX_HOLD_DAYS_MOM, MAX_HOLD_DAYS]
     df["max_hold_days"] = np.select(conditions, days, default=MAX_HOLD_DAYS)
 
-    today = dtutils.today()
-    ctime = dtutils.ctime()
-    if base_date == today and ctime < dtutils.add_time(
-        Milestone.LIQUIDATE_TIME, minutes=-3
-    ):
-        entry_date = today
-        if ctime < Milestone.NXT_OPEN_TIME:
-            po_type = PO_TYPE_PRE
-        elif ctime < dtutils.add_time(Milestone.KRX_EARLY_TIME, minutes=-3):
-            po_type = PO_TYPE_INI
-        elif ctime > dtutils.add_time(Milestone.LIQUIDATE_TIME, hours=-1):
-            df["max_hold_days"] = df["max_hold_days"] + 1
-            po_type = PO_TYPE_FIN
-        else:
-            po_type = ""
-    else:
-        entry_date = dtutils.next_biz_date(base_date)
-        po_type = PO_TYPE_PRE
-
-    expiry_cache: dict[tuple, str | None] = {}
-
-    def _get_expiry(ed, mhd):
-        key = (ed, int(mhd))
-        if key not in expiry_cache:
-            expiry_cache[key] = dtutils.add_biz_days(str(ed), int(mhd))
-        return expiry_cache[key]
-
-    df["po_type"] = po_type
-    df["entry_date"] = entry_date
-    df["expiry_date"] = df.apply(
-        lambda r: _get_expiry(entry_date, r["max_hold_days"]), axis=1
-    )
     return df
 
 
 def issue_po(base_date=None):
-    candidates = find_candidates(base_date, True)
+    if base_date is None:
+        base_date = dtutils.max_ohlcv_date()
+    entry_date = dtutils.today()
+    po_type = ""
+    if base_date == dtutils.prev_biz_date(entry_date):
+        po_type = PO_TYPE_PRE
+    elif base_date == entry_date:
+        ctime = dtutils.ctime()
+        if ctime < dtutils.add_time(Milestone.KRX_EARLY_TIME, minutes=-3):
+            po_type = PO_TYPE_INI
+        elif (
+            dtutils.add_time(Milestone.LIQUIDATE_TIME, minutes=-10)
+            < ctime
+            < dtutils.add_time(Milestone.LIQUIDATE_TIME, minutes=-3)
+        ):
+            po_type = PO_TYPE_FIN
+
+    if not po_type:
+        return
+
+    candidates = find_candidates(base_date, report=True)
     if not candidates.empty:
         df = candidates[
             [
@@ -1165,24 +1153,39 @@ def issue_po(base_date=None):
                 "atr_sl_mult",
                 "atr_tp_mult",
                 "max_hold_days",
-                "po_type",
-                "entry_date",
-                "expiry_date",
             ]
         ].copy()
-        po_type = df.iloc[0]["po_type"]
-        entry_date = df.iloc[0]["entry_date"]
 
-        if po_type and entry_date:
-            po = PO(po_type, entry_date)
-            if po.create(df.set_index("ticker").to_dict("index")):
-                model_manager = ModelManager(TradeCandidates)
-                model_manager.delete(entry_date=entry_date, po_type=po_type)
-                df["buy_flags"] = candidates["buy_flags"]
-                model_manager.create(df)
-                return po.path, df
+        expiry_cache: dict[tuple, str | None] = {}
 
-    return None, pd.DataFrame()
+        def _get_expiry(ed, mhd):
+            key = (ed, int(mhd))
+            if key not in expiry_cache:
+                expiry_cache[key] = dtutils.add_biz_days(str(ed), int(mhd))
+            return expiry_cache[key]
+
+        df["entry_date"] = entry_date
+        df["po_type"] = po_type
+        if po_type == PO_TYPE_FIN:
+            df["max_hold_days"] = df["max_hold_days"] + 1
+        df["expiry_date"] = df.apply(
+            lambda r: _get_expiry(entry_date, r["max_hold_days"]), axis=1
+        )
+
+        po = PO(po_type, entry_date)
+        if po.create(df.set_index("ticker").to_dict("index")):
+            message = f"📦 po-{entry_date}-{po_type} 생성: {df['name'].tolist()}"
+            model_manager = ModelManager(TradeCandidates)
+            model_manager.delete(entry_date=entry_date, po_type=po_type)
+            df["buy_flags"] = candidates["buy_flags"]
+            model_manager.create(df)
+        else:
+            message = f"🚨 po-{entry_date}-{po_type} 생성 실패"
+
+    else:
+        message = f"📭 po-{entry_date}-{po_type} 후보 종목 없음"
+
+    messageutils.send_message(message)
 
 
 if __name__ == "__main__":

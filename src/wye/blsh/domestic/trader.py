@@ -604,7 +604,6 @@ def _submit_buy_orders(
     positions: dict[str, Position],
     pending: dict[str, PendingOrder],
     kis: KISClient,
-    today: str,
     cash_usage: float = CASH_USAGE,
     cash_limit: float | None = None,
     po_type: str = "",
@@ -837,14 +836,27 @@ def run():
         log.info(f"{ctime} 거래시간이 아닙니다 (NXT 마감 후).")
         return
 
-    mode_label = "🚨 실전투자" if KIS_ENV == "real" else "📋 모의투자"
-    log.info(f"[{today}] 트레이더 시작 ({mode_label})")
-
     try:
         kis = KISClient(KIS_ENV, FETCH_TIMEOUT)
     except RuntimeError as e:
         log.error(str(e))
         return
+
+    mode_label = "🚨 실전투자" if KIS_ENV == "real" else "📋 모의투자"
+    log.info(f"[{today}] 트레이더 시작 ({mode_label})")
+    holdings, avg_prices, cash = kis.get_balance()
+
+    # ── 보유종목 및 잔고 텔레그램 알림
+    lines = [f"[{today}] {mode_label}"]
+    if holdings:
+        lines.append(f"보유 {len(holdings)}종목:")
+        for ticker, qty in holdings.items():
+            avg = avg_prices.get(ticker, 0)
+            lines.append(f"  {ticker} {qty}주 @{avg:,.0f}")
+    else:
+        lines.append("보유종목 없음")
+    lines.append(f"현금: {cash:,.0f}원")
+    messageutils.send_message("\n".join(lines))
 
     # ── 실시간 가격 모니터 (WS + REST 하이브리드)
     monitor = PriceMonitor(kis, use_ws=USE_WEBSOCKET)
@@ -885,7 +897,6 @@ def run():
             positions,
             pending_po,
             kis,
-            today,
             cash_usage=PRE_CASH_RATIO,
             po_type=PO_TYPE_PRE,
             excg_id_dvsn_cd="NXT",
@@ -943,7 +954,6 @@ def run():
                         positions,
                         pending_po,
                         kis,
-                        today,
                         cash_limit=cash_limit,
                         po_type=PO_TYPE_FIN,
                         excg_id_dvsn_cd="NXT",
@@ -971,7 +981,6 @@ def run():
                     positions,
                     pending_po,
                     kis,
-                    today,
                     cash_usage=PRE_CASH_RATIO,
                     po_type=PO_TYPE_PRE,
                 )
@@ -1115,7 +1124,6 @@ def run():
                                 positions,
                                 pending_po,
                                 kis,
-                                today,
                                 cash_usage=INI_CASH_RATIO,
                                 po_type=PO_TYPE_INI,
                             )
@@ -1161,7 +1169,6 @@ def run():
                         positions,
                         pending_po,
                         kis,
-                        today,
                         cash_limit=cash_limit,
                         po_type=PO_TYPE_FIN,
                     )
