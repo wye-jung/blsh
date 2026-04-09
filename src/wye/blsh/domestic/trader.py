@@ -382,10 +382,14 @@ def _restore_positions_from_db(
         tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
         qty_t1 = max(1, int(qty * tp1_ratio))
 
-        try:
-            expiry_date = dtutils.add_biz_days(entry_date, max_hold) or today
-        except Exception:
-            expiry_date = today
+        is_orphan = buy_rec is None
+        if is_orphan:
+            expiry_date = ""
+        else:
+            try:
+                expiry_date = dtutils.add_biz_days(entry_date, max_hold) or today
+            except Exception:
+                expiry_date = today
 
         pos = Position(
             ticker=ticker,
@@ -407,10 +411,11 @@ def _restore_positions_from_db(
             po_type=po_type,
         )
         result[ticker] = pos
+        label = "🔸 orphan" if is_orphan else "✅"
         log.info(
-            f"  [복원] ✅ {ticker} {name}  매수가={buy_price:,.0f}  ATR={atr:.0f}"
+            f"  [복원] {label} {ticker} {name}  매수가={buy_price:,.0f}  ATR={atr:.0f}"
             f"  SL={sl:,.0f}  TP1={tp1:,.0f}  TP2={tp2:,.0f}"
-            f"  entry={entry_date}  t1_done={t1_done}"
+            f"  entry={entry_date}  expiry={expiry_date or '(없음)'}"
         )
 
     return result
@@ -1046,7 +1051,7 @@ def run():
                     }
                     if unrestorable:
                         log.warning(
-                            f"🚨 [추적불가 청산] 복원 실패 {len(unrestorable)}건 → 시장가 청산"
+                            f"🚨 [추적불가 청산] 매수가 불명 {len(unrestorable)}건 → 시장가 청산"
                         )
                         for ticker, qty in unrestorable.items():
                             reason = "추적불가(복원실패)"
