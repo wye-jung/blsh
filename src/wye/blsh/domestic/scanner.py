@@ -117,7 +117,7 @@ from wye.blsh.domestic.config import (
 )
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import SCAN_ETF
+from wye.blsh.common.env import KIS_ENV, SCAN_ETF
 from wye.blsh import new_logger
 
 
@@ -542,6 +542,27 @@ def fetch_investor_daily(ticker, base_date, n_days=5, market="KOSPI"):
     return [], []
 
 
+def fetch_investor_estimate(ticker: str) -> tuple[int, int]:
+    """종목별 외인기관 추정가집계 (실전투자 전용, 장중).
+    Returns: (frgn_net_qty, orgn_net_qty) — 가장 최근 입력 시점의 가집계 순매수량.
+    """
+    from wye.blsh.kis import kis_auth as ka
+    from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
+
+    try:
+        if not ka.getTREnv():
+            ka.auth()
+        df = ds.investor_trend_estimate(mksc_shrn_iscd=ticker)
+        if df is not None and not df.empty:
+            row = df.sort_values("bsop_hour_gb", ascending=False).iloc[0]
+            frgn = int(row["frgn_fake_ntby_qty"])
+            orgn = int(row["orgn_fake_ntby_qty"])
+            return frgn, orgn
+    except Exception as e:
+        log.debug(f"  investor_estimate 오류 ({ticker}): {e}")
+    return 0, 0
+
+
 def classify_supply(qty_list):
     """
     수급 흐름 분류 → (flag_suffix, score)
@@ -605,6 +626,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
                 "today_frgn": recent["frgn_qty"].iloc[-1] if len(recent) else 0,
                 "today_inst": recent["inst_qty"].iloc[-1] if len(recent) else 0,
                 "today_indi": recent["indi_qty"].iloc[-1] if len(recent) else 0,
+                "last_date": recent["trd_dd"].iloc[-1] if len(recent) else "",
             }
         return result
 
@@ -613,31 +635,30 @@ def enrich_with_db(results: list, base_date: str) -> list:
         **fetch_supply_from_db("isu_ksd_info", kosdaq_ticks),
     }
 
-    # [임시] 개장 시간 DB vs KIS API 수급 비교 로그 (KIS API는 당일만 유효)
-    _ctime = dtutils.ctime()
     _is_today = base_date == dtutils.today()
-    if (
-        supply_db
-        and _is_today
-        and Milestone.KRX_OPEN_TIME <= _ctime <= Milestone.KRX_CLOSE_TIME
-    ):
-        _db_tickers = [r for r in candidates if r["ticker"] in supply_db]
-        if _db_tickers:
-            log.info(f"[수급 비교] DB 보유 {len(_db_tickers)}종목 KIS API 대조 시작")
-            for row in _db_tickers:
+
+    # 실전투자 장중: DB에 당일 수급 없는 종목 → 추정가집계 API 보강
+    if _is_today and KIS_ENV == "real" and dtutils.ctime() >= Milestone.KRX_OPEN_TIME:
+        no_today = [
+            r for r in candidates
+            if r["ticker"] in supply_db
+            and supply_db[r["ticker"]].get("last_date") != base_date
+        ]
+        if no_today:
+            log.info(f"[수급 가집계] 당일 DB 미보유 {len(no_today)}종목 → 추정가집계 조회")
+            for row in no_today:
                 t = row["ticker"]
-                fl, ol = fetch_investor_daily(t, base_date, n_days=5)
-                db = supply_db[t]
-                api_frgn = fl[-1] if fl else None
-                api_inst = ol[-1] if ol else None
-                db_frgn = db["today_frgn"]
-                db_inst = db["today_inst"]
-                match = "✅" if (db_frgn == api_frgn and db_inst == api_inst) else "❌"
-                log.info(
-                    f"  {match} {t} {row['name'][:10]}  "
-                    f"외인: DB={db_frgn:+} API={api_frgn}  "
-                    f"기관: DB={db_inst:+} API={api_inst}"
-                )
+                frgn, orgn = fetch_investor_estimate(t)
+                if frgn or orgn:
+                    sup = supply_db[t]
+                    sup["frgn"].append(frgn)
+                    sup["inst"].append(orgn)
+                    sup["today_frgn"] = frgn
+                    sup["today_inst"] = orgn
+                    sup["today_indi"] = None
+                    log.info(
+                        f"  📊 {t} {row['name'][:10]}  외인={frgn:+,}  기관={orgn:+,}"
+                    )
 
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}
@@ -656,14 +677,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
                         "today_inst": ol[-1] if ol else 0,
                         "today_indi": None,
                     }
-                # [임시] ETF 수급 조회 결과 로그
-                if row["market"] == "ETF":
-                    has_data = bool(fl or ol)
-                    icon = "✅" if has_data else "⚠️"
-                    log.info(
-                        f"  {icon} [ETF수급] {row['ticker']} {row['name'][:10]}  "
-                        f"외인={fl}  기관={ol}  데이터={'있음' if has_data else '없음'}"
-                    )
+
         except Exception as e:
             log.warning(f"  KIS API fallback 오류: {e}")
 
