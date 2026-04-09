@@ -10899,8 +10899,9 @@ def order_cash(
         current_data = pd.DataFrame([res.getBody().output])
         return current_data
     else:
-        res.printError(url=api_url)
-        return pd.DataFrame()
+        err_code = res.getErrorCode()
+        err_msg = res.getErrorMessage()
+        raise RuntimeError(f"[{err_code}] {err_msg}")
 
 
 ##############################################################################################

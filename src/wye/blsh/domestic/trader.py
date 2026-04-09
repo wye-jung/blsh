@@ -675,8 +675,11 @@ def _submit_buy_orders(
             )
         else:
             failed[ticker] = o
-            log.warning(f"  [po] 주문 실패: {ticker} → KRX 개장 후 재시도 대상")
+            log.warning(f"  [po] {excg_id_dvsn_cd} 주문 실패: {ticker}")
 
+    if failed:
+        msg = f"⚠️ 매수 주문 실패: {', '.join(failed.keys())} ({excg_id_dvsn_cd})"
+        messageutils.send_message(msg)
     return failed
 
 
@@ -985,7 +988,9 @@ def run():
                     po_type=PO_TYPE_PRE,
                 )
                 if still_failed:
-                    log.warning(f"  재주문도 실패: {list(still_failed.keys())}")
+                    msg = f"🚨 매수 재주문 실패: {', '.join(still_failed.keys())}"
+                    log.warning(f"  {msg}")
+                    messageutils.send_message(msg)
                 retry_done = True
 
             # ── 0-1. 유령/추적불가 체크 (KRX 개장 후 1회, 기간초과 청산보다 먼저 실행)
