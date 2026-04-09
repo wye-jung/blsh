@@ -14,6 +14,7 @@ import logging
 
 from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import build_or_load
+from wye.blsh.domestic.optimize import grid_search as _gs
 from wye.blsh.domestic.optimize.grid_search import Params, Stats, _simulate_one
 
 log = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ def run(years: int = 2):
     log.info(f"기간: {start_date} ~ {end_date} ({years}년)")
 
     cache = build_or_load(start_date, end_date)
+    _gs._WORKER_CACHE = cache
 
     from wye.blsh.domestic import config as _f
     params = Params(

@@ -20,7 +20,7 @@ bin/setup_cron.sh status     # 현재 등록 상태 확인
 | 06:30 | 월 | `sector` -- 업종지수 매핑 확인 | sector.log |
 | 07:30 | 월~금 | `po` -- 데이터 수집 + PO(1) (PRE: 전일 확정 일봉 스캔) | po.log |
 | 07:55 | 월~금 | `watchdog.sh` -- 트레이더 시작 + 크래시 감지 | watchdog.log |
-| 10:05 | 월~금 | `po` -- 데이터 수집 + PO(2) (INI: 장초반 스캔) | po.log |
+| 11:30 | 월~금 | `po` -- 데이터 수집 + PO(2) (INI: 장중 스캔) | po.log |
 | 15:05 | 월~금 | `po` -- 데이터 수집 + PO(3) (FIN: 청산 후 스캔) | po.log |
 | 20:30 | 월~금 | `analyze` -- 일일 로그 분석 -> 텔레그램 리포트 | analyze.log |
 | 02:00 | 토 | `grid_search --alternating` -- 파라미터 최적화 | optimize.log |
@@ -34,8 +34,8 @@ bin/setup_cron.sh status     # 현재 등록 상태 확인
 07:55  watchdog -> trader 시작
 08:00  trader -> PO(1) 읽기 -> NXT 지정가 매수 (30%)
 09:00  trader -> KRX 개장, SL/TP 모니터링 시작
-10:05  po -> PO(2)(ini) 생성
-~10:10 trader -> PO(2) 감지 -> KRX 지정가 매수 (15%), 10분 후 미체결 취소
+11:30  po -> PO(2)(ini) 생성
+~11:35 trader -> PO(2) 감지 -> KRX 지정가 매수 (15%), 10분 후 미체결 취소
 15:05  po -> PO(3)(fin) 생성
 15:15  trader -> 만기 종목 청산 -> PO(3) 읽기 -> 매수 (55% x 90%)
 15:30  trader -> KRX 마감 -> NXT 에프터마켓 SL/TP

@@ -25,6 +25,7 @@
 | HMR | Hammer | 반전 | 2 | 아래꼬리 >50%, 윗꼬리 <10%, 몸통 <30% |
 | LB | Large Bar | 모멘텀 | 0 | 양봉, 크기 > ATR x 1.5 |
 | MS | Morning Star | 반전 | 2 | 3봉 패턴 (대음봉, 도지, 대양봉) |
+| BE | Bullish Engulfing | 반전 | 2 | 전일 음봉을 오늘 양봉이 완전히 감싸는 형태 |
 | OBV | OBV Uptrend | 중립 | 2 | 3일 연속 OBV 증가 |
 
 점수는 `config.SIGNAL_SCORES`에 정의. `grid_search`가 자동 갱신.
@@ -92,5 +93,5 @@ DB `idx_stk_ohlcv` 테이블에서 `idx_clss` 필터 필수:
 | 파일 | 스캔 시점 | 매수 시점 | 배분 |
 |------|----------|----------|------|
 | `po-{date}-pre.json` | 전일 확정 일봉 | 08:00 NXT 지정가 | 30% |
-| `po-{date}-ini.json` | 장초반 (~10:05) | ~10:10 KRX 지정가 | 15% |
+| `po-{date}-ini.json` | 장중 (~11:30) | ~11:35 KRX 지정가 | 15% |
 | `po-{date}-fin.json` | 청산 후 (~15:05) | 15:15 KRX/NXT 지정가 | 55% x 90% |

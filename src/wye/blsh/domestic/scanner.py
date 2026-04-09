@@ -126,7 +126,7 @@ log = new_logger(__file__, True)
 # ─────────────────────────────────────────
 # 신호 분류 맵 (flag → 성격)
 # ─────────────────────────────────────────
-_REVERSAL_FLAGS = {"ROV", "RBO", "BBL", "HMR", "MS"}
+_REVERSAL_FLAGS = {"ROV", "RBO", "BBL", "HMR", "MS", "BE"}
 _MOMENTUM_FLAGS = {"MGC", "MAA", "W52", "PB", "LB", "VS", "OBV"}
 # NEUTRAL: MPGC, BBM, SGC (위 두 집합에 속하지 않는 모든 flag)
 
@@ -312,7 +312,14 @@ def evaluate_buy(close, high, low, volume, opn=None):
         ):
             signals.append(_signal_score("MS"))
 
-    # 15. OBV 상승 추세 (+1) → OBV (모멘텀)
+    # 15. Bullish Engulfing (+2) → BE (반전)
+    if has_opn and len(close) >= 2:
+        c_1, c_0 = close.iloc[-2], close.iloc[-1]
+        o_1, o_0 = opn.iloc[-2], opn.iloc[-1]
+        if c_1 < o_1 and c_0 > o_0 and o_0 <= c_1 and c_0 >= o_1:
+            signals.append(_signal_score("BE"))
+
+    # 16. OBV 상승 추세 (+1) → OBV (모멘텀)
     if obv is not None and len(obv) >= 3:
         if obv.iloc[-3] < obv.iloc[-2] < obv.iloc[-1]:
             signals.append(_signal_score("OBV"))

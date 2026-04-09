@@ -204,7 +204,10 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
         & (c0 > (o_2 + c_2) / 2)
     )
 
-    # 15. OBV: 3일 연속 상승 (+1)
+    # 15. BE: Bullish Engulfing (+2)
+    out["BE"] = (c_1 < o_1) & (c0 > o) & (o <= c_1) & (c0 >= o_1)
+
+    # 16. OBV: 3일 연속 상승 (+1)
     out["OBV"] = (obv > obv.shift(1)) & (obv.shift(1) > obv.shift(2))
 
     # 메타 컬럼 (나중에 entry_price / SL / TP 계산용)

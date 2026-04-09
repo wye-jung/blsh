@@ -77,7 +77,7 @@ src/wye/blsh/
 ```
 07:30 po → PO①(pre)     07:55 watchdog → trader 시작
 08:00 trader → NXT 매수   09:00 KRX 개장, SL/TP 시작
-10:05 po → PO②(ini)      ~10:10 trader → KRX 매수
+11:30 po → PO②(ini)      ~11:35 trader → KRX 매수
 15:05 po → PO③(fin)      15:15 trader → 청산 + 매수
 15:30 NXT 에프터마켓      20:00 trader 종료
 20:30 analyze → 텔레그램   토 02:00 grid_search
