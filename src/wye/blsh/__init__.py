@@ -5,7 +5,7 @@ from wye.blsh.common.env import LOG_DIR
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ⚠ 포맷 변경 시 log_analyzer._LOG_PATTERN 정규식도 함께 수정할 것
-_fmt = logging.Formatter("%(asctime)s [%(name)s][%(levelname)s] %(message)s")
+_fmt = logging.Formatter("%(asctime)s [%(levelname)s][%(module)s] %(message)s")
 _console_handler = logging.StreamHandler()
 _console_handler.setFormatter(_fmt)
 
