@@ -20,7 +20,7 @@
 
 1. **손절**: `현재가 <= SL` -> 전량 시장가 매도 (KRX) / 하한가 지정가 (NXT)
 2. **1차 익절**: `현재가 >= TP1` -> `TP1_RATIO` 비율 매도, SL -> 매수가(본전)
-3. **트레일링 SL**: 전일 고가 기준 `prev_high - ATR x ATR_SL_MULT`로 상향만 (보수적)
+3. **트레일링 SL**: 진입 이후 최고가 기준 `high_since_entry - ATR x ATR_SL_MULT`로 상향만 (시뮬레이션과 동일)
 4. **2차 익절**: `현재가 >= TP2` -> 잔량 전량 매도
 
 ### 거래소 라우팅
@@ -36,8 +36,8 @@
 
 | 모드 | 보유일 | 설명 |
 |------|--------|------|
-| REV | MAX_HOLD_DAYS (현재 10) | 반전 -- 길게 |
-| MIX | MAX_HOLD_DAYS_MIX (현재 5) | 혼합 -- 중간 |
+| REV | MAX_HOLD_DAYS (현재 20) | 반전 -- 길게 |
+| MIX | MAX_HOLD_DAYS_MIX (현재 7) | 혼합 -- 중간 |
 | MOM | MAX_HOLD_DAYS_MOM (현재 3) | 추세 -- 짧게 |
 
 ## 자금 배분
@@ -71,6 +71,7 @@ ticker, name, qty, buy_price, atr
 sl, tp1, tp2, mode, max_hold_days
 entry_date, expiry_date, t1_done, qty_t1
 realized_pnl, po_type, excg_cd, sell_fail_count
+high_since_entry  # 진입 이후 최고가 (트레일링 SL 기준)
 ```
 
 ## 종료 처리

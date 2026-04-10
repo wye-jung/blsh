@@ -118,6 +118,7 @@ class Position:
     po_type: str = ""
     excg_cd: str = "KRX"  # 매수 시 거래소 (KRX/NXT)
     sell_fail_count: int = 0  # 연속 매도 실패 횟수 (잔고 재확인 트리거)
+    high_since_entry: float = 0.0  # 진입 이후 최고가 (트레일링 SL 기준)
 
 
 @dataclass
@@ -282,6 +283,7 @@ def _load_positions() -> dict[str, Position]:
             v.setdefault("expiry_date", "")
             v.setdefault("po_type", "")
             v.setdefault("excg_cd", "KRX")
+            v.setdefault("high_since_entry", 0.0)
             v.pop("sell_fail_count", None)  # 세션 내 임시 값 — 이월 방지
             p = Position(**v)
             # [FIX] expiry_date 미설정 보정 (데이: entry_date, 스윙: +N영업일)
@@ -514,6 +516,7 @@ def _make_position(
         qty_t1=qty_t1,
         po_type=po_type,
         excg_cd=excg_cd,
+        high_since_entry=buy_price,
     )
 
 
@@ -532,21 +535,21 @@ def _process_position(
     # NXT 모드: 익절은 현재가 지정가, 손절은 하한가 지정가 (0이면 KRX 시장가)
     sell_price = Tick.floor_tick(current) if nxt_mode else 0
 
-    trail_sl = Tick.floor_tick(current - pos.atr_sl_mult * pos.atr)
-    if trail_sl > pos.sl:
-        if trail_sl < current:
+    # 진입 이후 최고가 갱신 (시뮬레이션의 prev_high와 동일 역할)
+    if current > pos.high_since_entry:
+        pos.high_since_entry = current
+        changed = True
+
+    # 트레일링 SL: 최고가 기준 (시뮬레이션 _sim_core.py와 동일 로직)
+    if pos.high_since_entry > 0:
+        trail_sl = Tick.floor_tick(pos.high_since_entry - pos.atr_sl_mult * pos.atr)
+        if trail_sl > pos.sl and trail_sl < pos.high_since_entry:
             log.info(
                 f"  🔺 트레일링 SL: {pos.ticker}  {pos.sl:,.0f} → {trail_sl:,.0f}"
-                f"  (현재={current:,.0f})"
+                f"  (최고={pos.high_since_entry:,.0f}, 현재={current:,.0f})"
             )
             pos.sl = trail_sl
             changed = True
-        else:
-            # trail_sl ≥ current → SL이 현재가 이상이면 갱신 무의미 (즉시 손절 영역)
-            log.warning(
-                f"  ⚠️ 트레일링 SL 스킵: {pos.ticker}  trail_sl={trail_sl:,.0f}"
-                f" ≥ 현재가={current:,.0f}  (ATR={pos.atr:.0f}, mult={pos.atr_sl_mult})"
-            )
 
     # [FIX] 매도 성공 시에만 changed=True (실패 시 상태 불변)
     if current <= pos.sl:
@@ -713,7 +716,9 @@ def _check_pending_orders(
     for ticker, po in pending.items():
         if ticker in positions:
             log.info(f"  [po] {ticker} 이미 보유 중 → 미체결 주문 취소")
-            if not kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd):
+            if po.odno != "UNKNOWN" and not kis.cancel_order(
+                ticker, po.odno, po.qty, po.excg_cd
+            ):
                 log.warning(f"  [po] {ticker} 이미보유 취소 실패 (무시)")
             done.append(ticker)
             continue
@@ -724,7 +729,9 @@ def _check_pending_orders(
                 log.warning(
                     f"  부분 체결: {ticker}  주문={po.qty}  체결={actual_qty} → 잔량 취소"
                 )
-                if not kis.cancel_order(
+                if po.odno == "UNKNOWN":
+                    log.warning(f"  부분체결 잔량 취소 불가 (odno 미확인): {ticker}")
+                elif not kis.cancel_order(
                     ticker, po.odno, po.qty - actual_qty, po.excg_cd
                 ):
                     log.warning(
@@ -775,12 +782,17 @@ def _check_pending_orders(
 
         elif now_mono >= po.deadline:
             log.info(f"  [po] {PO_CANCEL_MIN}분 경과 미체결 취소: {ticker}")
-            if kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd):
+            # odno 미확인 주문은 취소 불가 → 잔고 확인으로 직행
+            if po.odno == "UNKNOWN":
+                log.warning(
+                    f"  [po] odno 미확인 → 취소 생략, 잔고 확인: {ticker}"
+                )
+            elif kis.cancel_order(ticker, po.odno, po.qty, po.excg_cd):
                 done.append(ticker)
                 continue
 
-            # 취소 실패 → 이미 체결 가능성, 잔고 재확인
-            log.warning(f"  [po] 취소 실패 → 잔고 재확인: {ticker}")
+            # 취소 실패 또는 odno 미확인 → 이미 체결 가능성, 잔고 재확인
+            log.warning(f"  [po] 잔고 재확인: {ticker}")
             holdings_api, avg_prices, _ = kis.get_balance()
             filled_qty = holdings_api.get(ticker, 0)
             if filled_qty > 0:

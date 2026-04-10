@@ -7,28 +7,28 @@
 - 최근 20일 평균 거래대금 >= 10억 (`TRDVAL_MIN`)
 - KOSPI/KOSDAQ 대상 (ETF는 `SCAN_ETF=true` 환경변수로 활성화)
 
-## 1단계: 기술 점수 (OHLCV -> 15개 플래그)
+## 1단계: 기술 점수 (OHLCV -> 16개 플래그)
 
-| 플래그 | 이름 | 카테고리 | 현재 점수 | 조건 |
-|--------|------|----------|-----------|------|
-| MGC | MACD Golden Cross | 모멘텀 | 1 | MACD > Signal (전일 <) |
-| MPGC | MACD Predicted GC | 중립 | 1 | 히스토그램 상승, 양쪽 <0, 근접 |
-| RBO | RSI Breakout 30 | 반전 | 3 | RSI가 30 상향 돌파 |
-| ROV | RSI Oversold | 반전 | 2 | RSI < 30 |
-| BBL | Bollinger Bounce | 반전 | 2 | 전일 저가 < 하단밴드, 오늘 종가 > 하단 |
-| BBM | BB Middle Cross | 중립 | 2 | 종가가 중간밴드 상향 돌파 |
-| VS | Volume Spike | 모멘텀 | 2 | 거래량 > 20일 평균 x 2 + 양봉 |
-| MAA | MA Alignment | 모멘텀 | 0 | 5MA > 20MA > 60MA (당일 신규) |
-| SGC | Stoch Golden Cross | 중립 | 2 | K > D, 양쪽 <50, K 교차 |
-| W52 | 52-week High | 모멘텀 | 3 | 52주 신고가 + 거래량 > 1.5x 평균 |
-| PB | Pullback | 모멘텀 | 0 | MA20 상승 중 5MA까지 눌림 후 반등 |
-| HMR | Hammer | 반전 | 2 | 아래꼬리 >50%, 윗꼬리 <10%, 몸통 <30% |
-| LB | Large Bar | 모멘텀 | 0 | 양봉, 크기 > ATR x 1.5 |
-| MS | Morning Star | 반전 | 2 | 3봉 패턴 (대음봉, 도지, 대양봉) |
-| BE | Bullish Engulfing | 반전 | 2 | 전일 음봉을 오늘 양봉이 완전히 감싸는 형태 |
-| OBV | OBV Uptrend | 중립 | 2 | 3일 연속 OBV 증가 |
+| 플래그 | 이름 | 카테고리 | 조건 |
+|--------|------|----------|------|
+| MGC | MACD Golden Cross | 모멘텀 | MACD > Signal (전일 <) |
+| MPGC | MACD Predicted GC | 중립 | 히스토그램 상승, 양쪽 <0, 근접 |
+| RBO | RSI Breakout 30 | 반전 | RSI가 30 상향 돌파 |
+| ROV | RSI Oversold | 반전 | RSI < 30 |
+| BBL | Bollinger Bounce | 반전 | 전일 저가 < 하단밴드, 오늘 종가 > 하단 |
+| BBM | BB Middle Cross | 중립 | 종가가 중간밴드 상향 돌파 |
+| VS | Volume Spike | 모멘텀 | 거래량 > 20일 평균 x 2 + 양봉 |
+| MAA | MA Alignment | 모멘텀 | 5MA > 20MA > 60MA (당일 신규) |
+| SGC | Stoch Golden Cross | 중립 | K > D, 양쪽 <50, K 교차 |
+| W52 | 52-week High | 모멘텀 | 52주 신고가 + 거래량 > 1.5x 평균 |
+| PB | Pullback | 모멘텀 | MA20 상승 중 5MA까지 눌림 후 반등 |
+| HMR | Hammer | 반전 | 아래꼬리 >50%, 윗꼬리 <10%, 몸통 <30% |
+| LB | Large Bar | 모멘텀 | 양봉, 크기 > ATR x 1.5 |
+| MS | Morning Star | 반전 | 3봉 패턴 (대음봉, 도지, 대양봉) |
+| BE | Bullish Engulfing | 반전 | 전일 음봉을 오늘 양봉이 완전히 감싸는 형태 |
+| OBV | OBV Uptrend | 모멘텀 | 3일 연속 OBV 증가 |
 
-점수는 `config.SIGNAL_SCORES`에 정의. `grid_search`가 자동 갱신.
+점수는 `config.SIGNAL_SCORES`에 정의. `grid_search`가 자동 갱신하므로 문서에 고정 점수를 기재하지 않음.
 
 ### 신호 모드 분류
 
