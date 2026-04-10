@@ -36,8 +36,8 @@
 
 | 모드 | 보유일 | 설명 |
 |------|--------|------|
-| REV | MAX_HOLD_DAYS (현재 20) | 반전 -- 길게 |
-| MIX | MAX_HOLD_DAYS_MIX (현재 7) | 혼합 -- 중간 |
+| REV | MAX_HOLD_DAYS (현재 10) | 반전 -- 길게 |
+| MIX | MAX_HOLD_DAYS_MIX (현재 5) | 혼합 -- 중간 |
 | MOM | MAX_HOLD_DAYS_MOM (현재 3) | 추세 -- 짧게 |
 
 ## 자금 배분

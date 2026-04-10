@@ -535,12 +535,9 @@ def _process_position(
     # NXT 모드: 익절은 현재가 지정가, 손절은 하한가 지정가 (0이면 KRX 시장가)
     sell_price = Tick.floor_tick(current) if nxt_mode else 0
 
-    # 진입 이후 최고가 갱신 (시뮬레이션의 prev_high와 동일 역할)
-    if current > pos.high_since_entry:
-        pos.high_since_entry = current
-        changed = True
-
-    # 트레일링 SL: 최고가 기준 (시뮬레이션 _sim_core.py와 동일 로직)
+    # 트레일링 SL: 직전까지의 최고가 기준 (시뮬레이션 _sim_core.py와 동일 순서)
+    # _sim_core.py: SL/TP 체크 → prev_high 갱신 (당일 고가는 다음 봉에서 반영)
+    # trader.py:   SL/TP 체크 → high_since_entry 갱신 (현재 틱은 다음 틱에서 반영)
     if pos.high_since_entry > 0:
         trail_sl = Tick.floor_tick(pos.high_since_entry - pos.atr_sl_mult * pos.atr)
         if trail_sl > pos.sl and trail_sl < pos.high_since_entry:
@@ -600,6 +597,11 @@ def _process_position(
             pos.qty = 0
             return True, True
         return False, changed
+
+    # 최고가 갱신: SL/TP 체크 후 (sim_core.py의 prev_high 갱신 위치와 동일)
+    if current > pos.high_since_entry:
+        pos.high_since_entry = current
+        changed = True
 
     return False, changed
 

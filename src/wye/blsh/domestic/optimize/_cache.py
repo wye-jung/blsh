@@ -149,7 +149,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     out["BBM"] = (c0 > bbm0) & (c1 <= bbm1)
 
     # 7. VS: 거래량 급증 + 양봉 (+1)
-    vol_avg = v.shift(1).rolling(19, min_periods=19).mean()
+    vol_avg = v.shift(1).rolling(20, min_periods=20).mean()
     out["VS"] = (v > vol_avg * 2) & (c0 > c1)
 
     # 8. MAA: 이동평균 정배열 전환 (+1)
