@@ -172,7 +172,12 @@ class KISClient:
                 log.info(
                     f"  📥 매수주문: {ticker}  수량={qty}  지정가={int(entry_price):,}  no={odno}"
                 )
-                return odno
+                if not odno:
+                    log.warning(
+                        f"  ⚠️ 매수 응답 정상이나 주문번호 빈값: {ticker}"
+                        f"  (주문 접수되었을 수 있음)"
+                    )
+                return odno  # "" = API 성공이나 odno 빈값, None = 실패
         except Exception as e:
             log.error(f"  매수 오류 ({ticker}): {e}")
         return None

@@ -668,19 +668,26 @@ def _submit_buy_orders(
             )
             continue
         odno = kis.buy(ticker, qty, entry_price, excg_id_dvsn_cd)
-        if odno:
-            pending[ticker] = PendingOrder(
-                cand=o,
-                odno=odno,
-                entry_price=entry_price,
-                qty=qty,
-                deadline=deadline,
-                po_type=po_type,
-                excg_cd=excg_id_dvsn_cd,
-            )
-        else:
+        if odno is None:
+            # API 오류 (exception 또는 빈 응답) → 진짜 실패
             failed[ticker] = o
             log.warning(f"  [po] {excg_id_dvsn_cd} 주문 실패: {ticker}")
+            continue
+        if not odno:
+            # odno="" (API 성공이나 주문번호 빈값) → 접수되었을 수 있음
+            log.warning(
+                f"  ⚠️ [po] 주문번호 빈값: {ticker}"
+                f" → pending 등록 (체결 확인 대기)"
+            )
+        pending[ticker] = PendingOrder(
+            cand=o,
+            odno=odno or "UNKNOWN",
+            entry_price=entry_price,
+            qty=qty,
+            deadline=deadline,
+            po_type=po_type,
+            excg_cd=excg_id_dvsn_cd,
+        )
 
     if failed:
         msg = f"⚠️ 매수 주문 실패: {', '.join(failed.keys())} ({excg_id_dvsn_cd})"
