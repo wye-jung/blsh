@@ -80,11 +80,6 @@ def analyze_by_market(cache: OptCache, params: Params) -> dict[str, MarketStats]
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -129,11 +124,6 @@ def analyze_by_market_mode(cache: OptCache, params: Params) -> dict[tuple[str, s
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -238,11 +228,6 @@ def _report_score_distribution(cache: OptCache, params: Params, market_stats: di
             if sig["mode"] not in ("MOM", "MIX", "REV"):
                 continue
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
             score_dist[sig["market"]][effective_score] += 1
@@ -276,11 +261,6 @@ def analyze_flags_by_mode(cache: OptCache, params: Params) -> dict[str, dict[str
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -351,11 +331,6 @@ def analyze_mode_flag_combos(cache: OptCache, params: Params):
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -424,10 +399,6 @@ if __name__ == "__main__":
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
-        sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
-        sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
-        sector_bonus_threshold=_f.SECTOR_BONUS_THRESHOLD,
-        sector_bonus_pts=_f.SECTOR_BONUS_PTS,
     )
     log.info(f"파라미터: {params.label()}")
 

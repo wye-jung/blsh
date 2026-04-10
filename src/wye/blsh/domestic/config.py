@@ -5,10 +5,6 @@ class Optimized:
     # 성과: 937건  승률 65.1%  평균 +2.18%  총 +2040.7%
     # ──────────────────────────────────────────
     INVEST_MIN_SCORE: int = 10
-    SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
-    SECTOR_PENALTY_PTS: int = 0
-    SECTOR_BONUS_THRESHOLD: float = 0.0  # 업종지수 MA20 대비 해당값 이상일 때 보너스
-    SECTOR_BONUS_PTS: int = 0  # 보너스 점수
     ATR_SL_MULT: float = 4.0
     ATR_TP_MULT: float = 1.5
     TP1_MULT: float = 1.5  # 1차 익절: buy + ATR × TP1_MULT
@@ -46,12 +42,6 @@ INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE
 )  # 투자 적격 최소 점수 (백테스트 검증)
 ENRICH_SCORE: int = INVEST_MIN_SCORE - SUPPLY_CAP  # 수급 MAX 가산해도 통과 못할 종목 제외
-SECTOR_PENALTY_THRESHOLD: float = (
-    Optimized.SECTOR_PENALTY_THRESHOLD
-)  # 업종지수 MA20 대비 해당값 이하
-SECTOR_PENALTY_PTS: int = Optimized.SECTOR_PENALTY_PTS
-SECTOR_BONUS_THRESHOLD: float = Optimized.SECTOR_BONUS_THRESHOLD
-SECTOR_BONUS_PTS: int = Optimized.SECTOR_BONUS_PTS  # 업종지수 MA20 이상일 때
 
 # 매수부적합 필터: True인 항목이 활성화된 종목은 스캔에서 제외
 # 추후 변경 시 값만 True/False로 토글

@@ -160,7 +160,6 @@ def _analyze_scanner(lines: list[dict]) -> dict:
         "supply_hits": Counter(),
         "kospi_skipped": False,
         "kosdaq_skipped": False,
-        "sector_adj_count": 0,
         "po_created": 0,
         "realtime_verified": 0,
         "realtime_dropped": 0,
@@ -201,10 +200,6 @@ def _analyze_scanner(lines: list[dict]) -> dict:
             result["kospi_skipped"] = True
         if "[KOSDAQ] 지수 20MA 아래" in msg:
             result["kosdaq_skipped"] = True
-
-        m = re.search(r"\[업종패널티\]\s+(\d+)종목", msg)
-        if m:
-            result["sector_adj_count"] += int(m.group(1))
 
         m = re.search(r"(\d+)\s+종목\.\s+po-.*생성", msg)
         if m:
@@ -305,8 +300,6 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
     if scanner["supply_hits"]:
         hits = ", ".join(f"{k}:{v}" for k, v in scanner["supply_hits"].most_common(5))
         parts.append(f"  수급 플래그: {hits}")
-    if scanner["sector_adj_count"]:
-        parts.append(f"  업종 점수 조정 {scanner['sector_adj_count']}종목")
     if scanner["realtime_dropped"]:
         names = ", ".join(scanner["realtime_dropped_names"][:5])
         parts.append(

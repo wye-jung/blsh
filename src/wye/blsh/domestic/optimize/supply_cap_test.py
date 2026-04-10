@@ -50,14 +50,7 @@ def backtest_capped(cache, params: Params, supply_cap: int | None = None) -> Sta
             else:
                 base_score = ts + min(raw_bonus, supply_cap)
 
-            effective_score = base_score
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= params.sector_bonus_threshold:
-                effective_score += params.sector_bonus_pts
-
-            if effective_score < params.invest_min_score:
+            if base_score < params.invest_min_score:
                 continue
 
             res = _simulate_one(sig, entry_date, cache.ohlcv_idx, params, hold_dates)
@@ -96,10 +89,6 @@ def run(years: int = 2):
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
-        sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
-        sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
-        sector_bonus_threshold=_f.SECTOR_BONUS_THRESHOLD,
-        sector_bonus_pts=_f.SECTOR_BONUS_PTS,
     )
     log.info(f"파라미터: {params.label()}")
 

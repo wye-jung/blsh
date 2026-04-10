@@ -55,14 +55,7 @@
   수급 가산 상한: SUPPLY_CAP = +3 (기술 점수 대비 초과분 제거, 백테스트 검증).
   P_OV 종목은 [4단계]에서 PO 후보 제외.
 
-[3단계] 업종 환경 조정
-  업종지수 MA20 대비 괴리율(gap)로 패널티/보너스 적용.
-  미매핑 종목: KOSPI → "코스피" / KOSDAQ → "코스닥" 전체 지수로 대체.
-
-  gap < SECTOR_PENALTY_THRESHOLD → SECTOR_PENALTY_PTS
-  gap ≥ SECTOR_BONUS_THRESHOLD  → SECTOR_BONUS_PTS
-
-[4단계] PO 후보 선별 및 파일 생성
+[3단계] PO 후보 선별 및 파일 생성
   조건: buy_score ≥ INVEST_MIN_SCORE, mode ∈ {MOM, REV}, P_OV 없음
   entry_price = ceil_tick(close + 0.5 × ATR)
 
@@ -102,10 +95,6 @@ from wye.blsh.domestic.config import (
     INDEX_MA_DAYS,
     INDEX_DROP_LIMIT,
     INVEST_MIN_SCORE,
-    SECTOR_PENALTY_THRESHOLD,
-    SECTOR_PENALTY_PTS,
-    SECTOR_BONUS_THRESHOLD,
-    SECTOR_BONUS_PTS,
     ATR_SL_MULT,
     ATR_TP_MULT,
     MAX_HOLD_DAYS,
@@ -989,60 +978,6 @@ def _load_kis_master(
     return name_map, disqualified, sector_map
 
 
-def _get_sector_gap(
-    idx_nm: str, base_date: str, ma_days: int = 20, idx_clss: str = None
-) -> float:
-    """업종지수의 MA20 괴리율. 데이터 없으면 0.0 (중립)."""
-    rows = query.get_index_clsprc(idx_nm, base_date, ma_days, idx_clss=idx_clss)
-    if not rows or len(rows) < ma_days:
-        return 0.0
-    prices = [float(r["clsprc_idx"]) for r in rows]
-    cur = prices[0]  # 최신 (당일)
-    prev = prices[1:]  # 당일 제외
-    ma = sum(prev) / len(prev)
-    return (cur - ma) / ma if ma else 0.0
-
-
-def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
-    """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
-    if SECTOR_PENALTY_PTS == 0 and SECTOR_BONUS_PTS == 0:
-        return df
-
-    _, _, sector_map = _load_kis_master(base_date)
-    gap_cache: dict[tuple[str, str], float] = {}  # (sec_nm, idx_clss) → gap
-
-    def get_gap(ticker: str, market: str) -> float:
-        if market == "ETF":
-            return 0.0  # ETF는 업종 패널티/보너스 미적용
-        # KOSPI 미매핑 → "코스피" 전체 지수, KOSDAQ → "코스닥" 전체 지수
-        fallback = "코스피" if market == "KOSPI" else "코스닥"
-        sec_nm = sector_map.get(ticker, fallback)
-        if not sec_nm:
-            return 0.0
-        idx_clss = sector.get_idx_clss(market)
-        key = (sec_nm, idx_clss)
-        if key not in gap_cache:
-            gap_cache[key] = _get_sector_gap(sec_nm, base_date, idx_clss=idx_clss)
-        return gap_cache[key]
-
-    adjustments = []
-    for _, row in df.iterrows():
-        gap = get_gap(row["ticker"], row["market"])
-        adj = 0
-        if SECTOR_PENALTY_PTS != 0 and gap < SECTOR_PENALTY_THRESHOLD:
-            adj = SECTOR_PENALTY_PTS
-        elif SECTOR_BONUS_PTS != 0 and gap >= SECTOR_BONUS_THRESHOLD:
-            adj = SECTOR_BONUS_PTS
-        adjustments.append(adj)
-
-    df = df.copy()
-    df["buy_score"] = df["buy_score"] + adjustments
-    applied = sum(1 for a in adjustments if a != 0)
-    if applied:
-        log.debug(f"[업종패널티] {applied}종목 점수 조정 ({len(gap_cache)}업종 조회)")
-    return df
-
-
 # ─────────────────────────────────────────
 # 2차 실시간 부적합 검증 (KIS API)
 # ─────────────────────────────────────────
@@ -1101,9 +1036,6 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     sdf = scan(base_date, report)
     if sdf.empty:
         return sdf
-
-    # 업종 패널티/보너스 적용
-    sdf = _apply_sector_penalty(sdf, base_date)
 
     # MIX 제외: 2년 백테스트 51건 승률 37.3% avg +0.76% (전체 avg +2.23% 대비 저조)
     # 특히 MIX+MGC 조합 avg -4.48%. 전환+모멘텀 혼합은 방향 불확실. (2026-04-04 분석)

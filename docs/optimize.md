@@ -20,7 +20,6 @@
 
 - invest_min_score, atr_sl_mult, atr_tp_mult, tp1_mult, tp1_ratio
 - max_hold_days (REV/MIX/MOM)
-- sector_penalty/bonus (threshold, pts)
 
 ### 최적화 지표
 
@@ -100,7 +99,6 @@ uv run python -m wye.blsh.domestic.optimize.supply_cap_test
 백테스트용 신호/OHLCV 캐시 빌더:
 - 수급 점수 상한(`SUPPLY_CAP`) 적용 포함
 - `--rebuild` 없이도 캐시 범위 불일치(5일 초과) 시 자동 재빌드
-- 업종 gap 계산 시 `idx_clss` 필터 적용 (KOSPI="02", KOSDAQ="03")
 
 ## Simulator (_sim_core.py + simulator.py)
 

@@ -181,11 +181,11 @@ def sim_one_nb(
 
 @nb.jit(nopython=True, cache=True, fastmath=True)
 def backtest_nb(
-    buy_arr, atr_arr, score_arr, sec_gap_arr, mode_id_arr, n_bars_arr,
+    buy_arr, atr_arr, score_arr, mode_id_arr, n_bars_arr,
     opens_2d, highs_2d, lows_2d, closes_2d,
     min_score, sl_mult, tp1_mult, tp2_mult, tp1_ratio,
     max_hold_rev, max_hold_mix, max_hold_mom,
-    pen_pts, pen_th, bon_pts, bon_th, sell_cost_rate,
+    sell_cost_rate,
 ):
     """전체 백테스트 루프 (numba JIT).
 
@@ -202,11 +202,6 @@ def backtest_nb(
 
     for i in range(n_sigs):
         eff_score = int(score_arr[i])
-        sg = sec_gap_arr[i]
-        if pen_pts != 0 and sg < pen_th:
-            eff_score += pen_pts
-        elif bon_pts != 0 and sg >= bon_th:
-            eff_score += bon_pts
 
         if eff_score < min_score:
             continue
@@ -251,13 +246,13 @@ def backtest_nb(
 @nb.jit(nopython=True, cache=True, fastmath=True)
 def backtest_scores_nb(
     flag_mask_arr, supply_bonus_arr, has_pov_arr,
-    buy_arr, atr_arr, sec_gap_arr, n_bars_arr,
+    buy_arr, atr_arr, n_bars_arr,
     opens_2d, highs_2d, lows_2d, closes_2d,
     score_values, mom_mask, rev_mask, n_flags,
     min_score,
     sl_mult, tp1_mult, tp2_mult, tp1_ratio,
     max_hold_rev, max_hold_mix, max_hold_mom,
-    pen_pts, pen_th, bon_pts, bon_th, sell_cost_rate,
+    sell_cost_rate,
 ):
     """backtest_scores의 numba 버전. 플래그 비트마스크 + 점수 배열로 score 재계산.
 
@@ -315,12 +310,6 @@ def backtest_scores_nb(
         eff_score = tech_score + supply_bonus_arr[i]
         if has_pov_arr[i]:
             eff_score -= 1
-
-        sg = sec_gap_arr[i]
-        if pen_pts != 0 and sg < pen_th:
-            eff_score += pen_pts
-        elif bon_pts != 0 and sg >= bon_th:
-            eff_score += bon_pts
 
         if eff_score < min_score:
             continue

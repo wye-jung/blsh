@@ -96,12 +96,6 @@ def _simulate_scenario(
             supply_bonus = sig["score"] - orig_base_score
             new_score = new_base_score + supply_bonus
 
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                new_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
-                new_score += params.sector_bonus_pts
-
             if new_score < params.invest_min_score:
                 continue
 
@@ -157,11 +151,6 @@ def _rov_combo_stats(cache: OptCache, params: Params) -> None:
             combo_data[key]["count"] += 1
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -210,9 +199,6 @@ def run(years: int = 2):
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
-        sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
-        sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
-        sector_bonus_pts=_f.SECTOR_BONUS_PTS,
     )
 
     # ROV 조합별 상세 분석

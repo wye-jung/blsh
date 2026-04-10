@@ -59,28 +59,14 @@ class Params:
     max_hold_days_mom: int
     tp1_mult: float  # 1차 익절 ATR 배수 (e.g. 0.7, 1.0, 1.5)
     tp1_ratio: float  # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
-    sector_penalty_threshold: float  # 업종지수 MA20 괴리율 패널티 임계값 (e.g. -0.03)
-    sector_penalty_pts: int  # 임계값 이하 시 점수 패널티 (e.g. -2)
-    sector_bonus_threshold: float  # 업종지수 MA20 괴리율 보너스 임계값 (e.g. 0.0)
-    sector_bonus_pts: int  # 임계값 이상 시 보너스 (e.g. +1)
 
     def label(self) -> str:
-        parts = []
-        if self.sector_penalty_pts != 0:
-            parts.append(
-                f"pen={self.sector_penalty_threshold:.0%}/{self.sector_penalty_pts:+d}"
-            )
-        if self.sector_bonus_pts != 0:
-            parts.append(
-                f"bon={self.sector_bonus_threshold:+.0%}/{self.sector_bonus_pts:+d}"
-            )
-        sec = " ".join(parts) if parts else "sec=off"
         return (
             f"score≥{self.invest_min_score} "
             f"SL={self.atr_sl_mult:.1f} TP1={self.tp1_mult:.1f}({self.tp1_ratio:.0%}) "
             f"TP2={self.atr_tp_mult:.1f} "
             f"REV={self.max_hold_days_rev}d MIX={self.max_hold_days_mix}d "
-            f"MOM={self.max_hold_days_mom}d {sec}".rstrip()
+            f"MOM={self.max_hold_days_mom}d".rstrip()
         )
 
 
@@ -224,14 +210,12 @@ def backtest(cache: OptCache, params: Params) -> Stats:
     if hasattr(cache, "flat_buy") and cache.flat_buy is not None:
         trades, wins, losses, holds, total_ret, ret_sq = backtest_nb(
             cache.flat_buy, cache.flat_atr, cache.flat_score,
-            cache.flat_sec_gap, cache.flat_mode_id, cache.flat_n_bars,
+            cache.flat_mode_id, cache.flat_n_bars,
             cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
             params.invest_min_score,
             params.atr_sl_mult, params.tp1_mult, params.atr_tp_mult,
             params.tp1_ratio,
             params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom,
-            params.sector_penalty_pts, params.sector_penalty_threshold,
-            params.sector_bonus_pts, params.sector_bonus_threshold,
             SELL_COST_RATE,
         )
         st = Stats()
@@ -246,10 +230,6 @@ def backtest(cache: OptCache, params: Params) -> Stats:
     # ── fallback: dict 경로
     st = Stats()
     _max_hold = (params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom)
-    _pen_pts = params.sector_penalty_pts
-    _pen_th = params.sector_penalty_threshold
-    _bon_pts = params.sector_bonus_pts
-    _bon_th = params.sector_bonus_threshold
     _min_score = params.invest_min_score
     _sl_mult = params.atr_sl_mult
     _tp1_mult = params.tp1_mult
@@ -267,11 +247,6 @@ def backtest(cache: OptCache, params: Params) -> Stats:
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if _pen_pts != 0 and sec_gap < _pen_th:
-                effective_score += _pen_pts
-            elif _bon_pts != 0 and sec_gap >= _bon_th:
-                effective_score += _bon_pts
 
             if effective_score < _min_score:
                 continue
@@ -356,10 +331,6 @@ def backtest_scores(
     st = Stats()
     _MODE_MAP = {"MOM": 2, "MIX": 1, "REV": 0}
     _max_hold = (params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom)
-    _pen_pts = params.sector_penalty_pts
-    _pen_th = params.sector_penalty_threshold
-    _bon_pts = params.sector_bonus_pts
-    _bon_th = params.sector_bonus_threshold
     _sl_mult = params.atr_sl_mult
     _tp1_mult = params.tp1_mult
     _tp2_mult = params.atr_tp_mult
@@ -388,12 +359,6 @@ def backtest_scores(
             effective_score = tech_score + supply_bonus
             if "P_OV" in flags:
                 effective_score -= 1
-
-            sec_gap = sig.get("sector_gap", 0.0)
-            if _pen_pts != 0 and sec_gap < _pen_th:
-                effective_score += _pen_pts
-            elif _bon_pts != 0 and sec_gap >= _bon_th:
-                effective_score += _bon_pts
 
             if effective_score < min_score:
                 continue
@@ -438,15 +403,13 @@ def _score_worker(args):
         sv = _np.array([scores.get(f, 0) for f in FLAG_ORDER], dtype=_np.int64)
         trades, wins, losses, holds, total_ret, ret_sq = backtest_scores_nb(
             cache.flat_flag_mask, cache.flat_supply_bonus, cache.flat_has_pov,
-            cache.flat_buy, cache.flat_atr, cache.flat_sec_gap, cache.flat_n_bars,
+            cache.flat_buy, cache.flat_atr, cache.flat_n_bars,
             cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
             sv, MOM_MASK, REV_MASK, N_FLAGS,
             _WORKER_MIN_SCORE,
             params.atr_sl_mult, params.tp1_mult, params.atr_tp_mult,
             params.tp1_ratio,
             params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom,
-            params.sector_penalty_pts, params.sector_penalty_threshold,
-            params.sector_bonus_pts, params.sector_bonus_threshold,
             SELL_COST_RATE,
         )
         st = Stats()
@@ -494,10 +457,6 @@ def optimize_scores(
         "max_hold_days_mom": params.max_hold_days_mom,
         "tp1_mult": params.tp1_mult,
         "tp1_ratio": params.tp1_ratio,
-        "sector_penalty_threshold": params.sector_penalty_threshold,
-        "sector_penalty_pts": params.sector_penalty_pts,
-        "sector_bonus_threshold": params.sector_bonus_threshold,
-        "sector_bonus_pts": params.sector_bonus_pts,
     }
 
     # 탐색 대상 외 신호: current_scores에서 고정
@@ -579,11 +538,7 @@ GRID = {
     "max_hold_days_mom": [1, 2, 3],
     "tp1_mult": [0.7, 1.0, 1.5],
     "tp1_ratio": [0.3, 0.5, 0.7, 1.0],
-    "sector_penalty_threshold": [-0.03, -0.05],
-    "sector_penalty_pts": [0, -2],
-    "sector_bonus_threshold": [0.0, 0.02],
-    "sector_bonus_pts": [0, 1],
-}  # 5×7×6×6×5×3×3×4×2×2×2×2 = 3,628,800 → _dedup + --no-sector 시 ~230,000
+}  # 5×7×6×6×5×3×3×4 = 907,200 → _dedup 시 ~230,000
 
 _SCORE_MIN_SCORE = min(GRID["invest_min_score"])  # 1단계 진입 기준: GRID 최소값
 _WORKER_MIN_SCORE: int = _SCORE_MIN_SCORE  # 1단계 워커용 min_score (동적 갱신)
@@ -621,18 +576,6 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
         log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
         log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
         log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
-        sec_parts = []
-        if best_p.sector_penalty_pts != 0:
-            sec_parts.append(
-                f"패널티: 업종MA20괴리<{best_p.sector_penalty_threshold:.0%} → {best_p.sector_penalty_pts:+d}점"
-            )
-        if best_p.sector_bonus_pts != 0:
-            sec_parts.append(
-                f"보너스: 업종MA20괴리≥{best_p.sector_bonus_threshold:.0%} → {best_p.sector_bonus_pts:+d}점"
-            )
-        log.info(
-            f"    SECTOR_ADJUST    = {', '.join(sec_parts) if sec_parts else 'off'}"
-        )
         log.info(
             f"    → {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
             f"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%"
@@ -682,10 +625,6 @@ def _params_to_dict(p: Params) -> dict:
         "MAX_HOLD_DAYS": p.max_hold_days_rev,
         "MAX_HOLD_DAYS_MIX": p.max_hold_days_mix,
         "MAX_HOLD_DAYS_MOM": p.max_hold_days_mom,
-        "SECTOR_PENALTY_THRESHOLD": p.sector_penalty_threshold,
-        "SECTOR_PENALTY_PTS": p.sector_penalty_pts,
-        "SECTOR_BONUS_THRESHOLD": p.sector_bonus_threshold,
-        "SECTOR_BONUS_PTS": p.sector_bonus_pts,
     }
 
 
@@ -771,7 +710,6 @@ def _update_config_file(
 def run(
     years: int = 2,
     rebuild: bool = False,
-    sector: bool = True,
     apply: bool = True,
     workers: int = 0,
 ):
@@ -790,10 +728,7 @@ def run(
 
     cache = build_or_load(start_date, end_date)
     cache.build_arrays()  # numba sim용 numpy 배열 변환
-    cache.precompute_signals(
-        min_score=_SCORE_MIN_SCORE,
-        max_sector_bonus=max(GRID.get("sector_bonus_pts", [0])),
-    )
+    cache.precompute_signals(min_score=_SCORE_MIN_SCORE)
     cache.flatten_signals()
 
     # numba JIT 워밍업 (fork 전에 컴파일 완료)
@@ -804,15 +739,15 @@ def run(
     _df = _np.ones(1, dtype=_np.float64)
     _di = _np.ones(1, dtype=_np.int64)
     _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
-    backtest_nb(_df * 100, _df * 5, _di * 10, _df, _di * 0, _di,
+    backtest_nb(_df * 100, _df * 5, _di * 10, _di * 0, _di,
                 _d2, _d2, _d2, _d2,
-                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
     _sv = _np.ones(N_FLAGS, dtype=_np.int64)
     backtest_scores_nb(_di, _di * 0, _di * 0,
-                       _df * 100, _df * 5, _df, _di,
+                       _df * 100, _df * 5, _di,
                        _d2, _d2, _d2, _d2,
                        _sv, MOM_MASK, REV_MASK, N_FLAGS,
-                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
     log.info("[numba] JIT 컴파일 완료")
 
     # fork 전에 캐시를 전역 변수로 설정 (CoW — 자식 프로세스에 복사 없이 공유)
@@ -829,16 +764,7 @@ def run(
     n_workers = workers if workers > 0 else os.cpu_count()
     log.info(f"병렬 처리: {n_workers}코어")
 
-    grid = GRID.copy()
-    if not sector:
-        grid.update({
-            "sector_penalty_threshold": [-0.03],
-            "sector_penalty_pts": [0],
-            "sector_bonus_threshold": [0.0],
-            "sector_bonus_pts": [0],
-        })
-
-    keys, combos = _dedup_combos(grid)
+    keys, combos = _dedup_combos(GRID)
     results, elapsed = _grid_search_pass(keys, combos, n_workers)
     _report(results, elapsed)
 
@@ -891,72 +817,25 @@ def _dedup_combos(grid):
             continue
         if d["tp1_mult"] >= d["atr_tp_mult"] and d["tp1_ratio"] != 1.0:
             continue
-        if d["sector_penalty_pts"] == 0 and d["sector_penalty_threshold"] != _first["sector_penalty_threshold"]:
-            continue
-        if d["sector_bonus_pts"] == 0 and d["sector_bonus_threshold"] != _first["sector_bonus_threshold"]:
-            continue
         combos.append(c)
     return keys, combos
 
 
-def _run_param_grid(cache, n_workers, sector=True):
-    """2단계: 매매파라미터 GRID 탐색 (2-pass). (best_params, best_stats) 반환."""
-    # Pass 1: 핵심 파라미터만 탐색 (sector OFF)
-    grid_core = GRID.copy()
-    grid_core.update({
-        "sector_penalty_threshold": [-0.03],
-        "sector_penalty_pts": [0],
-        "sector_bonus_threshold": [0.0],
-        "sector_bonus_pts": [0],
-    })
-    keys, combos = _dedup_combos(grid_core)
-    results, elapsed = _grid_search_pass(keys, combos, n_workers, " Pass1: 핵심파라미터")
+def _run_param_grid(cache, n_workers):
+    """2단계: 매매파라미터 GRID 탐색. (best_params, best_stats) 반환."""
+    keys, combos = _dedup_combos(GRID)
+    results, elapsed = _grid_search_pass(keys, combos, n_workers)
     _report(results, elapsed)
 
     if not results or results[0][1].metric <= -9999:
         return None
 
-    best_p, best_s = results[0]
-
-    if not sector:
-        return best_p, best_s
-
-    # Pass 2: 핵심 파라미터 고정 + sector만 탐색
-    grid_sec = {
-        "invest_min_score": [best_p.invest_min_score],
-        "atr_sl_mult": [best_p.atr_sl_mult],
-        "atr_tp_mult": [best_p.atr_tp_mult],
-        "max_hold_days_rev": [best_p.max_hold_days_rev],
-        "max_hold_days_mix": [best_p.max_hold_days_mix],
-        "max_hold_days_mom": [best_p.max_hold_days_mom],
-        "tp1_mult": [best_p.tp1_mult],
-        "tp1_ratio": [best_p.tp1_ratio],
-        "sector_penalty_threshold": GRID["sector_penalty_threshold"],
-        "sector_penalty_pts": GRID["sector_penalty_pts"],
-        "sector_bonus_threshold": GRID["sector_bonus_threshold"],
-        "sector_bonus_pts": GRID["sector_bonus_pts"],
-    }
-    keys_sec, combos_sec = _dedup_combos(grid_sec)
-    results_sec, elapsed_sec = _grid_search_pass(
-        keys_sec, combos_sec, n_workers, " Pass2: sector"
-    )
-
-    if results_sec and results_sec[0][1].metric > best_s.metric:
-        best_p, best_s = results_sec[0]
-        log.info(
-            f"  sector 적용 개선: {best_s.trades}건  "
-            f"총 {best_s.total_ret:+.1f}%  ({best_p.label()})"
-        )
-    else:
-        log.info(f"  sector 미적용이 최적")
-
-    return best_p, best_s
+    return results[0]
 
 
 def run_alternating(
     years: int = 2,
     rebuild: bool = False,
-    sector: bool = True,
     apply: bool = True,
     workers: int = 0,
     max_iter: int = 5,
@@ -985,15 +864,15 @@ def run_alternating(
     _df = _np.ones(1, dtype=_np.float64)
     _di = _np.ones(1, dtype=_np.int64)
     _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
-    backtest_nb(_df * 100, _df * 5, _di * 10, _df, _di * 0, _di,
+    backtest_nb(_df * 100, _df * 5, _di * 10, _di * 0, _di,
                 _d2, _d2, _d2, _d2,
-                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
     _sv = _np.ones(N_FLAGS, dtype=_np.int64)
     backtest_scores_nb(_di, _di * 0, _di * 0,
-                       _df * 100, _df * 5, _df, _di,
+                       _df * 100, _df * 5, _di,
                        _d2, _d2, _d2, _d2,
                        _sv, MOM_MASK, REV_MASK, N_FLAGS,
-                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
     log.info("[numba] JIT 컴파일 완료")
 
     _WORKER_CACHE = cache
@@ -1019,10 +898,6 @@ def run_alternating(
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
-        sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
-        sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
-        sector_bonus_threshold=_f.SECTOR_BONUS_THRESHOLD,
-        sector_bonus_pts=_f.SECTOR_BONUS_PTS,
     )
 
     t_total = time.time()
@@ -1061,7 +936,7 @@ def run_alternating(
         cache.update_flat_scores()
 
         # ── 2단계: 매매파라미터 최적화 (min_score 포함)
-        result = _run_param_grid(cache, n_workers, sector)
+        result = _run_param_grid(cache, n_workers)
         if result is None:
             log.warning("  2단계 유효 결과 없음 → 중단")
             break
@@ -1188,7 +1063,6 @@ def _wf_report(results: list[tuple[int, str, str, str, str, Stats, Stats, Params
 def run_walkforward(
     years: int = 2,
     rebuild: bool = False,
-    sector: bool = True,
     workers: int = 0,
     train_months: int = 18,
     val_months: int = 6,
@@ -1230,9 +1104,9 @@ def run_walkforward(
     _df = _np.ones(1, dtype=_np.float64)
     _di = _np.ones(1, dtype=_np.int64)
     _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
-    backtest_nb(_df * 100, _df * 5, _di * 10, _df, _di * 0, _di,
+    backtest_nb(_df * 100, _df * 5, _di * 10, _di * 0, _di,
                 _d2, _d2, _d2, _d2,
-                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0, -0.03, 0, 0.0, 0.002)
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
     log.info("[numba] JIT 컴파일 완료")
 
     try:
@@ -1257,7 +1131,7 @@ def run_walkforward(
         train_cache.flatten_signals()
         _WORKER_CACHE = train_cache
 
-        result = _run_param_grid(train_cache, n_workers, sector)
+        result = _run_param_grid(train_cache, n_workers)
         if result is None:
             log.warning(f"  Window {w_idx}: train 유효 결과 없음 → 스킵")
             continue
@@ -1306,9 +1180,6 @@ if __name__ == "__main__":
     parser.add_argument("--years", type=float, default=2, help="백테스트 기간 (년, 소수 가능)")
     parser.add_argument("--rebuild", action="store_true", help="캐시 강제 재빌드")
     parser.add_argument(
-        "--no-sector", action="store_true", help="업종지수 패널티 비활성화"
-    )
-    parser.add_argument(
         "--no-apply", action="store_true", help="config.py 자동 갱신 생략"
     )
     parser.add_argument(
@@ -1337,7 +1208,6 @@ if __name__ == "__main__":
         run_walkforward(
             years=args.years,
             rebuild=args.rebuild,
-            sector=not args.no_sector,
             workers=args.workers,
             train_months=args.train_months,
             val_months=args.val_months,
@@ -1347,7 +1217,6 @@ if __name__ == "__main__":
         run_alternating(
             years=args.years,
             rebuild=args.rebuild,
-            sector=not args.no_sector,
             apply=not args.no_apply,
             workers=args.workers,
             max_iter=args.max_iter,
@@ -1356,7 +1225,6 @@ if __name__ == "__main__":
         run(
             years=args.years,
             rebuild=args.rebuild,
-            sector=not args.no_sector,
             apply=not args.no_apply,
             workers=args.workers,
         )

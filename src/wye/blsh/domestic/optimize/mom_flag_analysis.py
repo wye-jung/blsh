@@ -55,11 +55,6 @@ def analyze_by_mode(cache: OptCache, params: Params) -> None:
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -126,11 +121,6 @@ def analyze_by_score(cache: OptCache, params: Params) -> None:
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -191,11 +181,6 @@ def analyze_enabler(cache: OptCache, params: Params) -> None:
                 continue
 
             effective_score = sig["score"]
-            sec_gap = sig.get("sector_gap", 0.0)
-            if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                effective_score += params.sector_penalty_pts
-            elif params.sector_bonus_pts != 0 and sec_gap >= 0:
-                effective_score += params.sector_bonus_pts
             if effective_score < params.invest_min_score:
                 continue
 
@@ -219,12 +204,7 @@ def analyze_enabler(cache: OptCache, params: Params) -> None:
                     is_enabled = True
                 else:
                     new_score = _calc_score(reduced, new_mode) + supply_bonus
-                    sec_adj = 0
-                    if params.sector_penalty_pts != 0 and sec_gap < params.sector_penalty_threshold:
-                        sec_adj = params.sector_penalty_pts
-                    elif params.sector_bonus_pts != 0 and sec_gap >= 0:
-                        sec_adj = params.sector_bonus_pts
-                    is_enabled = (new_score + sec_adj) < params.invest_min_score
+                    is_enabled = new_score < params.invest_min_score
 
                 key = "enabled" if is_enabled else "not_enabled"
                 st = enabler_stats[flag][key]
@@ -308,9 +288,6 @@ def run(years: int = 2):
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
-        sector_penalty_threshold=_f.SECTOR_PENALTY_THRESHOLD,
-        sector_penalty_pts=_f.SECTOR_PENALTY_PTS,
-        sector_bonus_pts=_f.SECTOR_BONUS_PTS,
     )
     log.info(f"파라미터: {params.label()}")
 
