@@ -88,16 +88,29 @@ class Stats:
         return self.total_ret / self.trades if self.trades else 0
 
     @property
-    def metric(self) -> float:
-        """최적화 지표: avg_ret × sqrt(trades).
+    def ret_std(self) -> float:
+        """수익률 표준편차."""
+        if self.trades < 2:
+            return 0.0
+        import math
+        var = self.ret_sq / self.trades - self.avg_ret ** 2
+        return math.sqrt(max(var, 0.0))
 
-        신호 품질(평균 수익률)을 우선하면서, 거래 수가 적으면
-        sqrt로 자연스럽게 불이익. 30건 미만은 통계 무의미로 제외.
+    @property
+    def metric(self) -> float:
+        """최적화 지표: (avg_ret / std) × sqrt(trades).
+
+        Sharpe-like 지표로 리스크 대비 수익률을 평가하면서,
+        거래 수가 적으면 sqrt로 자연스럽게 불이익.
+        30건 미만은 통계 무의미로 제외.
         """
         if self.trades < 30:
             return -9999
         import math
-        return self.avg_ret * math.sqrt(self.trades)
+        std = self.ret_std
+        if std <= 0:
+            return self.avg_ret * math.sqrt(self.trades)
+        return (self.avg_ret / std) * math.sqrt(self.trades)
 
 
 # ─────────────────────────────────────────
@@ -553,14 +566,14 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
     log.info(f"  최적화 결과  (Top 15)   [{elapsed:.0f}초]")
     log.info("=" * 100)
     log.info(
-        f"  {'#':>3s}  {'거래':>6s}  {'승률':>6s}  {'평균수익':>8s}  {'총수익':>10s}  │ 파라미터"
+        f"  {'#':>3s}  {'거래':>6s}  {'승률':>6s}  {'평균수익':>8s}  {'표준편차':>8s}  {'총수익':>10s}  │ 파라미터"
     )
-    log.info("-" * 100)
+    log.info("-" * 110)
 
     for rank, (p, s) in enumerate(ranked[:15], 1):
         log.info(
             f"  {rank:3d}  {s.trades:>5d}건  {s.win_rate:>5.1f}%  "
-            f"{s.avg_ret:>+7.2f}%  {s.total_ret:>+9.1f}%  │ {p.label()}"
+            f"{s.avg_ret:>+7.2f}%  {s.ret_std:>7.2f}%  {s.total_ret:>+9.1f}%  │ {p.label()}"
         )
 
     log.info("-" * 100)
@@ -678,7 +691,7 @@ def _update_config_file(
     content = re.sub(
         r"^(    # 성과:).*$",
         rf"\g<1> {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
-        rf"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%",
+        rf"평균 {best_s.avg_ret:+.2f}% (std {best_s.ret_std:.2f}%)  총 {best_s.total_ret:+.1f}%",
         content,
         flags=re.MULTILINE,
     )

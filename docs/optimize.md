@@ -24,10 +24,10 @@
 ### 최적화 지표
 
 ```
-metric = avg_ret x sqrt(trades)
+metric = (avg_ret / std) x sqrt(trades)
 ```
-신호 품질(평균 수익률)을 우선하면서 거래 수가 적으면 sqrt로 자연스럽게 불이익.
-30건 미만은 통계 무의미로 제외 (-9999).
+Sharpe-like 지표로 리스크 대비 수익률을 평가하면서 거래 수가 적으면 sqrt로 불이익.
+30건 미만은 통계 무의미로 제외 (-9999). std=0이면 `avg_ret x sqrt(trades)` fallback.
 
 ### GRID 범위
 
