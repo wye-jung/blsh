@@ -1,17 +1,35 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-09 23:40 (2분)
-    # 기간: 20240409 ~ 20260409
-    # 성과: 937건  승률 65.1%  평균 +2.18%  총 +2040.7%
+    # 수행일시: 2026-04-10 23:19 (0분)
+    # 기간: 20240410 ~ 20260410
+    # 성과: 1044건  승률 50.8%  평균 +2.27%  총 +2369.1%
     # ──────────────────────────────────────────
-    INVEST_MIN_SCORE: int = 10
-    ATR_SL_MULT: float = 4.0
+    INVEST_MIN_SCORE: int = 9
+    ATR_SL_MULT: float = 3.0
     ATR_TP_MULT: float = 1.5
     TP1_MULT: float = 1.5  # 1차 익절: buy + ATR × TP1_MULT
     TP1_RATIO: float = 1.0  # 1차 익절 매도 비율 (1.0 = 전량)
-    MAX_HOLD_DAYS: int = 20
-    MAX_HOLD_DAYS_MIX: int = 7
+    MAX_HOLD_DAYS: int = 10
+    MAX_HOLD_DAYS_MIX: int = 5
     MAX_HOLD_DAYS_MOM: int = 3
+    SIGNAL_SCORES = {
+        "MGC": 0,
+        "W52": 1,
+        "PB": 0,
+        "LB": 0,
+        "MS": 1,
+        "RBO": 3,
+        "MPGC": 2,
+        "ROV": 2,
+        "BBL": 2,
+        "BBM": 1,
+        "VS": 0,
+        "MAA": 2,
+        "SGC": 2,
+        "HMR": 0,
+        "OBV": 1,
+        "BE": 0,
+    }
 
 
 # for scan
@@ -41,7 +59,9 @@ INDEX_DROP_LIMIT: float = (
 INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE
 )  # 투자 적격 최소 점수 (백테스트 검증)
-ENRICH_SCORE: int = INVEST_MIN_SCORE - SUPPLY_CAP  # 수급 MAX 가산해도 통과 못할 종목 제외
+ENRICH_SCORE: int = (
+    INVEST_MIN_SCORE - SUPPLY_CAP
+)  # 수급 MAX 가산해도 통과 못할 종목 제외
 
 # 매수부적합 필터: True인 항목이 활성화된 종목은 스캔에서 제외
 # 추후 변경 시 값만 True/False로 토글
@@ -53,35 +73,18 @@ DISQUALIFY_FLAGS: dict[str, bool | int] = {
     "거래정지": True,
     "정리매매": True,
     "관리종목": True,
-    "시장경고": 2,            # 1=투자주의, 2=투자경고, 3=투자위험 (2 이상 탈락)
+    "시장경고": 2,  # 1=투자주의, 2=투자경고, 3=투자위험 (2 이상 탈락)
     "불성실공시": True,
     "단기과열": True,
     "이상급등": True,
     "SPAC": True,
-    "투자주의환기": True,     # KOSDAQ only
+    "투자주의환기": True,  # KOSDAQ only
     "공매도과열": False,
     "경고예고": False,
     "우회상장": False,
 }
 
-SIGNAL_SCORES = {
-    "MGC": 0,
-    "W52": 1,
-    "PB": 1,
-    "LB": 0,
-    "MS": 2,
-    "RBO": 3,
-    "MPGC": 2,
-    "ROV": 0,
-    "BBL": 2,
-    "BBM": 1,
-    "VS": 0,
-    "MAA": 2,
-    "SGC": 2,
-    "HMR": 2,
-    "OBV": 1,
-    "BE": 2,
-}
+SIGNAL_SCORES = Optimized.SIGNAL_SCORES
 
 SUPPLY_SCORES = {
     "TRN": 3,
@@ -109,10 +112,10 @@ FIN_CASH_RATIO: float = (
 )
 MIN_ALLOC: int = 10_000  # 종목당 최소 배분액 (1만원)
 MAX_ALLOC_TIERS: list[tuple[int, float]] = [  # (총자산 상한, 배분 비율)
-    (100_000_000, 0.15),      # ~1억: 15%
-    (500_000_000, 0.10),      # 1~5억: 10%
-    (1_000_000_000, 0.07),    # 5~10억: 7%
-    (5_000_000_000, 0.05),    # 10~50억: 5%
+    (100_000_000, 0.15),  # ~1억: 15%
+    (500_000_000, 0.10),  # 1~5억: 10%
+    (1_000_000_000, 0.07),  # 5~10억: 7%
+    (5_000_000_000, 0.05),  # 10~50억: 5%
 ]
 MAX_ALLOC_RATIO_DEFAULT: float = 0.03  # 50억~: 3%
 SELL_COST_RATE: float = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)

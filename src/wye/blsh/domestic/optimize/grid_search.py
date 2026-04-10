@@ -683,14 +683,14 @@ def _update_config_file(
         flags=re.MULTILINE,
     )
 
-    # SIGNAL_SCORES 갱신
+    # SIGNAL_SCORES 갱신 (Optimized 클래스 내부)
     if best_scores:
-        scores_str = "SIGNAL_SCORES = {\n"
+        scores_str = "    SIGNAL_SCORES = {\n"
         for k, v in best_scores.items():
-            scores_str += f'    "{k}": {v},\n'
-        scores_str += "}"
+            scores_str += f'        "{k}": {v},\n'
+        scores_str += "    }"
         content = re.sub(
-            r"^SIGNAL_SCORES = \{[^}]+\}",
+            r"^    SIGNAL_SCORES = \{[^}]+\}",
             scores_str,
             content,
             flags=re.MULTILINE | re.DOTALL,
