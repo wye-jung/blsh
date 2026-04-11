@@ -146,4 +146,44 @@ send_message(msg)
 print('알림 전송 완료')
 " 2>&1 || echo "[WARN] 텔레그램 전송 실패"
 
+# ── 이메일 발송 (Gmail SMTP)
+echo "  이메일 발송..."
+uv run python -c "
+import sys, os, smtplib
+from email.mime.text import MIMEText
+from pathlib import Path
+
+# .env에서 Gmail 설정 로드
+env_path = Path.home() / '.blsh/config/.env'
+env_vars = {}
+if env_path.exists():
+    for line in env_path.read_text().splitlines():
+        if '=' in line and not line.startswith('#'):
+            k, v = line.split('=', 1)
+            env_vars[k.strip()] = v.strip().strip('\"').strip(\"'\")
+
+gmail_user = env_vars.get('GMAIL_USER', '')
+gmail_pass = env_vars.get('GMAIL_APP_PASSWORD', '')
+
+if not gmail_user or not gmail_pass:
+    print('[SKIP] GMAIL_USER/GMAIL_APP_PASSWORD 미설정')
+    sys.exit(0)
+
+report = Path('$REPORT_FILE')
+content = report.read_text(encoding='utf-8')
+
+msg = MIMEText(content, _charset='utf-8')
+msg['Subject'] = f'[BLSH] 주간 분석 리포트 ($TIMESTAMP)'
+msg['From'] = gmail_user
+msg['To'] = gmail_user
+
+try:
+    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as s:
+        s.login(gmail_user, gmail_pass)
+        s.send_message(msg)
+    print('이메일 발송 완료')
+except Exception as e:
+    print(f'[WARN] 이메일 발송 실패: {e}')
+" 2>&1 || echo "[WARN] 이메일 발송 실패"
+
 echo "[$TIMESTAMP] 주간 분석 완료"
