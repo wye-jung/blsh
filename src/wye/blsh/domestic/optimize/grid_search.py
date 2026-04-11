@@ -27,7 +27,7 @@ from wye.blsh.domestic._sim_core import (
     backtest_nb, backtest_scores_nb,
     RESULT_LABELS, RES_HOLD,
 )
-from wye.blsh.domestic.config import SELL_COST_RATE, SIGNAL_SCORES, SUPPLY_CAP
+from wye.blsh.domestic.config import SELL_COST_RATE, SIGNAL_SCORES_MOM, SIGNAL_SCORES_REV, SUPPLY_CAP
 from wye.blsh.domestic.optimize._cache import (
     build_or_load, OptCache, CACHE_DIR,
     _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS, _classify_mode,
@@ -447,53 +447,65 @@ def backtest_with_trades(
 # ─────────────────────────────────────────
 # 1단계: 신호 점수 최적화 (승률 기준)
 # ─────────────────────────────────────────
-SCORE_GRID_A = {
-    # 고배점 신호 (6개): -1~3 탐색 (-1 = 감점, 0 = 비활성화)
+SCORE_GRID_MOM_A = {
+    # MOM 고배점 (4개): -1~3
     "MGC": [-1, 0, 1, 2, 3],
     "W52": [-1, 0, 1, 2, 3],
     "PB":  [-1, 0, 1, 2, 3],
     "LB":  [-1, 0, 1, 2, 3],
+}  # 5^4 = 625 콤보
+
+SCORE_GRID_MOM_B = {
+    # MOM 저배점 (3개) + NEU (3개, MOM 맥락)
+    "VS":   [-1, 0, 1, 2],  # 현재 0 → -1 허용
+    "MAA":  [0, 1, 2],
+    "OBV":  [0, 1, 2],
+    "MPGC": [0, 1, 2],
+    "BBM":  [0, 1, 2],
+    "SGC":  [0, 1, 2],
+}  # 4 x 3^5 = 972 콤보
+
+SCORE_GRID_REV = {
+    # REV 전체 (6개): -1~3
     "MS":  [-1, 0, 1, 2, 3],
     "RBO": [-1, 0, 1, 2, 3],
+    "ROV": [-1, 0, 1, 2, 3],
+    "BBL": [-1, 0, 1, 2, 3],
+    "HMR": [-1, 0, 1, 2, 3],
+    "BE":  [-1, 0, 1, 2, 3],
 }  # 5^6 = 15,625 콤보
 
-SCORE_GRID_B = {
-    # 저배점 신호 (10개): 0~2 기본, 현재 0인 플래그에 -1 추가
+SCORE_GRID_REV_NEU = {
+    # NEU (3개, REV 맥락)
     "MPGC": [0, 1, 2],
-    "ROV":  [-1, 0, 1, 2],
-    "BBL":  [0, 1, 2],
     "BBM":  [0, 1, 2],
-    "VS":   [-1, 0, 1, 2],
-    "MAA":  [0, 1, 2],
     "SGC":  [0, 1, 2],
-    "HMR":  [0, 1, 2],
-    "OBV":  [0, 1, 2],
-    "BE":   [0, 1, 2],
-}  # 3^8 x 4^2 = 104,976 콤보
-
-SCORE_GRID = SCORE_GRID_A  # 하위 호환
+}  # 3^3 = 27 콤보
 
 
-def _calc_score_with(flags: set, mode: str, scores: dict) -> int:
-    """scores dict로 tech_score 재계산."""
-    mom = sum(scores.get(f, 0) for f in flags & _MOMENTUM_FLAGS)
-    rev = sum(scores.get(f, 0) for f in flags & _REVERSAL_FLAGS)
-    neu = sum(scores.get(f, 0) for f in flags - _ALL_FLAGS)
+def _calc_score_with(flags: set, mode: str, scores_mom: dict, scores_rev: dict) -> int:
+    """모드별 scores dict로 tech_score 재계산."""
+    mom = sum(scores_mom.get(f, 0) for f in flags & _MOMENTUM_FLAGS)
+    rev = sum(scores_rev.get(f, 0) for f in flags & _REVERSAL_FLAGS)
+    neu_mom = sum(scores_mom.get(f, 0) for f in flags - _ALL_FLAGS)
+    neu_rev = sum(scores_rev.get(f, 0) for f in flags - _ALL_FLAGS)
     if mode == "MOM":
-        return mom + neu
+        return mom + neu_mom
     if mode == "REV":
-        return rev + neu
+        return rev + neu_rev
     if mode == "MIX":
-        return max(mom, rev) + neu
-    return mom + rev + neu
+        return max(mom + neu_mom, rev + neu_rev)
+    return mom + rev + max(neu_mom, neu_rev)
 
 
 def backtest_scores(
-    cache: OptCache, params: Params, scores: dict, min_score: int,
+    cache: OptCache, params: Params, scores_mom: dict, scores_rev: dict,
+    min_score: int, mode_filter: int = 7,
 ) -> Stats:
-    """SIGNAL_SCORES를 변경하여 백테스트 (사전 계산된 OHLCV 사용)."""
+    """모드별 SIGNAL_SCORES_MOM/REV로 백테스트 (사전 계산된 OHLCV 사용)."""
     st = Stats()
     _MODE_MAP = {"MOM": 2, "MIX": 1, "REV": 0}
+    _MODE_BIT = {"MOM": 4, "MIX": 2, "REV": 1}
     _max_hold = (params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom)
     _sl_mult = params.atr_sl_mult
     _tp1_mult = params.tp1_mult
@@ -522,8 +534,10 @@ def backtest_scores(
             mode = _classify_mode(flags)
             if mode not in _MODE_MAP:
                 continue
+            if not (mode_filter & _MODE_BIT[mode]):
+                continue
 
-            tech_score = _calc_score_with(flags, mode, scores)
+            tech_score = _calc_score_with(flags, mode, scores_mom, scores_rev)
             supply_bonus = min(sig.get("raw_supply_bonus", 0), SUPPLY_CAP)
             effective_score = tech_score + supply_bonus
             if "P_OV" in flags:
@@ -563,21 +577,29 @@ def backtest_scores(
 
 
 def _score_worker(args):
-    """1단계 워커: (score_keys, score_combo, params_dict, base_scores)."""
-    score_keys, score_combo, params_dict, base_scores = args
-    scores = {**base_scores, **dict(zip(score_keys, score_combo))}
-    params = Params(**params_dict)
+    """1단계 워커: (score_keys, score_combo, params_dict, base_mom, base_rev, target, mode_filter)."""
+    score_keys, score_combo, params_dict, base_mom, base_rev, target, mode_filter = args
+    scores_mom = dict(base_mom)
+    scores_rev = dict(base_rev)
+    combo_dict = dict(zip(score_keys, score_combo))
 
+    if target == "mom":
+        scores_mom.update(combo_dict)
+    else:
+        scores_rev.update(combo_dict)
+
+    params = Params(**params_dict)
     cache = _WORKER_CACHE
     if hasattr(cache, "flat_flag_mask") and cache.flat_flag_mask is not None:
         import numpy as _np
-        sv = _np.array([scores.get(f, 0) for f in FLAG_ORDER], dtype=_np.int64)
+        sv_mom = _np.array([scores_mom.get(f, 0) for f in FLAG_ORDER], dtype=_np.int64)
+        sv_rev = _np.array([scores_rev.get(f, 0) for f in FLAG_ORDER], dtype=_np.int64)
         _max_di = int(max(cache.flat_date_idx)) if len(cache.flat_date_idx) > 0 else 0
         trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum = backtest_scores_nb(
             cache.flat_flag_mask, cache.flat_supply_bonus, cache.flat_has_pov,
             cache.flat_buy, cache.flat_atr, cache.flat_n_bars,
             cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
-            sv, MOM_MASK, REV_MASK, N_FLAGS,
+            sv_mom, sv_rev, MOM_MASK, REV_MASK, N_FLAGS,
             _WORKER_MIN_SCORE,
             params.atr_sl_mult, params.tp1_mult, params.atr_tp_mult,
             params.tp1_ratio,
@@ -586,6 +608,7 @@ def _score_worker(args):
             cache.flat_idx_gap, params.max_idx_drop,
             params.atr_cap,
             cache.flat_date_idx, _max_di, HALF_LIFE,
+            mode_filter,
         )
         st = Stats()
         st.trades = trades
@@ -598,31 +621,38 @@ def _score_worker(args):
         st.w_ret_sq = w_ret_sq
         st.w_sum = w_sum
     else:
-        st = backtest_scores(cache, params, scores, _WORKER_MIN_SCORE)
+        st = backtest_scores(cache, params, scores_mom, scores_rev, _WORKER_MIN_SCORE, mode_filter)
 
-    return scores, st
+    return (scores_mom, scores_rev), st
 
 
 def optimize_scores(
     cache: OptCache, params: Params, n_workers: int,
     min_score: int | None = None,
-    current_scores: dict | None = None,
+    current_scores_mom: dict | None = None,
+    current_scores_rev: dict | None = None,
     score_grid: dict | None = None,
+    target: str = "mom",
+    mode_filter: int = 7,
     label: str = "",
-) -> dict:
-    """신호 점수 그리드 탐색. best_scores (전체 15개 신호) 반환.
+) -> tuple[dict, dict]:
+    """모드별 신호 점수 그리드 탐색.
 
     Args:
         min_score: 진입 최소 점수. None이면 GRID 최소값 사용.
-        current_scores: 전체 신호의 현재 점수. None이면 SIGNAL_SCORES 초기값.
-        score_grid: 탐색 대상 그리드. None이면 SCORE_GRID_A.
-        label: 로그 라벨 (e.g. "A: 고배점", "B: 저배점").
+        current_scores_mom: MOM 점수 dict. None이면 SIGNAL_SCORES_MOM 초기값.
+        current_scores_rev: REV 점수 dict. None이면 SIGNAL_SCORES_REV 초기값.
+        score_grid: 탐색 대상 그리드.
+        target: "mom" 또는 "rev" — 탐색 대상 dict.
+        mode_filter: 비트마스크 (1=REV, 2=MIX, 4=MOM). 7=전체.
+        label: 로그 라벨.
+    Returns: (scores_mom, scores_rev) 튜플.
     """
     global _WORKER_MIN_SCORE
     _min = min_score if min_score is not None else _SCORE_MIN_SCORE
     _WORKER_MIN_SCORE = _min
 
-    grid = score_grid if score_grid is not None else SCORE_GRID_A
+    grid = score_grid if score_grid is not None else SCORE_GRID_MOM_A
     score_keys = list(grid.keys())
     all_score_combos = list(product(*[grid[k] for k in score_keys]))
 
@@ -639,31 +669,40 @@ def optimize_scores(
         "atr_cap": params.atr_cap,
     }
 
-    # 탐색 대상 외 신호: current_scores에서 고정
-    src = current_scores if current_scores is not None else dict(SIGNAL_SCORES)
-    base_scores = {k: v for k, v in src.items() if k not in grid}
+    src_mom = current_scores_mom if current_scores_mom is not None else dict(SIGNAL_SCORES_MOM)
+    src_rev = current_scores_rev if current_scores_rev is not None else dict(SIGNAL_SCORES_REV)
+
+    # 탐색 대상 외 플래그는 고정
+    if target == "mom":
+        base_mom = {k: v for k, v in src_mom.items() if k not in grid}
+    else:
+        base_mom = dict(src_mom)
+    if target == "rev":
+        base_rev = {k: v for k, v in src_rev.items() if k not in grid}
+    else:
+        base_rev = dict(src_rev)
 
     tasks = [
-        (score_keys, combo, params_dict, base_scores)
+        (score_keys, combo, params_dict, base_mom, base_rev, target, mode_filter)
         for combo in all_score_combos
     ]
     tag = f" {label}" if label else ""
     log.info(f"\n{'─' * 70}")
     log.info(
         f"  [1단계{tag}] 신호 점수 최적화: {len(tasks):,}개 조합"
-        f"  (min_score={_min})"
+        f"  (min_score={_min}, target={target}, mode_filter={mode_filter})"
     )
     log.info(f"{'─' * 70}")
 
-    results: list[tuple[dict, Stats]] = []
+    results: list[tuple[tuple[dict, dict], Stats]] = []
     t0 = time.time()
     chunk = max(10, min(200, len(tasks) // (n_workers * 32)))
 
     with mp.Pool(processes=n_workers) as pool:
-        for i, (scores, st) in enumerate(
+        for i, (scores_pair, st) in enumerate(
             pool.imap_unordered(_score_worker, tasks, chunksize=chunk)
         ):
-            results.append((scores, st))
+            results.append((scores_pair, st))
             n = i + 1
             if n % 500 == 0 or n == len(tasks):
                 elapsed = time.time() - t0
@@ -672,24 +711,26 @@ def optimize_scores(
     results.sort(key=lambda x: x[1].metric, reverse=True)
 
     elapsed = time.time() - t0
+    src = src_mom if target == "mom" else src_rev
     if results and results[0][1].metric > -9999:
-        best_scores, best_st = results[0]
+        (best_mom, best_rev), best_st = results[0]
         log.info(
             f"\n  ★ 1단계{tag} 최적:"
             f"  {best_st.trades}건  승률 {best_st.win_rate:.1f}%"
             f"  평균 {best_st.avg_ret:+.2f}%  총 {best_st.total_ret:+.1f}%"
             f"  [{elapsed:.0f}초]"
         )
-        changed = {k: v for k, v in best_scores.items() if v != src.get(k)}
+        best = best_mom if target == "mom" else best_rev
+        changed = {k: v for k, v in best.items() if v != src.get(k)}
         if changed:
             log.info(f"    변경: {changed}")
-        return best_scores
+        return best_mom, best_rev
     log.warning(f"  1단계{tag}: 유효 결과 없음 → 기존 값 유지")
-    return dict(src)
+    return dict(src_mom), dict(src_rev)
 
 
-def recalc_cache_scores(cache: OptCache, scores: dict):
-    """캐시 signal의 score를 새 SIGNAL_SCORES로 재계산."""
+def recalc_cache_scores(cache: OptCache, scores_mom: dict, scores_rev: dict):
+    """캐시 signal의 score를 SIGNAL_SCORES_MOM/REV로 재계산."""
     for date, sigs in cache.signals.items():
         for sig in sigs:
             flag_str = sig.get("flags", "")
@@ -697,7 +738,7 @@ def recalc_cache_scores(cache: OptCache, scores: dict):
             flags.discard("")
             mode = _classify_mode(flags)
             sig["mode"] = mode
-            tech_score = _calc_score_with(flags, mode, scores)
+            tech_score = _calc_score_with(flags, mode, scores_mom, scores_rev)
             sig["tech_score"] = tech_score
             supply_bonus = min(sig.get("raw_supply_bonus", 0), SUPPLY_CAP)
             score = tech_score + supply_bonus
@@ -828,9 +869,10 @@ def _fmt_val(key: str, val) -> str:
 
 def _update_config_file(
     best_p: Params, best_s: Stats, start_date: str, end_date: str, elapsed: float,
-    best_scores: dict | None = None,
+    best_scores_mom: dict | None = None,
+    best_scores_rev: dict | None = None,
 ):
-    """최적 파라미터로 config.py의 Optimized 클래스 속성 갱신. best_scores 지정 시 SIGNAL_SCORES도 갱신."""
+    """최적 파라미터로 config.py의 Optimized 클래스 속성 갱신."""
     import re
     from datetime import datetime
 
@@ -873,15 +915,28 @@ def _update_config_file(
         flags=re.MULTILINE,
     )
 
-    # SIGNAL_SCORES 갱신 (Optimized 클래스 내부)
-    if best_scores:
-        scores_str = "    SIGNAL_SCORES = {\n"
-        for k, v in best_scores.items():
-            scores_str += f'        "{k}": {v},\n'
-        scores_str += "    }"
+    # SIGNAL_SCORES_MOM 갱신 (Optimized 클래스 내부)
+    if best_scores_mom:
+        mom_str = "    SIGNAL_SCORES_MOM = {\n"
+        for k, v in best_scores_mom.items():
+            mom_str += f'        "{k}": {v},\n'
+        mom_str += "    }"
         content = re.sub(
-            r"^    SIGNAL_SCORES = \{[^}]+\}",
-            scores_str,
+            r"^    SIGNAL_SCORES_MOM = \{[^}]+\}",
+            mom_str,
+            content,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+
+    # SIGNAL_SCORES_REV 갱신 (Optimized 클래스 내부)
+    if best_scores_rev:
+        rev_str = "    SIGNAL_SCORES_REV = {\n"
+        for k, v in best_scores_rev.items():
+            rev_str += f'        "{k}": {v},\n'
+        rev_str += "    }"
+        content = re.sub(
+            r"^    SIGNAL_SCORES_REV = \{[^}]+\}",
+            rev_str,
             content,
             flags=re.MULTILINE | re.DOTALL,
         )
@@ -947,11 +1002,12 @@ def run(
     backtest_scores_nb(_di, _di * 0, _di * 0,
                        _df * 100, _df * 5, _di,
                        _d2, _d2, _d2, _d2,
-                       _sv, MOM_MASK, REV_MASK, N_FLAGS,
+                       _sv, _sv, MOM_MASK, REV_MASK, N_FLAGS,
                        9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002,
                        _df * 0.0, 1.0,
                        0.50,
-                       _di * 0, 0, 120.0)
+                       _di * 0, 0, 120.0,
+                       7)
     log.info("[numba] JIT 컴파일 완료")
 
     # fork 전에 캐시를 전역 변수로 설정 (CoW — 자식 프로세스에 복사 없이 공유)
@@ -1085,11 +1141,12 @@ def run_alternating(
     backtest_scores_nb(_di, _di * 0, _di * 0,
                        _df * 100, _df * 5, _di,
                        _d2, _d2, _d2, _d2,
-                       _sv, MOM_MASK, REV_MASK, N_FLAGS,
+                       _sv, _sv, MOM_MASK, REV_MASK, N_FLAGS,
                        9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002,
                        _df * 0.0, 1.0,
                        0.50,
-                       _di * 0, 0, 120.0)
+                       _di * 0, 0, 120.0,
+                       7)
     log.info("[numba] JIT 컴파일 완료")
 
     _WORKER_CACHE = cache
@@ -1105,7 +1162,8 @@ def run_alternating(
 
     # 초기값
     from wye.blsh.domestic import config as _f
-    current_scores = dict(SIGNAL_SCORES)
+    current_scores_mom = dict(SIGNAL_SCORES_MOM)
+    current_scores_rev = dict(SIGNAL_SCORES_REV)
     current_params = Params(
         invest_min_score=_f.INVEST_MIN_SCORE,
         atr_sl_mult=_f.ATR_SL_MULT,
@@ -1122,54 +1180,81 @@ def run_alternating(
     t_total = time.time()
     best_stats = None
     prev_metric = -9999.0
-    # 진동 감지용: (scores, params, stats) 이력
-    history: list[tuple[dict, Params, Stats]] = []
+    # 진동 감지용: (scores_mom, scores_rev, params, stats) 이력
+    history: list[tuple[dict, dict, Params, Stats]] = []
 
     for iteration in range(1, max_iter + 1):
         log.info(f"\n{'=' * 70}")
         log.info(f"  교대 최적화 [{iteration}/{max_iter}]")
         log.info(f"{'=' * 70}")
 
-        # ── 1단계: 신호 점수 최적화 (A: 고배점 → B: 저배점)
         score_min = (
             current_params.invest_min_score if iteration > 1
             else _SCORE_MIN_SCORE
         )
-        scores_a = optimize_scores(
+
+        # ── 1단계 MOM: MOM 점수 최적화 (mode_filter=6: MOM+MIX)
+        mom_a, _ = optimize_scores(
             cache, current_params, n_workers,
             min_score=score_min,
-            current_scores=current_scores,
-            score_grid=SCORE_GRID_A,
-            label="A: 고배점",
+            current_scores_mom=current_scores_mom,
+            current_scores_rev=current_scores_rev,
+            score_grid=SCORE_GRID_MOM_A,
+            target="mom", mode_filter=6,
+            label="MOM-고",
         )
-        new_scores = optimize_scores(
+        new_mom, _ = optimize_scores(
             cache, current_params, n_workers,
             min_score=score_min,
-            current_scores=scores_a,
-            score_grid=SCORE_GRID_B,
-            label="B: 저배점",
+            current_scores_mom=mom_a,
+            current_scores_rev=current_scores_rev,
+            score_grid=SCORE_GRID_MOM_B,
+            target="mom", mode_filter=6,
+            label="MOM-저+NEU",
+        )
+
+        # ── 1단계 REV: REV 점수 최적화 (mode_filter=3: REV+MIX)
+        _, rev_main = optimize_scores(
+            cache, current_params, n_workers,
+            min_score=score_min,
+            current_scores_mom=new_mom,
+            current_scores_rev=current_scores_rev,
+            score_grid=SCORE_GRID_REV,
+            target="rev", mode_filter=3,
+            label="REV",
+        )
+        _, new_rev = optimize_scores(
+            cache, current_params, n_workers,
+            min_score=score_min,
+            current_scores_mom=new_mom,
+            current_scores_rev=rev_main,
+            score_grid=SCORE_GRID_REV_NEU,
+            target="rev", mode_filter=3,
+            label="REV-NEU",
         )
 
         # ── 캐시 score 재계산 + flat 배열 동기화
-        recalc_cache_scores(cache, new_scores)
+        recalc_cache_scores(cache, new_mom, new_rev)
         cache.update_flat_scores()
 
-        # ── 2단계: 매매파라미터 최적화 (min_score 포함)
+        # ── 2단계: 매매파라미터 최적화 (mode_filter=7: 전체)
         result = _run_param_grid(cache, n_workers)
         if result is None:
             log.warning("  2단계 유효 결과 없음 → 중단")
             break
         new_params, best_stats = result
-        history.append((new_scores, new_params, best_stats))
+        history.append((new_mom, new_rev, new_params, best_stats))
 
         # ── 수렴 체크: 완전 일치
-        if new_scores == current_scores and new_params == current_params:
+        if (new_mom == current_scores_mom and new_rev == current_scores_rev
+                and new_params == current_params):
             log.info(f"\n  수렴 완료 (iteration {iteration})")
-            current_scores = new_scores
+            current_scores_mom = new_mom
+            current_scores_rev = new_rev
             current_params = new_params
             break
 
-        # ── metric 변화율 수렴: 개선폭 < 1% → 실질 수렴 (#4)
+        # ── metric 변화율 수렴: 개선폭 < 1% → 실질 수렴
         cur_metric = best_stats.metric
         if prev_metric > 0 and cur_metric > 0:
             improvement = (cur_metric - prev_metric) / prev_metric
@@ -1178,29 +1263,33 @@ def run_alternating(
                     f"\n  metric 수렴 (변화 {improvement:+.2%},"
                     f" {prev_metric:.1f} → {cur_metric:.1f})"
                 )
-                current_scores = new_scores
+                current_scores_mom = new_mom
+                current_scores_rev = new_rev
                 current_params = new_params
                 break
         prev_metric = cur_metric
 
         # ── 2-cycle 진동 감지: 2회 전과 동일하면 더 나은 쪽 선택 후 종료
         if len(history) >= 3:
-            prev2_scores, prev2_params, prev2_stats = history[-3]
-            if new_scores == prev2_scores and new_params == prev2_params:
-                prev1_scores, prev1_params, prev1_stats = history[-2]
-                if best_stats.metric >= prev1_stats.metric:
+            p2_mom, p2_rev, p2_params, p2_stats = history[-3]
+            if new_mom == p2_mom and new_rev == p2_rev and new_params == p2_params:
+                p1_mom, p1_rev, p1_params, p1_stats = history[-2]
+                if best_stats.metric >= p1_stats.metric:
                     log.info(f"\n  진동 감지 → 현재 iteration 선택 (metric {best_stats.metric:.1f})")
-                    current_scores = new_scores
+                    current_scores_mom = new_mom
+                    current_scores_rev = new_rev
                     current_params = new_params
                 else:
-                    log.info(f"\n  진동 감지 → 이전 iteration 선택 (metric {prev1_stats.metric:.1f})")
-                    current_scores = prev1_scores
-                    current_params = prev1_params
-                    best_stats = prev1_stats
-                    recalc_cache_scores(cache, current_scores)
+                    log.info(f"\n  진동 감지 → 이전 iteration 선택 (metric {p1_stats.metric:.1f})")
+                    current_scores_mom = p1_mom
+                    current_scores_rev = p1_rev
+                    current_params = p1_params
+                    best_stats = p1_stats
+                    recalc_cache_scores(cache, current_scores_mom, current_scores_rev)
                 break
 
-        current_scores = new_scores
+        current_scores_mom = new_mom
+        current_scores_rev = new_rev
         current_params = new_params
 
     total_elapsed = time.time() - t_total
@@ -1209,7 +1298,8 @@ def run_alternating(
     if apply and best_stats:
         _update_config_file(
             current_params, best_stats, start_date, end_date, total_elapsed,
-            best_scores=current_scores,
+            best_scores_mom=current_scores_mom,
+            best_scores_rev=current_scores_rev,
         )
     elif not apply:
         log.info("\n  ⚠️  --no-apply: config.py 갱신 생략")
@@ -1363,7 +1453,7 @@ def run_walkforward(
 ):
     """Walk-Forward 검증: 롤링 윈도우별 train 최적화 → val 검증.
 
-    현재 config.py의 SIGNAL_SCORES를 고정하고, Stage 2(매매 파라미터)만
+    현재 config.py의 SIGNAL_SCORES_MOM/REV를 고정하고, Stage 2(매매 파라미터)만
     각 train 윈도우에서 최적화한 뒤 val 윈도우에서 검증.
     """
     global _WORKER_CACHE

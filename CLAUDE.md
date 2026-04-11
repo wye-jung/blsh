@@ -89,7 +89,7 @@ src/wye/blsh/
 ## Key Configuration (config.py)
 
 - `Optimized` 클래스: `grid_search`가 자동 갱신 (SL/TP/보유일/점수/INDEX_DROP_LIMIT/ATR_CAP 등)
-- `SIGNAL_SCORES`: Optimized 클래스 내 16개 플래그 점수 (BE 포함, grid_search 자동 갱신)
+- `SIGNAL_SCORES_MOM` / `SIGNAL_SCORES_REV`: Optimized 클래스 내 모드별 플래그 점수 (grid_search 자동 갱신). 중립 플래그(MPGC, BBM, SGC)는 양쪽에 독립 값.
 - `SUPPLY_CAP = 3`: 수급 가산 상한 (scanner + _cache 양쪽 적용)
 - `MAX_ALLOC_TIERS`: 총자산 규모별 종목당 배분 비율 상한
 

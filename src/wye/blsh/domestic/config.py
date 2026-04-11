@@ -14,23 +14,28 @@ class Optimized:
     MAX_HOLD_DAYS_MOM: int = 3
     INDEX_DROP_LIMIT: float = 1.0
     ATR_CAP: float = 0.05
-    SIGNAL_SCORES = {
+    SIGNAL_SCORES_MOM = {
         "MGC": 0,
         "W52": 0,
         "PB": 0,
         "LB": 0,
-        "MS": 3,
-        "RBO": 3,
-        "MPGC": 2,
-        "ROV": 0,
-        "BBL": 2,
-        "BBM": 1,
         "VS": 0,
         "MAA": 2,
-        "SGC": 2,
-        "HMR": 2,
         "OBV": 1,
+        "MPGC": 2,
+        "BBM": 1,
+        "SGC": 2,
+    }
+    SIGNAL_SCORES_REV = {
+        "RBO": 3,
+        "MS": 3,
+        "ROV": 0,
+        "BBL": 2,
+        "HMR": 2,
         "BE": 1,
+        "MPGC": 2,
+        "BBM": 1,
+        "SGC": 2,
     }
 
 
@@ -85,7 +90,8 @@ DISQUALIFY_FLAGS: dict[str, bool | int] = {
     "우회상장": False,
 }
 
-SIGNAL_SCORES = Optimized.SIGNAL_SCORES
+SIGNAL_SCORES_MOM = Optimized.SIGNAL_SCORES_MOM
+SIGNAL_SCORES_REV = Optimized.SIGNAL_SCORES_REV
 
 SUPPLY_SCORES = {
     "TRN": 3,

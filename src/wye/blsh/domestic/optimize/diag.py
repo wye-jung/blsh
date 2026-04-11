@@ -47,7 +47,7 @@ if sum(len(v) for v in cache.signals.values()) == 0:
     log.info(f"  ticker_market: {len(cache.ticker_market)}종목")
 
     # 직접 1종목 신호 테스트
-    from wye.blsh.domestic.optimize._cache import _compute_stock_signals, _SIGNAL_COLS
+    from wye.blsh.domestic.optimize._cache import _compute_stock_signals, FLAG_ORDER
     from wye.blsh.database.query import select_all
     import pandas as pd
 
@@ -76,12 +76,12 @@ if sum(len(v) for v in cache.signals.values()) == 0:
         recent = sig_df.tail(10)
         for d in recent.index:
             row = recent.loc[d]
-            flags = {f for f in _SIGNAL_COLS if row.get(f, False)}
+            flags = {f for f in FLAG_ORDER if row.get(f, False)}
             if flags:
                 log.info(f"  {d}: {flags}")
 
         # 전체 기간 신호 유무
-        any_signal = sig_df[_SIGNAL_COLS].any(axis=1).sum()
+        any_signal = sig_df[FLAG_ORDER].any(axis=1).sum()
         log.info(f"  삼성전자 전체 기간 신호 발생 일수: {any_signal}")
 
         # trdval 확인

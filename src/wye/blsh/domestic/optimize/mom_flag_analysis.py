@@ -22,7 +22,7 @@ from collections import defaultdict
 from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import (
     build_or_load, OptCache,
-    _SCORES, _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS,
+    _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS,
 )
 from wye.blsh.domestic.optimize.grid_search import Params, Stats, _simulate_one
 from wye.blsh.domestic.optimize.signal_analysis import (

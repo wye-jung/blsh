@@ -272,7 +272,7 @@ def backtest_scores_nb(
     flag_mask_arr, supply_bonus_arr, has_pov_arr,
     buy_arr, atr_arr, n_bars_arr,
     opens_2d, highs_2d, lows_2d, closes_2d,
-    score_values, mom_mask, rev_mask, n_flags,
+    score_values_mom, score_values_rev, mom_mask, rev_mask, n_flags,
     min_score,
     sl_mult, tp1_mult, tp2_mult, tp1_ratio,
     max_hold_rev, max_hold_mix, max_hold_mom,
@@ -280,15 +280,18 @@ def backtest_scores_nb(
     idx_gap_arr, max_idx_drop,
     atr_cap,
     date_idx_arr, max_date_idx, half_life,
+    mode_filter,
 ):
-    """backtest_scores의 numba 버전. 플래그 비트마스크 + 점수 배열로 score 재계산.
+    """backtest_scores의 numba 버전. 플래그 비트마스크 + 모드별 점수 배열로 score 재계산.
 
     Args:
         flag_mask_arr: (N,) int64 — 신호별 플래그 비트마스크
         supply_bonus_arr: (N,) int64 — 캡 적용 수급 보너스
         has_pov_arr: (N,) int64 — P_OV 여부 (0/1)
-        score_values: (n_flags,) int64 — 플래그 인덱스별 점수
+        score_values_mom: (n_flags,) int64 — MOM 모드 플래그별 점수
+        score_values_rev: (n_flags,) int64 — REV 모드 플래그별 점수
         mom_mask, rev_mask: int64 — 모멘텀/전환 플래그 비트마스크
+        mode_filter: int64 — 비트마스크 (1=REV, 2=MIX, 4=MOM). 7=전체, 6=MOM+MIX, 3=REV+MIX
     Returns: (trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum)
     """
     n_sigs = len(buy_arr)
@@ -311,32 +314,40 @@ def backtest_scores_nb(
         rev_cnt = 0
         mom_score = 0
         rev_score = 0
-        neu_score = 0
+        neu_score_mom = 0
+        neu_score_rev = 0
 
         for b in range(n_flags):
             bit = nb.int64(1) << nb.int64(b)
             if fm & bit:
-                sv = score_values[b]
                 if bit & mom_mask:
                     mom_cnt += 1
-                    mom_score += sv
+                    mom_score += score_values_mom[b]
                 elif bit & rev_mask:
                     rev_cnt += 1
-                    rev_score += sv
+                    rev_score += score_values_rev[b]
                 else:
-                    neu_score += sv
+                    neu_score_mom += score_values_mom[b]
+                    neu_score_rev += score_values_rev[b]
 
         # mode 분류 + tech_score
         if mom_cnt >= 2 and mom_cnt > rev_cnt:
             mode_id = 2  # MOM
-            tech_score = mom_score + neu_score
+            if not (mode_filter & 4):
+                continue
+            tech_score = mom_score + neu_score_mom
         elif rev_cnt >= 2 and rev_cnt > mom_cnt:
             mode_id = 0  # REV
-            tech_score = rev_score + neu_score
+            if not (mode_filter & 1):
+                continue
+            tech_score = rev_score + neu_score_rev
         elif mom_cnt > 0 and rev_cnt > 0:
             mode_id = 1  # MIX
-            tech_score = mom_score if mom_score > rev_score else rev_score
-            tech_score += neu_score
+            if not (mode_filter & 2):
+                continue
+            mom_total = mom_score + neu_score_mom
+            rev_total = rev_score + neu_score_rev
+            tech_score = mom_total if mom_total > rev_total else rev_total
         else:
             continue  # WEAK
 

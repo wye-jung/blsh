@@ -8,7 +8,7 @@
   - 지수 환경 체크: KOSPI/KOSDAQ MA20 아래이면 해당 시장 스킵 (config.INDEX_DROP_LIMIT 이하만)
 
 [1단계] DB 기반 OHLCV 지표 스캔 (16개 플래그)
-  점수는 config.py SIGNAL_SCORES 참조 (grid_search가 자동 갱신).
+  점수는 config.py SIGNAL_SCORES_MOM/SIGNAL_SCORES_REV 참조 (grid_search가 자동 갱신).
   ┌──────────────────────────────────────────────────────┬──────┬────────┐
   │ MACD 골든크로스                                       │  MGC │  모멘텀│
   │ MACD 예상 골든크로스 (히스토그램 상승 + 직전 음수)    │  MPGC│  중립  │
@@ -105,7 +105,8 @@ from wye.blsh.domestic.config import (
     MAX_HOLD_DAYS,
     MAX_HOLD_DAYS_MIX,
     MAX_HOLD_DAYS_MOM,
-    SIGNAL_SCORES,
+    SIGNAL_SCORES_MOM,
+    SIGNAL_SCORES_REV,
     SUPPLY_SCORES,
     DISQUALIFY_FLAGS,
 )
@@ -169,7 +170,7 @@ def calc_obv(c, v):
 
 
 def _signal_score(signal: str) -> tuple[str, int]:
-    return signal, SIGNAL_SCORES.get(signal, 0)
+    return signal, 0  # 점수는 evaluate_buy에서 모드별 직접 조회
 
 
 def _supply_score(supply: str) -> tuple[str, int]:
@@ -318,14 +319,9 @@ def evaluate_buy(close, high, low, volume, opn=None):
         if obv.iloc[-3] < obv.iloc[-2] < obv.iloc[-1]:
             signals.append(_signal_score("OBV"))
 
-    # ── 분리 트랙 점수 집계
+    # ── 분리 트랙 점수 집계 (모드별 score dict 사용)
     flags = [f for f, _ in signals]
     flag_set = set(flags)
-    mom_score = sum(pts for f, pts in signals if f in _MOMENTUM_FLAGS)
-    rev_score = sum(pts for f, pts in signals if f in _REVERSAL_FLAGS)
-    neu_score = sum(
-        pts for f, pts in signals if f not in (_MOMENTUM_FLAGS | _REVERSAL_FLAGS)
-    )
 
     rev_cnt = len(flag_set & _REVERSAL_FLAGS)
     mom_cnt = len(flag_set & _MOMENTUM_FLAGS)
@@ -340,16 +336,21 @@ def evaluate_buy(close, high, low, volume, opn=None):
     else:
         mode = "WEAK"
 
-    # ── 최종 점수: MIX일 때 약한 쪽 제거
+    # ── 모드별 점수 계산
+    mom_score = sum(SIGNAL_SCORES_MOM.get(f, 0) for f in flag_set & _MOMENTUM_FLAGS)
+    rev_score = sum(SIGNAL_SCORES_REV.get(f, 0) for f in flag_set & _REVERSAL_FLAGS)
+    _neu_flags = flag_set - (_MOMENTUM_FLAGS | _REVERSAL_FLAGS)
+    neu_mom = sum(SIGNAL_SCORES_MOM.get(f, 0) for f in _neu_flags)
+    neu_rev = sum(SIGNAL_SCORES_REV.get(f, 0) for f in _neu_flags)
+
     if mode == "MOM":
-        score = mom_score + neu_score
+        score = mom_score + neu_mom
     elif mode == "REV":
-        score = rev_score + neu_score
+        score = rev_score + neu_rev
     elif mode == "MIX":
-        score = max(mom_score, rev_score) + neu_score
+        score = max(mom_score + neu_mom, rev_score + neu_rev)
     else:
-        # WEAK: 둘 다 약하므로 전부 합산 (기존과 동일)
-        score = mom_score + rev_score + neu_score
+        score = mom_score + rev_score + max(neu_mom, neu_rev)
 
     # ── 매수가 / 손절 / 익절 (호가 단위 보정, ATR cap 적용)
     effective_atr = min(atr0, c0 * ATR_CAP)

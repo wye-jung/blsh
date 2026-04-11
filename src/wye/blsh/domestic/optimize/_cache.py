@@ -45,12 +45,16 @@ from wye.blsh.domestic.scanner import (
 log = logging.getLogger(__name__)
 CACHE_DIR = _BLSH_CACHE_DIR / "optimize"
 
-from wye.blsh.domestic.config import SIGNAL_SCORES as _SCORES, SUPPLY_CAP
-_SIGNAL_COLS = list(_SCORES.keys())
+from wye.blsh.domestic.config import (
+    SIGNAL_SCORES_MOM as _SCORES_MOM,
+    SIGNAL_SCORES_REV as _SCORES_REV,
+    SUPPLY_CAP,
+)
 _ALL_FLAGS = _MOMENTUM_FLAGS | _REVERSAL_FLAGS  # 중립 = 전체 - 이 집합
 
 # 플래그 비트마스크 상수 (backtest_scores_nb용)
-FLAG_ORDER = list(_SCORES.keys())
+FLAG_ORDER = list(_SCORES_MOM.keys())
+FLAG_ORDER += [f for f in _SCORES_REV if f not in _SCORES_MOM]
 FLAG_IDX = {name: i for i, name in enumerate(FLAG_ORDER)}
 N_FLAGS = len(FLAG_ORDER)
 MOM_MASK = sum(1 << FLAG_IDX[f] for f in _MOMENTUM_FLAGS if f in FLAG_IDX)
@@ -73,16 +77,17 @@ def _classify_mode(flags: set) -> str:
 
 
 def _calc_score(flags: set, mode: str) -> int:
-    mom = sum(_SCORES[f] for f in flags & _MOMENTUM_FLAGS)
-    rev = sum(_SCORES[f] for f in flags & _REVERSAL_FLAGS)
-    neu = sum(_SCORES.get(f, 0) for f in flags - _ALL_FLAGS)
+    mom = sum(_SCORES_MOM.get(f, 0) for f in flags & _MOMENTUM_FLAGS)
+    rev = sum(_SCORES_REV.get(f, 0) for f in flags & _REVERSAL_FLAGS)
+    neu_mom = sum(_SCORES_MOM.get(f, 0) for f in flags - _ALL_FLAGS)
+    neu_rev = sum(_SCORES_REV.get(f, 0) for f in flags - _ALL_FLAGS)
     if mode == "MOM":
-        return mom + neu
+        return mom + neu_mom
     if mode == "REV":
-        return rev + neu
+        return rev + neu_rev
     if mode == "MIX":
-        return max(mom, rev) + neu
-    return mom + rev + neu
+        return max(mom + neu_mom, rev + neu_rev)
+    return mom + rev + max(neu_mom, neu_rev)
 
 
 # ─────────────────────────────────────────
@@ -207,7 +212,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     out["_atr"] = atr
     out["_close"] = c
 
-    for col in _SIGNAL_COLS:
+    for col in FLAG_ORDER:
         out[col] = out[col].fillna(False).astype(bool)
 
     return out
@@ -702,7 +707,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                 continue
 
             row = sig_df.loc[date]
-            flags = {f for f in _SIGNAL_COLS if row.get(f, False)}
+            flags = {f for f in FLAG_ORDER if row.get(f, False)}
             if not flags:
                 continue
 

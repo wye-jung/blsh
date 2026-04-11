@@ -19,7 +19,7 @@ from itertools import product
 from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import (
     CACHE_DIR, OptCache, build_or_load,
-    _SCORES, _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS,
+    _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS,
     _classify_mode, _calc_score,
 )
 from wye.blsh.domestic.optimize.grid_search import Params, Stats, _simulate_one

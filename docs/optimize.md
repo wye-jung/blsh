@@ -4,17 +4,19 @@
 
 ## grid_search.py
 
-2단계 그리드 서치로 `config.py`의 `Optimized` 클래스와 `SIGNAL_SCORES`를 자동 갱신.
+모드별 분리 그리드 서치로 `config.py`의 `Optimized` 클래스(`SIGNAL_SCORES_MOM` + `SIGNAL_SCORES_REV`)를 자동 갱신.
 
-### Stage 1A: 고점수 신호 최적화
+### Stage 1-MOM: MOM 점수 최적화 (mode_filter=6: MOM+MIX만)
 
-- 대상: MGC, W52, PB, LB, MS, RBO
-- 각 -1~3점 범위, 5^6 = 15,625 조합 (-1 = 해당 플래그 활성 시 감점)
+- MOM-고: MGC, W52, PB, LB × [-1,0,1,2,3] → 5^4 = 625 조합
+- MOM-저+NEU: VS[-1,0,1,2], MAA[0,1,2], OBV[0,1,2], MPGC[0,1,2], BBM[0,1,2], SGC[0,1,2] → 4 x 3^5 = 972 조합
 
-### Stage 1B: 저점수 신호 최적화
+### Stage 1-REV: REV 점수 최적화 (mode_filter=3: REV+MIX만)
 
-- 대상: MPGC, ROV, BBL, BBM, VS, MAA, SGC, HMR, OBV, BE
-- 기본 0~2점, 현재 0으로 수렴한 플래그(ROV, VS)에 -1 추가, 3^8 x 4^2 = 104,976 조합
+- REV: MS, RBO, ROV, BBL, HMR, BE × [-1,0,1,2,3] → 5^6 = 15,625 조합
+- REV-NEU: MPGC[0,1,2], BBM[0,1,2], SGC[0,1,2] → 3^3 = 27 조합
+
+총 Stage 1: 17,249 조합. mode_filter로 각 모드의 독립적 최적값을 탐색.
 
 ### Stage 2: 포지션/리스크 최적화
 

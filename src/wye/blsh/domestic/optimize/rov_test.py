@@ -19,7 +19,7 @@ import logging
 from wye.blsh.common import dtutils
 from wye.blsh.domestic.optimize._cache import (
     build_or_load, OptCache,
-    _SCORES, _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS,
+    _SCORES_MOM, _SCORES_REV, _REVERSAL_FLAGS, _MOMENTUM_FLAGS, _ALL_FLAGS,
 )
 from wye.blsh.domestic.optimize.grid_search import Params, Stats, _simulate_one
 
@@ -42,16 +42,17 @@ def _classify_mode(rev_flags: frozenset, mom_flags: frozenset, flags: set) -> st
 
 def _calc_score(rev_flags: frozenset, mom_flags: frozenset, all_flags: frozenset,
                 flags: set, mode: str) -> int:
-    mom = sum(_SCORES.get(f, 0) for f in flags & mom_flags)
-    rev = sum(_SCORES.get(f, 0) for f in flags & rev_flags)
-    neu = sum(_SCORES.get(f, 0) for f in flags - all_flags)
+    mom = sum(_SCORES_MOM.get(f, 0) for f in flags & mom_flags)
+    rev = sum(_SCORES_REV.get(f, 0) for f in flags & rev_flags)
+    neu_mom = sum(_SCORES_MOM.get(f, 0) for f in flags - all_flags)
+    neu_rev = sum(_SCORES_REV.get(f, 0) for f in flags - all_flags)
     if mode == "MOM":
-        return mom + neu
+        return mom + neu_mom
     if mode == "REV":
-        return rev + neu
+        return rev + neu_rev
     if mode == "MIX":
-        return max(mom, rev) + neu
-    return mom + rev + neu
+        return max(mom + neu_mom, rev + neu_rev)
+    return mom + rev + max(neu_mom, neu_rev)
 
 
 def _simulate_scenario(
@@ -86,8 +87,8 @@ def _simulate_scenario(
             # 새 분류 기준으로 기술 점수 재계산
             new_base_score = _calc_score(rev_flags, mom_flags, all_flags, signal_flags, new_mode)
             # ROV가 있고 neutral 처리 시 점수 재조정
-            if "ROV" in signal_flags and rov_score != _SCORES.get("ROV", 1):
-                delta = rov_score - _SCORES.get("ROV", 1)
+            if "ROV" in signal_flags and rov_score != _SCORES_REV.get("ROV", 1):
+                delta = rov_score - _SCORES_REV.get("ROV", 1)
                 new_base_score += delta
 
             # 원래 수급 기여분 보존
