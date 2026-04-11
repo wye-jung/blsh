@@ -34,12 +34,11 @@ class PO:
 
     def create(self, orders: dict[str, dict]) -> bool:
         if fileutils.create_json(self.path, orders):
-            log.info(f"PO 파일 생성: {self.path} ({len(orders)} 종목)")
-            messageutils.send_message(
-                f"📦 PO 파일 생성: {self.path.name} ({len(orders)} 종목)"
+            log.info(
+                f"PO 생성: {self.path} {[(k, v['name']) for k, v in orders.items()]}"
             )
             return True
-        log.error(f"PO 파일 생성 실패: {self.path}")
+        log.error(f"PO 생성 실패: {self.path}")
         return False
 
     def loads(self) -> dict[str, dict]:

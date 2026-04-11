@@ -15,7 +15,6 @@ from pykrx.website import krx
 from wye.blsh.database import ModelManager, query
 from wye.blsh.common import dtutils
 from wye.blsh.domestic import Milestone
-from wye.blsh.common.env import SCAN_ETF
 from wye.blsh.database.models import (
     IsuKspOhlcv,
     IsuKsdOhlcv,
@@ -40,38 +39,43 @@ def collect() -> tuple[bool, str]:
     from_date = None
     if max_ohlcv_date is None:
         from_date = latest_biz_date
-    elif max_ohlcv_date < latest_biz_date:
+    else:
         fetched_at = query.get_fetched_at(max_ohlcv_date)
-        print(
-            f"max_ohlcv_date: {max_ohlcv_date}, fetched_at: {fetched_at.strftime(dtutils.TIME_FMT)}"
+        fetched_str = (
+            fetched_at.strftime(dtutils.DATE_FMT + dtutils.TIME_FMT)
+            if fetched_at
+            else "0"
         )
-        if (
-            fetched_at is not None
-            and fetched_at.strftime(dtutils.TIME_FMT) <= Milestone.NXT_CLOSE_TIME
-        ):
+        threshold = max_ohlcv_date + "220000"
+        if fetched_str < threshold:
             from_date = max_ohlcv_date
-        else:
+        elif max_ohlcv_date < latest_biz_date:
             from_date = dtutils.add_biz_days(max_ohlcv_date, 1)
-    elif max_ohlcv_date == latest_biz_date:
-        if Milestone.NXT_OPEN_TIME < dtutils.ctime() < Milestone.NXT_CLOSE_TIME:
-            _collect_idx_data(max_ohlcv_date)
-            _collect_isu_data(max_ohlcv_date)
-            if SCAN_ETF:
-                _collect_etx_data(max_ohlcv_date)
-        elif (_fetched_at := query.get_fetched_at(max_ohlcv_date)) is not None and (
-            _fetched_at.strftime(dtutils.TIME_FMT) < Milestone.NXT_CLOSE_TIME
-        ):
-            from_date = max_ohlcv_date
+        log.info(
+            f"[collect] latest_biz={latest_biz_date}  max_ohlcv={max_ohlcv_date}"
+            f"  fetched={fetched_str}  threshold={threshold}  from_date={from_date}"
+        )
 
-    if from_date:
-        _collect(from_date, latest_biz_date)
+    if from_date is not None:
+        _collect_daily(
+            from_date if from_date <= latest_biz_date else latest_biz_date,
+            latest_biz_date,
+        )
+        if dtutils.ctime() < Milestone.NXT_OPEN_TIME:
+            _collect_base_info()
 
     max_ohlcv_date = query.get_max_ohlcv_date()
-    return max_ohlcv_date == latest_biz_date, max_ohlcv_date
+    collected = max_ohlcv_date == latest_biz_date
+    if not collected:
+        log.warning(
+            f"[collect] 수집 후 불일치: max_ohlcv={max_ohlcv_date}"
+            f"  latest_biz={latest_biz_date}"
+        )
+    return collected, max_ohlcv_date
 
 
-def _collect(from_date, to_date):
-    log.info(f"_collect from {from_date} to {to_date}")
+def _collect_daily(from_date, to_date):
+    log.info(f"Collecting daily data from {from_date} to {to_date} (inclusive)")
     import pandas as pd
 
     dates = pd.date_range(from_date, to_date)
@@ -79,8 +83,6 @@ def _collect(from_date, to_date):
         if _collect_idx_data(date) > 0:
             _collect_isu_data(date)
             _collect_etx_data(date)
-
-    _collect_base_info()
 
 
 # 지수 데이터 수집

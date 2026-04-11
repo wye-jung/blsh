@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import sys
+from wye.blsh.common import messageutils
 from wye.blsh.common.env import DATA_DIR, KIS_ENV
 
 log = logging.getLogger(__name__)

@@ -31,8 +31,8 @@ CRON_ENTRIES=(
     # 2. 데이터 수집 + PO 생성 — PRE (매일 월~금 07:30, 전일 스캔 → PO①)
     "30 7 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
 
-    # 3. 데이터 수집 + PO 생성 — INI (매일 월~금 10:05, 장초반 스캔 → PO②)
-    "5 10 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
+    # 3. 데이터 수집 + PO 생성 — INI (매일 월~금 11:30, 장초반 스캔 → PO②)
+    "30 11 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
 
     # 4. 데이터 수집 + PO 생성 — FIN (매일 월~금 15:05, 청산 후 매수 → PO③)
     "5 15 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
@@ -43,12 +43,17 @@ CRON_ENTRIES=(
     # 6. 일일 로그 분석 리포트 (매일 월~금 20:30)
     "30 20 * * 1-5 $CRON_INIT && uv run python -m wye.blsh analyze >> $CRON_LOG_DIR/analyze.log 2>&1 $BLSH_TAG"
 
-    # 7. Grid Search 최적화 (매주 토 02:00)
-    # 캐시 강제 재빌드 하려면 --rebuild 인자 지정(+~3분). 미지정 시 캐시 범위 불일치(5일 초과)시에만 자동 재빌드.
-    "0 2 * * 6 $CRON_INIT && uv run python -m wye.blsh.domestic.optimize.grid_search --alternating >> $CRON_LOG_DIR/optimize.log 2>&1 $BLSH_TAG"
+    # 7. Grid Search 최적화 + Walk-Forward 검증 (매주 토 02:00)
+    # 1) --alternating: 파라미터 최적화 + config.py 갱신 (~35분)
+    # 2) --walkforward: 갱신된 파라미터의 OOS 검증 + 텔레그램 리포트 (~60분)
+    "0 2 * * 6 $CRON_INIT && uv run python -m wye.blsh.domestic.optimize.grid_search --alternating >> $CRON_LOG_DIR/optimize.log 2>&1 && uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --years 3 >> $CRON_LOG_DIR/optimize.log 2>&1 $BLSH_TAG"
 
     # 8. 업종지수 매핑 확인 (매주 월 06:30)
     "30 6 * * 1 $CRON_INIT && uv run python -m wye.blsh sector >> $CRON_LOG_DIR/sector.log 2>&1 $BLSH_TAG"
+
+    # 9. Claude Code 주간 로그 분석 (매주 일 21:00)
+    # Claude Code CLI + ANTHROPIC_API_KEY 필요
+    "0 21 * * 0 $CRON_INIT && bin/weekly-analysis.sh >> $CRON_LOG_DIR/weekly-analysis.log 2>&1 $BLSH_TAG"
 )
 
 install_cron() {
@@ -79,11 +84,11 @@ install_cron() {
     echo "  월   06:00  휴장일 데이터 수집"
     echo "  월~금 07:30  데이터 수집 + PO① (전일 스캔)"
     echo "  월~금 07:55  트레이더 실행 + watchdog"
-    echo "  월~금 10:05  데이터 수집 + PO② (장초반 스캔)"
+    echo "  월~금 11:30  데이터 수집 + PO② (장초반 스캔)"
     echo "  월~금 15:05  데이터 수집 + PO③ (청산 후 스캔)"
     echo "  월~금 20:30  일일 로그 분석 리포트"
-    echo "  토   02:00  Grid Search 최적화
-  월   06:30  업종지수 매핑 확인"
+    echo "  토   02:00  Grid Search 최적화 + Walk-Forward 검증"
+    echo "  월   06:30  업종지수 매핑 확인"
     echo ""
     echo "로그 위치: ~/.blsh/logs/"
 }

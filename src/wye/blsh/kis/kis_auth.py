@@ -450,22 +450,24 @@ def _url_fetch(
 ):
     url = f"{getTREnv().my_url}{api_url}"
 
-    headers = _getBaseHeader()  # 기본 header 값 정리
-
-    # 추가 Header 설정
+    # ── 헤더 구성 (토큰 재발급 시에도 재사용) ──
     tr_id = ptr_id
     if ptr_id[0] in ("T", "J", "C"):  # 실전투자용 TR id 체크
         if isPaperTrading():  # 모의투자용 TR id 식별
             tr_id = "V" + ptr_id[1:]
 
-    headers["tr_id"] = tr_id  # 트랜젝션 TR id
-    headers["custtype"] = "P"  # 일반(개인고객,법인고객) "P", 제휴사 "B"
-    headers["tr_cont"] = tr_cont  # 트랜젝션 TR id
-
-    if appendHeaders is not None:
-        if len(appendHeaders) > 0:
+    def build_headers():
+        """기본 헤더 + TR/부가 헤더 구성. 토큰 재발급 후에도 호출."""
+        h = _getBaseHeader()
+        h["tr_id"] = tr_id
+        h["custtype"] = "P"
+        h["tr_cont"] = tr_cont
+        if appendHeaders is not None:
             for x in appendHeaders.keys():
-                headers[x] = appendHeaders.get(x)
+                h[x] = appendHeaders.get(x)
+        return h
+
+    headers = build_headers()
 
     if _DEBUG:
         print("< Sending Info >")
@@ -473,20 +475,67 @@ def _url_fetch(
         print(f"<header>\n{headers}")
         print(f"<body>\n{params}")
 
-    if postFlag:
-        # if (hashFlag): set_order_hash_key(headers, params)
-        res = requests.post(url, headers=headers, data=json.dumps(params))
-    else:
-        res = requests.get(url, headers=headers, params=params)
+    def backoff_sleep(attempt):
+        """EGW00201 rate limit 백오프: 0.5s, 1.0s, 1.5s 점진 대기."""
+        wait = (attempt + 1) * 0.5
+        print(
+            f"[_url_fetch] rate limit (EGW00201) → {wait}s 대기 후 재시도"
+            f" ({attempt + 1}/{MAX_RETRIES})"
+        )
+        time.sleep(wait)
 
-    if res.status_code == 200:
-        ar = APIResp(res)
-        if _DEBUG:
-            ar.printAll()
-        return ar
-    else:
-        print("Error Code : " + str(res.status_code) + " | " + res.text)
-        return APIRespError(res.status_code, res.text)
+    # ── 요청 실행 + 에러별 자동 재시도 ──
+    # EGW00201(초당 거래건수 초과): 백오프 후 재시도
+    # EGW00103(유효하지 않은 AppKey): 토큰 재발급 후 재시도
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES + 1):
+        if postFlag:
+            res = requests.post(url, headers=headers, data=json.dumps(params))
+        else:
+            res = requests.get(url, headers=headers, params=params)
+
+        if res.status_code == 200:
+            ar = APIResp(res)
+            if _DEBUG:
+                ar.printAll()
+
+            # API 정상 응답(rt_cd=0) 또는 재시도 소진 → 반환
+            if ar.isOK() or attempt >= MAX_RETRIES:
+                return ar
+
+            err_code = ar.getErrorCode()
+
+            # EGW00201: 초당 거래건수 초과 → 점진적 백오프
+            if err_code == "EGW00201":
+                backoff_sleep(attempt)
+                continue
+
+            # EGW00103: 유효하지 않은 AppKey → 캐시 토큰 삭제 + 재발급 후 재시도
+            if err_code == "EGW00103":
+                print(
+                    f"[_url_fetch] 토큰 무효 (EGW00103) → 재발급 시도"
+                    f" ({attempt + 1}/{MAX_RETRIES})"
+                )
+                svr = "vps" if isPaperTrading() else "prod"
+                # 만료/무효 토큰 파일 삭제하여 auth()가 새로 발급받도록 강제
+                try:
+                    os.remove(get_token_file_path(svr))
+                except FileNotFoundError:
+                    pass
+                auth(svr)
+                headers = build_headers()
+                continue
+
+            # 그 외 API 에러(주문 거부 등)는 재시도 없이 즉시 반환
+            return ar
+        else:
+            # HTTP 에러 (status != 200)
+            # EGW00201은 HTTP 500으로도 반환됨 (실제 운영 로그에서 확인)
+            if "EGW00201" in res.text and attempt < MAX_RETRIES:
+                backoff_sleep(attempt)
+                continue
+            print("Error Code : " + str(res.status_code) + " | " + res.text)
+            return APIRespError(res.status_code, res.text)
 
 
 # auth()

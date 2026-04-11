@@ -7,24 +7,26 @@
   - 최근 20일 평균 거래대금(acc_trdval) 10억 이상
   - 지수 환경 체크: KOSPI/KOSDAQ MA20 아래이면 해당 시장 스킵 (config.INDEX_DROP_LIMIT 이하만)
 
-[1단계] DB 기반 OHLCV 지표 스캔 (15개 플래그)
-  ┌──────────────────────────────────────────────────────┬──────┬────────┬──────┐
-  │ MACD 골든크로스                                       │  MGC │  모멘텀│  +2  │
-  │ MACD 예상 골든크로스 (히스토그램 상승 + 직전 음수)    │  MPGC│  중립  │  +1  │
-  │ RSI 30 상향 돌파                                      │  RBO │  전환  │  +2  │
-  │ RSI 과매도 상태 (30 미만)                             │  ROV │  전환  │  +1  │
-  │ 볼린저 하단 반등 (전일 하단 이탈 → 당일 회복)         │  BBL │  전환  │  +1  │
-  │ 볼린저 중간선 상향 돌파                               │  BBM │  중립  │  +1  │
-  │ 거래량 급증 + 양봉 (20일 평균의 2배 이상)             │  VS  │  모멘텀│  +1  │
-  │ 이동평균 정배열 전환 (5>20>60, 전일 미성립)           │  MAA │  모멘텀│  +0  │
-  │ 스토캐스틱 과매도 골든크로스 (K>D, 50 미만)           │  SGC │  중립  │  +1  │
-  │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배 이상)      │  W52 │  모멘텀│  +3  │
-  │ 눌림목 패턴 (MA20 상승 중, 5MA 이탈 후 복귀)          │  PB  │  모멘텀│  +2  │
-  │ 망치형 캔들 (하단 꼬리 50%↑, 상단 꼬리 10%↓)        │  HMR │  전환  │  +1  │
-  │ 장대 양봉 (양봉 크기 > ATR × 1.5)                    │  LB  │  모멘텀│  +2  │
-  │ 모닝스타 (3일 반전 패턴)                              │  MS  │  전환  │  +2  │
-  │ OBV 상승 추세 (3일 연속)                              │  OBV │  모멘텀│  +1  │
-  └──────────────────────────────────────────────────────┴──────┴────────┴──────┘
+[1단계] DB 기반 OHLCV 지표 스캔 (16개 플래그)
+  점수는 config.py SIGNAL_SCORES 참조 (grid_search가 자동 갱신).
+  ┌──────────────────────────────────────────────────────┬──────┬────────┐
+  │ MACD 골든크로스                                       │  MGC │  모멘텀│
+  │ MACD 예상 골든크로스 (히스토그램 상승 + 직전 음수)    │  MPGC│  중립  │
+  │ RSI 30 상향 돌파                                      │  RBO │  전환  │
+  │ RSI 과매도 상태 (30 미만)                             │  ROV │  전환  │
+  │ 볼린저 하단 반등 (전일 하단 이탈 → 당일 회복)         │  BBL │  전환  │
+  │ 볼린저 중간선 상향 돌파                               │  BBM │  중립  │
+  │ 거래량 급증 + 양봉 (20일 평균의 2배 이상)             │  VS  │  모멘텀│
+  │ 이동평균 정배열 전환 (5>20>60, 전일 미성립)           │  MAA │  모멘텀│
+  │ 스토캐스틱 과매도 골든크로스 (K>D, 50 미만)           │  SGC │  중립  │
+  │ 52주 신고가 돌파 (20일 평균 거래량의 1.5배 이상)      │  W52 │  모멘텀│
+  │ 눌림목 패턴 (MA20 상승 중, 5MA 이탈 후 복귀)          │  PB  │  모멘텀│
+  │ 망치형 캔들 (하단 꼬리 50%↑, 상단 꼬리 10%↓)        │  HMR │  전환  │
+  │ 장대 양봉 (양봉 크기 > ATR × 1.5)                    │  LB  │  모멘텀│
+  │ 모닝스타 (3일 반전 패턴)                              │  MS  │  전환  │
+  │ 강세 장악형 (전일 음봉 → 당일 양봉 감싸기)           │  BE  │  전환  │
+  │ OBV 상승 추세 (3일 연속)                              │  OBV │  모멘텀│
+  └──────────────────────────────────────────────────────┴──────┴────────┘
 
   RBO / ROV는 elif 관계 (RSI 30 상향 돌파 시 ROV 미적용).
 
@@ -55,15 +57,8 @@
   수급 가산 상한: SUPPLY_CAP = +3 (기술 점수 대비 초과분 제거, 백테스트 검증).
   P_OV 종목은 [4단계]에서 PO 후보 제외.
 
-[3단계] 업종 환경 조정
-  업종지수 MA20 대비 괴리율(gap)로 패널티/보너스 적용.
-  미매핑 종목: KOSPI → "코스피" / KOSDAQ → "코스닥" 전체 지수로 대체.
-
-  gap < SECTOR_PENALTY_THRESHOLD → SECTOR_PENALTY_PTS
-  gap ≥ SECTOR_BONUS_THRESHOLD  → SECTOR_BONUS_PTS
-
-[4단계] PO 후보 선별 및 파일 생성
-  조건: buy_score ≥ INVEST_MIN_SCORE, mode ∈ {MOM, MIX, REV}, P_OV 없음
+[3단계] PO 후보 선별 및 파일 생성
+  조건: buy_score ≥ INVEST_MIN_SCORE, mode ∈ {MOM, REV}, P_OV 없음
   entry_price = ceil_tick(close + 0.5 × ATR)
 
   po-{date}-pre.json — 전일 스캔 (NXT 08:00 매수, 30%)
@@ -71,9 +66,9 @@
   po-{date}-fin.json — 청산 후 스캔 (KRX 15:15 매수 → 미체결분 NXT 재발주, 55%, max_hold_days +1)
 """
 
-import logging
 import numpy as np
 import pandas as pd
+from wye.blsh.common import messageutils
 from wye.blsh.database import query, ModelManager
 from wye.blsh.domestic import reporter, Tick, Milestone
 from wye.blsh.domestic import sector
@@ -102,12 +97,9 @@ from wye.blsh.domestic.config import (
     INDEX_MA_DAYS,
     INDEX_DROP_LIMIT,
     INVEST_MIN_SCORE,
-    SECTOR_PENALTY_THRESHOLD,
-    SECTOR_PENALTY_PTS,
-    SECTOR_BONUS_THRESHOLD,
-    SECTOR_BONUS_PTS,
     ATR_SL_MULT,
     ATR_TP_MULT,
+    ATR_CAP,
     MAX_HOLD_DAYS,
     MAX_HOLD_DAYS_MIX,
     MAX_HOLD_DAYS_MOM,
@@ -117,7 +109,7 @@ from wye.blsh.domestic.config import (
 )
 from wye.blsh.database.models import TradeCandidates
 from wye.blsh.common import dtutils
-from wye.blsh.common.env import SCAN_ETF
+from wye.blsh.common.env import KIS_ENV, SCAN_ETF
 from wye.blsh import new_logger
 
 
@@ -126,7 +118,7 @@ log = new_logger(__file__, True)
 # ─────────────────────────────────────────
 # 신호 분류 맵 (flag → 성격)
 # ─────────────────────────────────────────
-_REVERSAL_FLAGS = {"ROV", "RBO", "BBL", "HMR", "MS"}
+_REVERSAL_FLAGS = {"ROV", "RBO", "BBL", "HMR", "MS", "BE"}
 _MOMENTUM_FLAGS = {"MGC", "MAA", "W52", "PB", "LB", "VS", "OBV"}
 # NEUTRAL: MPGC, BBM, SGC (위 두 집합에 속하지 않는 모든 flag)
 
@@ -249,7 +241,7 @@ def evaluate_buy(close, high, low, volume, opn=None):
 
     # 7. 거래량 급증 + 양봉 (+1) → VS (모멘텀)
     if volume is not None and len(volume) >= 21:
-        vol_avg = volume.iloc[-20:-1].mean()
+        vol_avg = volume.iloc[-21:-1].mean()
         if volume.iloc[-1] > vol_avg * 2 and c0 > c1:
             signals.append(_signal_score("VS"))
 
@@ -312,7 +304,14 @@ def evaluate_buy(close, high, low, volume, opn=None):
         ):
             signals.append(_signal_score("MS"))
 
-    # 15. OBV 상승 추세 (+1) → OBV (모멘텀)
+    # 15. Bullish Engulfing (+2) → BE (반전)
+    if has_opn and len(close) >= 2:
+        c_1, c_0 = close.iloc[-2], close.iloc[-1]
+        o_1, o_0 = opn.iloc[-2], opn.iloc[-1]
+        if c_1 < o_1 and c_0 > o_0 and o_0 <= c_1 and c_0 >= o_1:
+            signals.append(_signal_score("BE"))
+
+    # 16. OBV 상승 추세 (+1) → OBV (모멘텀)
     if obv is not None and len(obv) >= 3:
         if obv.iloc[-3] < obv.iloc[-2] < obv.iloc[-1]:
             signals.append(_signal_score("OBV"))
@@ -350,10 +349,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
         # WEAK: 둘 다 약하므로 전부 합산 (기존과 동일)
         score = mom_score + rev_score + neu_score
 
-    # ── 매수가 / 손절 / 익절 (호가 단위 보정)
-    entry_price = Tick.ceil_tick(c0 + 0.5 * atr0)
-    stop_loss = Tick.floor_tick(c0 - ATR_SL_MULT * atr0)
-    take_profit = Tick.ceil_tick(c0 + ATR_TP_MULT * atr0)
+    # ── 매수가 / 손절 / 익절 (호가 단위 보정, ATR cap 적용)
+    effective_atr = min(atr0, c0 * ATR_CAP)
+    entry_price = Tick.ceil_tick(c0 + 0.5 * effective_atr)
+    stop_loss = Tick.floor_tick(c0 - ATR_SL_MULT * effective_atr)
+    take_profit = Tick.ceil_tick(c0 + ATR_TP_MULT * effective_atr)
 
     indicators = {
         "mode": mode,
@@ -542,6 +542,27 @@ def fetch_investor_daily(ticker, base_date, n_days=5, market="KOSPI"):
     return [], []
 
 
+def fetch_investor_estimate(ticker: str) -> tuple[int, int]:
+    """종목별 외인기관 추정가집계 (실전투자 전용, 장중).
+    Returns: (frgn_net_qty, orgn_net_qty) — 가장 최근 입력 시점의 가집계 순매수량.
+    """
+    from wye.blsh.kis import kis_auth as ka
+    from wye.blsh.kis.domestic_stock import domestic_stock_functions as ds
+
+    try:
+        if not ka.getTREnv():
+            ka.auth()
+        df = ds.investor_trend_estimate(mksc_shrn_iscd=ticker)
+        if df is not None and not df.empty:
+            row = df.sort_values("bsop_hour_gb", ascending=False).iloc[0]
+            frgn = int(row["frgn_fake_ntby_qty"])
+            orgn = int(row["orgn_fake_ntby_qty"])
+            return frgn, orgn
+    except Exception as e:
+        log.debug(f"  investor_estimate 오류 ({ticker}): {e}")
+    return 0, 0
+
+
 def classify_supply(qty_list):
     """
     수급 흐름 분류 → (flag_suffix, score)
@@ -605,6 +626,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
                 "today_frgn": recent["frgn_qty"].iloc[-1] if len(recent) else 0,
                 "today_inst": recent["inst_qty"].iloc[-1] if len(recent) else 0,
                 "today_indi": recent["indi_qty"].iloc[-1] if len(recent) else 0,
+                "last_date": recent["trd_dd"].iloc[-1] if len(recent) else "",
             }
         return result
 
@@ -613,31 +635,30 @@ def enrich_with_db(results: list, base_date: str) -> list:
         **fetch_supply_from_db("isu_ksd_info", kosdaq_ticks),
     }
 
-    # [임시] 개장 시간 DB vs KIS API 수급 비교 로그 (KIS API는 당일만 유효)
-    _ctime = dtutils.ctime()
     _is_today = base_date == dtutils.today()
-    if (
-        supply_db
-        and _is_today
-        and Milestone.KRX_OPEN_TIME <= _ctime <= Milestone.KRX_CLOSE_TIME
-    ):
-        _db_tickers = [r for r in candidates if r["ticker"] in supply_db]
-        if _db_tickers:
-            log.info(f"[수급 비교] DB 보유 {len(_db_tickers)}종목 KIS API 대조 시작")
-            for row in _db_tickers:
+
+    # 실전투자 장중: DB에 당일 수급 없는 종목 → 추정가집계 API 보강
+    if _is_today and KIS_ENV == "real" and dtutils.ctime() >= Milestone.KRX_OPEN_TIME:
+        no_today = [
+            r for r in candidates
+            if r["ticker"] in supply_db
+            and supply_db[r["ticker"]].get("last_date") != base_date
+        ]
+        if no_today:
+            log.info(f"[수급 가집계] 당일 DB 미보유 {len(no_today)}종목 → 추정가집계 조회")
+            for row in no_today:
                 t = row["ticker"]
-                fl, ol = fetch_investor_daily(t, base_date, n_days=5)
-                db = supply_db[t]
-                api_frgn = fl[-1] if fl else None
-                api_inst = ol[-1] if ol else None
-                db_frgn = db["today_frgn"]
-                db_inst = db["today_inst"]
-                match = "✅" if (db_frgn == api_frgn and db_inst == api_inst) else "❌"
-                log.info(
-                    f"  {match} {t} {row['name'][:10]}  "
-                    f"외인: DB={db_frgn:+} API={api_frgn}  "
-                    f"기관: DB={db_inst:+} API={api_inst}"
-                )
+                frgn, orgn = fetch_investor_estimate(t)
+                if frgn or orgn:
+                    sup = supply_db[t]
+                    sup["frgn"].append(frgn)
+                    sup["inst"].append(orgn)
+                    sup["today_frgn"] = frgn
+                    sup["today_inst"] = orgn
+                    sup["today_indi"] = None
+                    log.info(
+                        f"  📊 {t} {row['name'][:10]}  외인={frgn:+,}  기관={orgn:+,}"
+                    )
 
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}
@@ -656,18 +677,15 @@ def enrich_with_db(results: list, base_date: str) -> list:
                         "today_inst": ol[-1] if ol else 0,
                         "today_indi": None,
                     }
-                # [임시] ETF 수급 조회 결과 로그
-                if row["market"] == "ETF":
-                    has_data = bool(fl or ol)
-                    icon = "✅" if has_data else "⚠️"
-                    log.info(
-                        f"  {icon} [ETF수급] {row['ticker']} {row['name'][:10]}  "
-                        f"외인={fl}  기관={ol}  데이터={'있음' if has_data else '없음'}"
-                    )
+
         except Exception as e:
             log.warning(f"  KIS API fallback 오류: {e}")
 
     supply_all = {**supply_db, **supply_api}
+    log.info(
+        f"[수급 결과] DB={len(supply_db)}종목  API={len(supply_api)}종목"
+        f"  총={len(supply_all)}종목"
+    )
     ticker_to_idx = {r["ticker"]: i for i, r in enumerate(results)}
 
     for row in candidates:
@@ -968,60 +986,6 @@ def _load_kis_master(
     return name_map, disqualified, sector_map
 
 
-def _get_sector_gap(
-    idx_nm: str, base_date: str, ma_days: int = 20, idx_clss: str = None
-) -> float:
-    """업종지수의 MA20 괴리율. 데이터 없으면 0.0 (중립)."""
-    rows = query.get_index_clsprc(idx_nm, base_date, ma_days, idx_clss=idx_clss)
-    if not rows or len(rows) < ma_days:
-        return 0.0
-    prices = [float(r["clsprc_idx"]) for r in rows]
-    cur = prices[0]  # 최신 (당일)
-    prev = prices[1:]  # 당일 제외
-    ma = sum(prev) / len(prev)
-    return (cur - ma) / ma if ma else 0.0
-
-
-def _apply_sector_penalty(df: pd.DataFrame, base_date: str) -> pd.DataFrame:
-    """업종지수 환경에 따라 buy_score에 패널티/보너스 적용."""
-    if SECTOR_PENALTY_PTS == 0 and SECTOR_BONUS_PTS == 0:
-        return df
-
-    _, _, sector_map = _load_kis_master(base_date)
-    gap_cache: dict[tuple[str, str], float] = {}  # (sec_nm, idx_clss) → gap
-
-    def get_gap(ticker: str, market: str) -> float:
-        if market == "ETF":
-            return 0.0  # ETF는 업종 패널티/보너스 미적용
-        # KOSPI 미매핑 → "코스피" 전체 지수, KOSDAQ → "코스닥" 전체 지수
-        fallback = "코스피" if market == "KOSPI" else "코스닥"
-        sec_nm = sector_map.get(ticker, fallback)
-        if not sec_nm:
-            return 0.0
-        idx_clss = sector.get_idx_clss(market)
-        key = (sec_nm, idx_clss)
-        if key not in gap_cache:
-            gap_cache[key] = _get_sector_gap(sec_nm, base_date, idx_clss=idx_clss)
-        return gap_cache[key]
-
-    adjustments = []
-    for _, row in df.iterrows():
-        gap = get_gap(row["ticker"], row["market"])
-        adj = 0
-        if SECTOR_PENALTY_PTS != 0 and gap < SECTOR_PENALTY_THRESHOLD:
-            adj = SECTOR_PENALTY_PTS
-        elif SECTOR_BONUS_PTS != 0 and gap >= SECTOR_BONUS_THRESHOLD:
-            adj = SECTOR_BONUS_PTS
-        adjustments.append(adj)
-
-    df = df.copy()
-    df["buy_score"] = df["buy_score"] + adjustments
-    applied = sum(1 for a in adjustments if a != 0)
-    if applied:
-        log.debug(f"[업종패널티] {applied}종목 점수 조정 ({len(gap_cache)}업종 조회)")
-    return df
-
-
 # ─────────────────────────────────────────
 # 2차 실시간 부적합 검증 (KIS API)
 # ─────────────────────────────────────────
@@ -1081,9 +1045,9 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     if sdf.empty:
         return sdf
 
-    # 업종 패널티/보너스 적용
-    sdf = _apply_sector_penalty(sdf, base_date)
-
+    # MIX 제외: 2년 백테스트 51건 승률 37.3% avg +0.76% (전체 avg +2.23% 대비 저조)
+    # 특히 MIX+MGC 조합 avg -4.48%. 전환+모멘텀 혼합은 방향 불확실. (2026-04-04 분석)
+    # grid_search 백테스트에는 MIX 포함 유지 → 재활성화 시 이 줄만 복원
     cand_mask = (
         (sdf["buy_score"] >= INVEST_MIN_SCORE)
         & (sdf["mode"].isin(["MOM", "REV"]))
@@ -1111,43 +1075,31 @@ def find_candidates(base_date=None, report: bool = False) -> pd.DataFrame:
     days = [MAX_HOLD_DAYS_MIX, MAX_HOLD_DAYS_MOM, MAX_HOLD_DAYS]
     df["max_hold_days"] = np.select(conditions, days, default=MAX_HOLD_DAYS)
 
-    today = dtutils.today()
-    ctime = dtutils.ctime()
-    if base_date == today and ctime < dtutils.add_time(
-        Milestone.LIQUIDATE_TIME, minutes=-3
-    ):
-        entry_date = today
-        if ctime < Milestone.NXT_OPEN_TIME:
-            po_type = PO_TYPE_PRE
-        elif ctime < dtutils.add_time(Milestone.KRX_EARLY_TIME, minutes=-3):
-            po_type = PO_TYPE_INI
-        elif ctime > dtutils.add_time(Milestone.LIQUIDATE_TIME, hours=-1):
-            df["max_hold_days"] = df["max_hold_days"] + 1
-            po_type = PO_TYPE_FIN
-        else:
-            po_type = ""
-    else:
-        entry_date = dtutils.next_biz_date(base_date)
-        po_type = PO_TYPE_PRE
-
-    expiry_cache: dict[tuple, str | None] = {}
-
-    def _get_expiry(ed, mhd):
-        key = (ed, int(mhd))
-        if key not in expiry_cache:
-            expiry_cache[key] = dtutils.add_biz_days(str(ed), int(mhd))
-        return expiry_cache[key]
-
-    df["po_type"] = po_type
-    df["entry_date"] = entry_date
-    df["expiry_date"] = df.apply(
-        lambda r: _get_expiry(entry_date, r["max_hold_days"]), axis=1
-    )
     return df
 
 
 def issue_po(base_date=None):
-    candidates = find_candidates(base_date, True)
+    if base_date is None:
+        base_date = dtutils.max_ohlcv_date()
+    entry_date = dtutils.today()
+    po_type = ""
+    if base_date == dtutils.prev_biz_date(entry_date):
+        po_type = PO_TYPE_PRE
+    elif base_date == entry_date:
+        ctime = dtutils.ctime()
+        if ctime < dtutils.add_time(Milestone.KRX_EARLY_TIME, minutes=-3):
+            po_type = PO_TYPE_INI
+        elif (
+            dtutils.add_time(Milestone.LIQUIDATE_TIME, minutes=-10)
+            < ctime
+            < dtutils.add_time(Milestone.LIQUIDATE_TIME, minutes=-3)
+        ):
+            po_type = PO_TYPE_FIN
+
+    if not po_type:
+        return
+
+    candidates = find_candidates(base_date, report=True)
     if not candidates.empty:
         df = candidates[
             [
@@ -1162,22 +1114,39 @@ def issue_po(base_date=None):
                 "atr_sl_mult",
                 "atr_tp_mult",
                 "max_hold_days",
-                "po_type",
-                "entry_date",
-                "expiry_date",
             ]
         ].copy()
-        po_type = df.iloc[0]["po_type"]
-        entry_date = df.iloc[0]["entry_date"]
 
-        if po_type and entry_date:
-            po = PO(po_type, entry_date)
-            po.create(df.set_index("ticker").to_dict("index"))
+        expiry_cache: dict[tuple, str | None] = {}
 
+        def _get_expiry(ed, mhd):
+            key = (ed, int(mhd))
+            if key not in expiry_cache:
+                expiry_cache[key] = dtutils.add_biz_days(str(ed), int(mhd))
+            return expiry_cache[key]
+
+        df["entry_date"] = entry_date
+        df["po_type"] = po_type
+        if po_type == PO_TYPE_FIN:
+            df["max_hold_days"] = df["max_hold_days"] + 1
+        df["expiry_date"] = df.apply(
+            lambda r: _get_expiry(entry_date, r["max_hold_days"]), axis=1
+        )
+
+        po = PO(po_type, entry_date)
+        if po.create(df.set_index("ticker").to_dict("index")):
+            message = f"📦 po-{entry_date}-{po_type} 생성: {df['name'].tolist()}"
             model_manager = ModelManager(TradeCandidates)
             model_manager.delete(entry_date=entry_date, po_type=po_type)
             df["buy_flags"] = candidates["buy_flags"]
             model_manager.create(df)
+        else:
+            message = f"🚨 po-{entry_date}-{po_type} 생성 실패"
+
+    else:
+        message = f"📭 po-{entry_date}-{po_type} 후보 종목 없음"
+
+    messageutils.send_message(message)
 
 
 if __name__ == "__main__":

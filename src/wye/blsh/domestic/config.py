@@ -1,21 +1,37 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-04 20:28 (0분)
-    # 기간: 20240404 ~ 20260404
-    # 성과: 1151건  승률 51.1%  평균 +2.08%  총 +2398.8%
+    # 수행일시: 2026-04-11 12:46 (34분)
+    # 기간: 20240411 ~ 20260411
+    # 성과: 1332건  승률 50.0%  평균 +1.96% (std 7.01%)  총 +2606.2%
     # ──────────────────────────────────────────
     INVEST_MIN_SCORE: int = 9
-    SECTOR_PENALTY_THRESHOLD: float = -0.03  # 업종지수 MA20 대비 해당값 이하
-    SECTOR_PENALTY_PTS: int = 0
-    SECTOR_BONUS_THRESHOLD: float = 0.0  # 업종지수 MA20 대비 해당값 이상일 때 보너스
-    SECTOR_BONUS_PTS: int = 0  # 보너스 점수
     ATR_SL_MULT: float = 3.5
     ATR_TP_MULT: float = 1.5
-    TP1_MULT: float = 1.5  # 1차 익절: buy + ATR × TP1_MULT
+    TP1_MULT: float = 2.0  # 1차 익절: buy + ATR × TP1_MULT
     TP1_RATIO: float = 1.0  # 1차 익절 매도 비율 (1.0 = 전량)
-    MAX_HOLD_DAYS: int = 10
-    MAX_HOLD_DAYS_MIX: int = 5
+    MAX_HOLD_DAYS: int = 7
+    MAX_HOLD_DAYS_MIX: int = 2
     MAX_HOLD_DAYS_MOM: int = 3
+    INDEX_DROP_LIMIT: float = 1.0
+    ATR_CAP: float = 0.05
+    SIGNAL_SCORES = {
+        "MGC": 0,
+        "W52": 0,
+        "PB": 0,
+        "LB": 0,
+        "MS": 3,
+        "RBO": 3,
+        "MPGC": 2,
+        "ROV": 0,
+        "BBL": 2,
+        "BBM": 1,
+        "VS": 0,
+        "MAA": 2,
+        "SGC": 2,
+        "HMR": 2,
+        "OBV": 1,
+        "BE": 1,
+    }
 
 
 # for scan
@@ -39,19 +55,14 @@ SUPPLY_CAP: int = 3  # 수급 가산 상한 (백테스트 검증, 2026-03-29)
 TRDVAL_MIN: int = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (10억)
 TRDVAL_DAYS: int = 20
 INDEX_MA_DAYS: int = 20  # 지수 환경 체크 이동평균 기간
-INDEX_DROP_LIMIT: float = (
-    1.0  # MA 대비 괴리율 -100% 이하 → 사실상 지수 환경 체크 비활성화
-)
+INDEX_DROP_LIMIT: float = Optimized.INDEX_DROP_LIMIT
+ATR_CAP: float = Optimized.ATR_CAP
 INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE
 )  # 투자 적격 최소 점수 (백테스트 검증)
-ENRICH_SCORE: int = INVEST_MIN_SCORE - SUPPLY_CAP  # 수급 MAX 가산해도 통과 못할 종목 제외
-SECTOR_PENALTY_THRESHOLD: float = (
-    Optimized.SECTOR_PENALTY_THRESHOLD
-)  # 업종지수 MA20 대비 해당값 이하
-SECTOR_PENALTY_PTS: int = Optimized.SECTOR_PENALTY_PTS
-SECTOR_BONUS_THRESHOLD: float = Optimized.SECTOR_BONUS_THRESHOLD
-SECTOR_BONUS_PTS: int = Optimized.SECTOR_BONUS_PTS  # 업종지수 MA20 이상일 때
+ENRICH_SCORE: int = (
+    INVEST_MIN_SCORE - SUPPLY_CAP
+)  # 수급 MAX 가산해도 통과 못할 종목 제외
 
 # 매수부적합 필터: True인 항목이 활성화된 종목은 스캔에서 제외
 # 추후 변경 시 값만 True/False로 토글
@@ -63,34 +74,18 @@ DISQUALIFY_FLAGS: dict[str, bool | int] = {
     "거래정지": True,
     "정리매매": True,
     "관리종목": True,
-    "시장경고": 2,            # 1=투자주의, 2=투자경고, 3=투자위험 (2 이상 탈락)
+    "시장경고": 2,  # 1=투자주의, 2=투자경고, 3=투자위험 (2 이상 탈락)
     "불성실공시": True,
     "단기과열": True,
     "이상급등": True,
     "SPAC": True,
-    "투자주의환기": True,     # KOSDAQ only
+    "투자주의환기": True,  # KOSDAQ only
     "공매도과열": False,
     "경고예고": False,
     "우회상장": False,
 }
 
-SIGNAL_SCORES = {
-    "MGC": 0,
-    "W52": 0,
-    "PB": 0,
-    "LB": 0,
-    "MS": 3,
-    "RBO": 3,
-    "MPGC": 0,
-    "ROV": 2,
-    "BBL": 2,
-    "BBM": 0,
-    "VS": 1,
-    "MAA": 2,
-    "SGC": 2,
-    "HMR": 0,
-    "OBV": 2,
-}
+SIGNAL_SCORES = Optimized.SIGNAL_SCORES
 
 SUPPLY_SCORES = {
     "TRN": 3,
@@ -118,10 +113,10 @@ FIN_CASH_RATIO: float = (
 )
 MIN_ALLOC: int = 10_000  # 종목당 최소 배분액 (1만원)
 MAX_ALLOC_TIERS: list[tuple[int, float]] = [  # (총자산 상한, 배분 비율)
-    (100_000_000, 0.15),      # ~1억: 15%
-    (500_000_000, 0.10),      # 1~5억: 10%
-    (1_000_000_000, 0.07),    # 5~10억: 7%
-    (5_000_000_000, 0.05),    # 10~50억: 5%
+    (100_000_000, 0.15),  # ~1억: 15%
+    (500_000_000, 0.10),  # 1~5억: 10%
+    (1_000_000_000, 0.07),  # 5~10억: 7%
+    (5_000_000_000, 0.05),  # 10~50억: 5%
 ]
 MAX_ALLOC_RATIO_DEFAULT: float = 0.03  # 50억~: 3%
 SELL_COST_RATE: float = 0.002  # 증권거래세 + 수수료 합산 (약 0.2%)
