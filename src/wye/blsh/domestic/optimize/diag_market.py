@@ -62,16 +62,25 @@ class MarketStats:
         return self.avg_ret * math.sqrt(self.trades)
 
 
-def analyze_by_market(cache: OptCache, params: Params) -> dict[str, MarketStats]:
+def analyze_by_market(
+    cache: OptCache, params: Params,
+    start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, MarketStats]:
+    target = cache
+    if start_date or end_date:
+        target = cache.slice_by_dates(
+            start_date or cache.scan_dates[0],
+            end_date or cache.scan_dates[-1],
+        )
     stats: dict[str, MarketStats] = defaultdict(MarketStats)
 
-    for base_date in cache.scan_dates:
-        entry_date = cache.next_biz.get(base_date)
+    for base_date in target.scan_dates:
+        entry_date = target.next_biz.get(base_date)
         if not entry_date:
             continue
 
-        sigs = cache.signals.get(base_date, [])
-        hold_dates = cache.forward_dates.get(entry_date, [entry_date])
+        sigs = target.signals.get(base_date, [])
+        hold_dates = target.forward_dates.get(entry_date, [entry_date])
 
         for sig in sigs:
             if "P_OV" in sig["flags"]:
@@ -105,17 +114,26 @@ def analyze_by_market(cache: OptCache, params: Params) -> dict[str, MarketStats]
     return dict(stats)
 
 
-def analyze_by_market_mode(cache: OptCache, params: Params) -> dict[tuple[str, str], MarketStats]:
+def analyze_by_market_mode(
+    cache: OptCache, params: Params,
+    start_date: str | None = None, end_date: str | None = None,
+) -> dict[tuple[str, str], MarketStats]:
     """시장 × mode(MOM/MIX/REV) 교차 분석."""
+    target = cache
+    if start_date or end_date:
+        target = cache.slice_by_dates(
+            start_date or cache.scan_dates[0],
+            end_date or cache.scan_dates[-1],
+        )
     stats: dict[tuple[str, str], MarketStats] = defaultdict(MarketStats)
 
-    for base_date in cache.scan_dates:
-        entry_date = cache.next_biz.get(base_date)
+    for base_date in target.scan_dates:
+        entry_date = target.next_biz.get(base_date)
         if not entry_date:
             continue
 
-        sigs = cache.signals.get(base_date, [])
-        hold_dates = cache.forward_dates.get(entry_date, [entry_date])
+        sigs = target.signals.get(base_date, [])
+        hold_dates = target.forward_dates.get(entry_date, [entry_date])
 
         for sig in sigs:
             if "P_OV" in sig["flags"]:
@@ -242,17 +260,26 @@ def _report_score_distribution(cache: OptCache, params: Params, market_stats: di
             print(f"    {score:2d}점: {cnt:4d} ({100*cnt/total:5.1f}%) {bar}")
 
 
-def analyze_flags_by_mode(cache: OptCache, params: Params) -> dict[str, dict[str, MarketStats]]:
+def analyze_flags_by_mode(
+    cache: OptCache, params: Params,
+    start_date: str | None = None, end_date: str | None = None,
+) -> dict[str, dict[str, MarketStats]]:
     """모드별 플래그 성과 분석. {mode: {flag: MarketStats}}"""
+    target = cache
+    if start_date or end_date:
+        target = cache.slice_by_dates(
+            start_date or cache.scan_dates[0],
+            end_date or cache.scan_dates[-1],
+        )
     stats: dict[str, dict[str, MarketStats]] = defaultdict(lambda: defaultdict(MarketStats))
 
-    for base_date in cache.scan_dates:
-        entry_date = cache.next_biz.get(base_date)
+    for base_date in target.scan_dates:
+        entry_date = target.next_biz.get(base_date)
         if not entry_date:
             continue
 
-        sigs = cache.signals.get(base_date, [])
-        hold_dates = cache.forward_dates.get(entry_date, [entry_date])
+        sigs = target.signals.get(base_date, [])
+        hold_dates = target.forward_dates.get(entry_date, [entry_date])
 
         for sig in sigs:
             if "P_OV" in sig["flags"]:
@@ -312,17 +339,26 @@ def _report_flags_by_mode(stats: dict[str, dict[str, MarketStats]]):
                   f"{ms.avg_ret:>+8.2f}% {loss_bias:>+7.1f}{marker}")
 
 
-def analyze_mode_flag_combos(cache: OptCache, params: Params):
+def analyze_mode_flag_combos(
+    cache: OptCache, params: Params,
+    start_date: str | None = None, end_date: str | None = None,
+):
     """MOM/MIX 모드의 주요 플래그 조합 분석."""
+    target = cache
+    if start_date or end_date:
+        target = cache.slice_by_dates(
+            start_date or cache.scan_dates[0],
+            end_date or cache.scan_dates[-1],
+        )
     combo_stats: dict[str, dict[str, MarketStats]] = defaultdict(lambda: defaultdict(MarketStats))
 
-    for base_date in cache.scan_dates:
-        entry_date = cache.next_biz.get(base_date)
+    for base_date in target.scan_dates:
+        entry_date = target.next_biz.get(base_date)
         if not entry_date:
             continue
 
-        sigs = cache.signals.get(base_date, [])
-        hold_dates = cache.forward_dates.get(entry_date, [entry_date])
+        sigs = target.signals.get(base_date, [])
+        hold_dates = target.forward_dates.get(entry_date, [entry_date])
 
         for sig in sigs:
             if "P_OV" in sig["flags"]:
@@ -380,12 +416,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--years", type=int, default=2)
+    parser.add_argument("--start", type=str, default=None, help="분석 시작일 (YYYYMMDD)")
+    parser.add_argument("--end", type=str, default=None, help="분석 종료일 (YYYYMMDD)")
     args = parser.parse_args()
 
     end_date = dtutils.today()
     start_date = dtutils.add_days(end_date, -365 * args.years)
 
     log.info(f"기간: {start_date} ~ {end_date} ({args.years}년)")
+    if args.start or args.end:
+        log.info(f"필터: {args.start or '(처음)'} ~ {args.end or '(끝)'}")
     cache = build_or_load(start_date, end_date)
     _gs._WORKER_CACHE = cache  # _simulate_one이 참조하는 글로벌 캐시 설정
 
@@ -404,20 +444,22 @@ if __name__ == "__main__":
     )
     log.info(f"파라미터: {params.label()}")
 
+    _sd, _ed = args.start, args.end
+
     # 시장별 분석
-    market_stats = analyze_by_market(cache, params)
+    market_stats = analyze_by_market(cache, params, start_date=_sd, end_date=_ed)
     _report(market_stats)
 
     # 시장 × 모드 교차 분석
-    mm_stats = analyze_by_market_mode(cache, params)
+    mm_stats = analyze_by_market_mode(cache, params, start_date=_sd, end_date=_ed)
     _report_market_mode(mm_stats)
 
     # 모드별 플래그 성과
-    flag_mode_stats = analyze_flags_by_mode(cache, params)
+    flag_mode_stats = analyze_flags_by_mode(cache, params, start_date=_sd, end_date=_ed)
     _report_flags_by_mode(flag_mode_stats)
 
     # MOM/MIX 플래그 조합 분석
-    analyze_mode_flag_combos(cache, params)
+    analyze_mode_flag_combos(cache, params, start_date=_sd, end_date=_ed)
 
     # 점수 분포
     _report_score_distribution(cache, params, market_stats)

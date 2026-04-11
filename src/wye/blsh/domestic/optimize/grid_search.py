@@ -325,6 +325,125 @@ def backtest(cache: OptCache, params: Params) -> Stats:
 
 
 # ─────────────────────────────────────────
+# 개별 거래 기록 백테스트 (진단용)
+# ─────────────────────────────────────────
+@dataclass
+class TradeRecord:
+    ticker: str
+    base_date: str
+    mode: str       # MOM/REV/MIX
+    score: int
+    flags: str      # comma-separated
+    market: str     # KOSPI/KOSDAQ
+    result: str     # SL/TP_FULL/TP1/TP1_SL/HOLD
+    ret_pct: float
+    entry_price: float
+
+
+# 결과 ID → TradeRecord용 라벨 매핑
+_RESULT_ID_TO_LABEL = {
+    0: "SL",
+    1: "TP1_SL",
+    2: "TP_FULL",
+    3: "TP1",
+    4: "HOLD",  # RES_HOLD (미확정)
+}
+
+
+def backtest_with_trades(
+    cache: OptCache,
+    params: Params,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> tuple[Stats, list[TradeRecord]]:
+    """캐시 데이터로 백테스트하며 개별 거래 기록을 수집 (진단용).
+
+    dict 기반 루프를 사용하여 각 거래의 메타데이터를 TradeRecord로 기록.
+    start_date/end_date 지정 시 해당 기간만 필터링.
+    """
+    target = cache
+    if start_date or end_date:
+        target = cache.slice_by_dates(
+            start_date or cache.scan_dates[0],
+            end_date or cache.scan_dates[-1],
+        )
+        target.flatten_signals()
+
+    st = Stats()
+    trades: list[TradeRecord] = []
+    _max_hold = (params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom)
+    _min_score = params.invest_min_score
+    _sl_mult = params.atr_sl_mult
+    _tp1_mult = params.tp1_mult
+    _tp2_mult = params.atr_tp_mult
+    _tp1_ratio = params.tp1_ratio
+    _cost = SELL_COST_RATE
+    _max_idx_drop = params.max_idx_drop
+    _atr_cap = params.atr_cap
+    _MODE_LABELS = {0: "REV", 1: "MIX", 2: "MOM"}
+
+    for base_date in target.scan_dates:
+        sigs = target.signals.get(base_date)
+        if not sigs:
+            continue
+
+        for sig in sigs:
+            if sig.get("_skip", True):
+                continue
+
+            effective_score = sig["score"]
+
+            if effective_score < _min_score:
+                continue
+
+            if sig.get("idx_gap", 0.0) < -_max_idx_drop:
+                continue
+
+            buy = sig["_buy"]
+            atr = sig["atr"]
+            effective_atr = min(atr, buy * _atr_cap)
+            sl = float(floor_tick_nb(buy - _sl_mult * effective_atr))
+            tp1 = float(ceil_tick_nb(buy + _tp1_mult * effective_atr))
+            tp2 = float(ceil_tick_nb(buy + _tp2_mult * effective_atr))
+
+            max_d = _max_hold[sig["_mode_id"]]
+            n = min(max_d + 1, sig["_n_bars"])
+
+            res_id, ret_pct, _, _ = sim_one_nb(
+                buy, sl, tp1, tp2, _tp1_ratio, _sl_mult, atr,
+                sig["_opens"], sig["_highs"], sig["_lows"], sig["_closes"],
+                n, _cost,
+                _atr_cap,
+            )
+
+            st.trades += 1
+            st.total_ret += ret_pct
+            st.ret_sq += ret_pct * ret_pct
+            if res_id <= 3:
+                if res_id == 0:
+                    st.losses += 1
+                else:
+                    st.wins += 1
+            else:
+                st.holds += 1
+
+            result_label = _RESULT_ID_TO_LABEL.get(res_id, "HOLD")
+            trades.append(TradeRecord(
+                ticker=sig["ticker"],
+                base_date=base_date,
+                mode=_MODE_LABELS.get(sig["_mode_id"], "REV"),
+                score=effective_score,
+                flags=sig.get("flags", ""),
+                market=sig.get("market", ""),
+                result=result_label,
+                ret_pct=ret_pct,
+                entry_price=buy,
+            ))
+
+    return st, trades
+
+
+# ─────────────────────────────────────────
 # 1단계: 신호 점수 최적화 (승률 기준)
 # ─────────────────────────────────────────
 SCORE_GRID_A = {
@@ -598,7 +717,7 @@ GRID = {
     "max_hold_days_rev": [3, 5, 7, 10, 15, 20],
     "max_hold_days_mix": [2, 3, 5, 7, 10],
     "max_hold_days_mom": [1, 2, 3],
-    "tp1_mult": [0.7, 1.0, 1.5],
+    "tp1_mult": [0.7, 1.0, 1.5, 2.0, 2.5],
     "tp1_ratio": [0.3, 0.5, 0.7, 1.0],
     "max_idx_drop": [0.03, 0.05, 0.10, 1.0],
     "atr_cap": [0.03, 0.05, 0.08, 0.50],
@@ -899,6 +1018,12 @@ def _dedup_combos(grid):
             continue
         if d["tp1_mult"] >= d["atr_tp_mult"] and d["tp1_ratio"] != 1.0:
             continue
+        # R/R 최소 비율 제약: eff_tp/SL < 0.5 (= R:R < 1:2) 이면 승률 67%+ 필요하므로 제거
+        eff_tp = d["tp1_mult"] if d["tp1_ratio"] == 1.0 \
+                 else d["tp1_mult"] * d["tp1_ratio"] + d["atr_tp_mult"] * (1 - d["tp1_ratio"])
+        rr = eff_tp / d["atr_sl_mult"]
+        if rr < 0.5:
+            continue
         # max_idx_drop=1.0 (비활성) 시 임계값 중복 제거 불필요 — 이미 한 값만
         combos.append(c)
     return keys, combos
@@ -1151,6 +1276,60 @@ def _wf_report(results: list[tuple[int, str, str, str, str, Stats, Stats, Params
     log.info("=" * 100)
 
 
+def _wf_detail_report(w_idx: int, trades: list[TradeRecord]):
+    """WF 윈도우별 상세 분석: mode/market/flag 조합별 성과."""
+    from collections import Counter
+
+    if not trades:
+        log.info(f"\n  [Window {w_idx}] 거래 없음")
+        return
+
+    log.info(f"\n  [Window {w_idx}] 상세 분석 ({len(trades)}건)")
+
+    # ── Mode breakdown
+    log.info(f"  {'Mode':<5} {'거래':>5} {'승률':>7} {'평균수익':>9}")
+    log.info(f"  {'-' * 30}")
+    for mode in ("REV", "MOM", "MIX"):
+        mode_trades = [t for t in trades if t.mode == mode]
+        if not mode_trades:
+            continue
+        n = len(mode_trades)
+        wins = sum(1 for t in mode_trades if t.result not in ("SL", "HOLD"))
+        avg_ret = sum(t.ret_pct for t in mode_trades) / n
+        wr = 100 * wins / n
+        log.info(f"  {mode:<5} {n:>5} {wr:>6.1f}% {avg_ret:>+8.2f}%")
+
+    # ── Market breakdown
+    log.info(f"  {'Market':<8} {'거래':>5} {'승률':>7} {'평균수익':>9}")
+    log.info(f"  {'-' * 33}")
+    markets = sorted(set(t.market for t in trades))
+    for market in markets:
+        mkt_trades = [t for t in trades if t.market == market]
+        n = len(mkt_trades)
+        wins = sum(1 for t in mkt_trades if t.result not in ("SL", "HOLD"))
+        avg_ret = sum(t.ret_pct for t in mkt_trades) / n
+        wr = 100 * wins / n
+        log.info(f"  {market:<8} {n:>5} {wr:>6.1f}% {avg_ret:>+8.2f}%")
+
+    # ── Top 5 flag combinations
+    _SUPPLY = {"F_TRN", "I_TRN", "F_C3", "I_C3", "F_1", "I_1", "FI", "P_OV"}
+    combo_stats: dict[str, list[TradeRecord]] = {}
+    for t in trades:
+        flags = sorted(f for f in t.flags.split(",") if f and f not in _SUPPLY)
+        key = "+".join(flags) if flags else "(none)"
+        combo_stats.setdefault(key, []).append(t)
+
+    sorted_combos = sorted(combo_stats.items(), key=lambda x: len(x[1]), reverse=True)[:5]
+    log.info(f"  {'Flag조합':<25} {'거래':>5} {'승률':>7}")
+    log.info(f"  {'-' * 40}")
+    for combo, ctrades in sorted_combos:
+        n = len(ctrades)
+        wins = sum(1 for t in ctrades if t.result not in ("SL", "HOLD"))
+        wr = 100 * wins / n
+        label = combo[:25]
+        log.info(f"  {label:<25} {n:>5} {wr:>6.1f}%")
+
+
 def run_walkforward(
     years: int = 2,
     rebuild: bool = False,
@@ -1158,6 +1337,7 @@ def run_walkforward(
     train_months: int = 18,
     val_months: int = 6,
     step_months: int = 3,
+    detail: bool = False,
 ):
     """Walk-Forward 검증: 롤링 윈도우별 train 최적화 → val 검증.
 
@@ -1238,7 +1418,11 @@ def run_walkforward(
         # Validation
         val_cache = cache.slice_by_dates(vs, ve)
         val_cache.flatten_signals()
-        val_st = backtest(val_cache, best_p)
+
+        if detail:
+            val_st, val_trades = backtest_with_trades(val_cache, best_p)
+        else:
+            val_st = backtest(val_cache, best_p)
 
         if val_st.trades < 30:
             log.warning(f"  Window {w_idx}: val 거래 {val_st.trades}건 < 30 → 스킵")
@@ -1250,6 +1434,9 @@ def run_walkforward(
         log.info(
             f"  Val:   {val_st.trades}건  승률 {val_st.win_rate:.1f}%  평균 {val_st.avg_ret:+.2f}%"
         )
+
+        if detail:
+            _wf_detail_report(w_idx, val_trades)
 
         results.append((w_idx, ts, te, vs, ve, train_st, val_st, best_p))
 
@@ -1293,6 +1480,10 @@ if __name__ == "__main__":
     parser.add_argument("--train-months", type=int, default=18, help="WF 학습 기간 (개월)")
     parser.add_argument("--val-months", type=int, default=6, help="WF 검증 기간 (개월)")
     parser.add_argument("--step-months", type=int, default=3, help="WF 롤링 간격 (개월)")
+    parser.add_argument(
+        "--detail", action="store_true",
+        help="Walk-Forward 상세 리포트 (val 윈도우별 mode/market/flag 분석)"
+    )
     args = parser.parse_args()
 
     if args.alternating and args.walkforward:
@@ -1306,6 +1497,7 @@ if __name__ == "__main__":
             train_months=args.train_months,
             val_months=args.val_months,
             step_months=args.step_months,
+            detail=args.detail,
         )
     elif args.alternating:
         run_alternating(
