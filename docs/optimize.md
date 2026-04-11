@@ -81,6 +81,45 @@ uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --detail  
 
 `--alternating`과 `--walkforward`는 상호 배타.
 
+### 주간 크론 운영 흐름
+
+매주 토요일 02:00에 순차 실행:
+1. `--alternating` → config.py 파라미터 갱신 (~35분)
+2. `--walkforward --years 3` → 갱신된 파라미터 OOS 검증 + 텔레그램 리포트 (~60분)
+
+### 과적합 경고 수신 시 운영자 대응 절차
+
+텔레그램에 `🚨 과적합 의심: W4, W5` 등의 경고가 오면:
+
+1. **즉시 확인**: 어떤 윈도우(최근 vs 과거)에서 경고가 발생했는지 확인
+   - 최근 윈도우(W4-5)만 경고 → 시장 체제 변화 가능성
+   - 전체 윈도우 경고 → 전략 구조적 문제
+
+2. **상세 진단 실행**:
+   ```bash
+   # 경고 윈도우 기간의 모드/플래그별 성과 분석
+   uv run python -m wye.blsh.domestic.optimize.diag_market --start 20250701 --end 20260401
+   
+   # WF 상세 분석 (윈도우별 모드/시장/플래그 분포)
+   uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --years 3 --detail
+   ```
+
+3. **판단 기준에 따라 조치**:
+   - **평균 비율 80%+ & 최근 1개 윈도우만 경고** → 정상 운영 유지. 다음 주 결과 모니터링
+   - **평균 비율 50~80% & 최근 2개 윈도우 경고** → 매매 규모 축소 검토 (PRE/INI/FIN_CASH_RATIO 하향)
+   - **평균 비율 50% 미만 또는 최근 Val이 마이너스** → 매매 일시 중단, 전략 재검토
+   - **config.py 롤백이 필요하다고 판단되면**: `git log --oneline -10` → 이전 커밋의 config.py 복원
+
+4. **롤백 방법** (필요 시):
+   ```bash
+   # 이전 config.py 복원
+   git checkout HEAD~1 -- src/wye/blsh/domestic/config.py
+   # 또는 특정 커밋의 config.py 복원
+   git checkout <commit-hash> -- src/wye/blsh/domestic/config.py
+   ```
+
+5. **기록**: 경고 내용과 조치 사항을 기록하여 패턴 축적
+
 ## signal_analysis.py
 
 플래그별 성과 분석:
