@@ -99,6 +99,7 @@ from wye.blsh.domestic.config import (
     INVEST_MIN_SCORE,
     ATR_SL_MULT,
     ATR_TP_MULT,
+    ATR_CAP,
     MAX_HOLD_DAYS,
     MAX_HOLD_DAYS_MIX,
     MAX_HOLD_DAYS_MOM,
@@ -348,10 +349,11 @@ def evaluate_buy(close, high, low, volume, opn=None):
         # WEAK: 둘 다 약하므로 전부 합산 (기존과 동일)
         score = mom_score + rev_score + neu_score
 
-    # ── 매수가 / 손절 / 익절 (호가 단위 보정)
-    entry_price = Tick.ceil_tick(c0 + 0.5 * atr0)
-    stop_loss = Tick.floor_tick(c0 - ATR_SL_MULT * atr0)
-    take_profit = Tick.ceil_tick(c0 + ATR_TP_MULT * atr0)
+    # ── 매수가 / 손절 / 익절 (호가 단위 보정, ATR cap 적용)
+    effective_atr = min(atr0, c0 * ATR_CAP)
+    entry_price = Tick.ceil_tick(c0 + 0.5 * effective_atr)
+    stop_loss = Tick.floor_tick(c0 - ATR_SL_MULT * effective_atr)
+    take_profit = Tick.ceil_tick(c0 + ATR_TP_MULT * effective_atr)
 
     indicators = {
         "mode": mode,

@@ -59,14 +59,19 @@ class Params:
     max_hold_days_mom: int
     tp1_mult: float  # 1차 익절 ATR 배수 (e.g. 0.7, 1.0, 1.5)
     tp1_ratio: float  # 1차 익절 매도 비율 (e.g. 0.3, 0.5, 0.7)
+    max_idx_drop: float = 1.0  # 지수 MA20 괴리율 하한 (1.0 = 비활성)
+    atr_cap: float = 0.50  # ATR 상한 (매수가 대비 비율)
 
     def label(self) -> str:
+        idx_lbl = "idx=off" if self.max_idx_drop >= 1.0 else f"idx≤{self.max_idx_drop:.0%}"
+        atr_lbl = "" if self.atr_cap >= 0.50 else f" atrCap={self.atr_cap:.0%}"
         return (
             f"score≥{self.invest_min_score} "
             f"SL={self.atr_sl_mult:.1f} TP1={self.tp1_mult:.1f}({self.tp1_ratio:.0%}) "
             f"TP2={self.atr_tp_mult:.1f} "
             f"REV={self.max_hold_days_rev}d MIX={self.max_hold_days_mix}d "
-            f"MOM={self.max_hold_days_mom}d".rstrip()
+            f"MOM={self.max_hold_days_mom}d "
+            f"{idx_lbl}{atr_lbl}".rstrip()
         )
 
 
@@ -78,6 +83,9 @@ class Stats:
     holds: int = 0
     total_ret: float = 0.0
     ret_sq: float = 0.0
+    w_total_ret: float = 0.0
+    w_ret_sq: float = 0.0
+    w_sum: float = 0.0
 
     @property
     def win_rate(self) -> float:
@@ -98,19 +106,25 @@ class Stats:
 
     @property
     def metric(self) -> float:
-        """최적화 지표: (avg_ret / std) × sqrt(trades).
+        """최적화 지표: 시간 가중 Sharpe-like 지표.
 
-        Sharpe-like 지표로 리스크 대비 수익률을 평가하면서,
-        거래 수가 적으면 sqrt로 자연스럽게 불이익.
+        최근 거래에 더 높은 가중치를 부여한 (w_avg / w_std) × sqrt(trades).
+        가중치 합이 0이면 균등 가중 fallback.
         30건 미만은 통계 무의미로 제외.
         """
         if self.trades < 30:
             return -9999
         import math
-        std = self.ret_std
-        if std <= 0:
-            return self.avg_ret * math.sqrt(self.trades)
-        return (self.avg_ret / std) * math.sqrt(self.trades)
+        if self.w_sum > 0:
+            w_avg = self.w_total_ret / self.w_sum
+            w_var = self.w_ret_sq / self.w_sum - w_avg ** 2
+            w_std = math.sqrt(max(w_var, 0.0))
+        else:
+            w_avg = self.avg_ret
+            w_std = self.ret_std
+        if w_std <= 0:
+            return w_avg * math.sqrt(self.trades)
+        return (w_avg / w_std) * math.sqrt(self.trades)
 
 
 # ─────────────────────────────────────────
@@ -140,9 +154,10 @@ def _simulate_one(
             return None
 
         buy = arr[entry_idx, 0]
-        sl = float(floor_tick_nb(buy - params.atr_sl_mult * atr))
-        tp1 = float(ceil_tick_nb(buy + params.tp1_mult * atr))
-        tp2 = float(ceil_tick_nb(buy + params.atr_tp_mult * atr))
+        effective_atr = min(atr, buy * params.atr_cap)
+        sl = float(floor_tick_nb(buy - params.atr_sl_mult * effective_atr))
+        tp1 = float(ceil_tick_nb(buy + params.tp1_mult * effective_atr))
+        tp2 = float(ceil_tick_nb(buy + params.atr_tp_mult * effective_atr))
 
         mode = sig["mode"]
         if mode == "MOM":
@@ -167,6 +182,7 @@ def _simulate_one(
             arr[idx_arr, 0], arr[idx_arr, 1],
             arr[idx_arr, 2], arr[idx_arr, 3],
             len(idx_arr), SELL_COST_RATE,
+            params.atr_cap,
         )
 
         label = RESULT_LABELS[res_id]
@@ -182,9 +198,10 @@ def _simulate_one(
         return None
 
     buy = t1["open"]
-    sl = Tick.floor_tick(buy - params.atr_sl_mult * atr)
-    tp1 = Tick.ceil_tick(buy + params.tp1_mult * atr)
-    tp2 = Tick.ceil_tick(buy + params.atr_tp_mult * atr)
+    effective_atr = min(atr, buy * params.atr_cap)
+    sl = Tick.floor_tick(buy - params.atr_sl_mult * effective_atr)
+    tp1 = Tick.ceil_tick(buy + params.tp1_mult * effective_atr)
+    tp2 = Tick.ceil_tick(buy + params.atr_tp_mult * effective_atr)
 
     mode = sig["mode"]
     if mode == "MOM":
@@ -221,7 +238,8 @@ def backtest(cache: OptCache, params: Params) -> Stats:
     """
     # ── numba 경로: flat 배열 사용
     if hasattr(cache, "flat_buy") and cache.flat_buy is not None:
-        trades, wins, losses, holds, total_ret, ret_sq = backtest_nb(
+        _max_di = int(max(cache.flat_date_idx)) if len(cache.flat_date_idx) > 0 else 0
+        trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum = backtest_nb(
             cache.flat_buy, cache.flat_atr, cache.flat_score,
             cache.flat_mode_id, cache.flat_n_bars,
             cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
@@ -230,6 +248,9 @@ def backtest(cache: OptCache, params: Params) -> Stats:
             params.tp1_ratio,
             params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom,
             SELL_COST_RATE,
+            cache.flat_idx_gap, params.max_idx_drop,
+            params.atr_cap,
+            cache.flat_date_idx, _max_di, HALF_LIFE,
         )
         st = Stats()
         st.trades = trades
@@ -238,6 +259,9 @@ def backtest(cache: OptCache, params: Params) -> Stats:
         st.holds = holds
         st.total_ret = total_ret
         st.ret_sq = ret_sq
+        st.w_total_ret = w_total_ret
+        st.w_ret_sq = w_ret_sq
+        st.w_sum = w_sum
         return st
 
     # ── fallback: dict 경로
@@ -249,6 +273,8 @@ def backtest(cache: OptCache, params: Params) -> Stats:
     _tp2_mult = params.atr_tp_mult
     _tp1_ratio = params.tp1_ratio
     _cost = SELL_COST_RATE
+    _max_idx_drop = params.max_idx_drop
+    _atr_cap = params.atr_cap
 
     for base_date in cache.scan_dates:
         sigs = cache.signals.get(base_date)
@@ -264,11 +290,15 @@ def backtest(cache: OptCache, params: Params) -> Stats:
             if effective_score < _min_score:
                 continue
 
+            if sig.get("idx_gap", 0.0) < -_max_idx_drop:
+                continue
+
             buy = sig["_buy"]
             atr = sig["atr"]
-            sl = float(floor_tick_nb(buy - _sl_mult * atr))
-            tp1 = float(ceil_tick_nb(buy + _tp1_mult * atr))
-            tp2 = float(ceil_tick_nb(buy + _tp2_mult * atr))
+            effective_atr = min(atr, buy * _atr_cap)
+            sl = float(floor_tick_nb(buy - _sl_mult * effective_atr))
+            tp1 = float(ceil_tick_nb(buy + _tp1_mult * effective_atr))
+            tp2 = float(ceil_tick_nb(buy + _tp2_mult * effective_atr))
 
             max_d = _max_hold[sig["_mode_id"]]
             n = min(max_d + 1, sig["_n_bars"])
@@ -277,6 +307,7 @@ def backtest(cache: OptCache, params: Params) -> Stats:
                 buy, sl, tp1, tp2, _tp1_ratio, _sl_mult, atr,
                 sig["_opens"], sig["_highs"], sig["_lows"], sig["_closes"],
                 n, _cost,
+                _atr_cap,
             )
 
             st.trades += 1
@@ -349,6 +380,8 @@ def backtest_scores(
     _tp2_mult = params.atr_tp_mult
     _tp1_ratio = params.tp1_ratio
     _cost = SELL_COST_RATE
+    _max_idx_drop = params.max_idx_drop
+    _atr_cap = params.atr_cap
 
     for base_date in cache.scan_dates:
         sigs = cache.signals.get(base_date)
@@ -357,6 +390,9 @@ def backtest_scores(
 
         for sig in sigs:
             if sig.get("_skip", True):
+                continue
+
+            if sig.get("idx_gap", 0.0) < -_max_idx_drop:
                 continue
 
             # 신호 점수 재계산
@@ -378,9 +414,10 @@ def backtest_scores(
 
             buy = sig["_buy"]
             atr = sig["atr"]
-            sl = float(floor_tick_nb(buy - _sl_mult * atr))
-            tp1 = float(ceil_tick_nb(buy + _tp1_mult * atr))
-            tp2 = float(ceil_tick_nb(buy + _tp2_mult * atr))
+            effective_atr = min(atr, buy * _atr_cap)
+            sl = float(floor_tick_nb(buy - _sl_mult * effective_atr))
+            tp1 = float(ceil_tick_nb(buy + _tp1_mult * effective_atr))
+            tp2 = float(ceil_tick_nb(buy + _tp2_mult * effective_atr))
 
             max_d = _max_hold[_MODE_MAP[mode]]
             n = min(max_d + 1, sig["_n_bars"])
@@ -389,6 +426,7 @@ def backtest_scores(
                 buy, sl, tp1, tp2, _tp1_ratio, _sl_mult, atr,
                 sig["_opens"], sig["_highs"], sig["_lows"], sig["_closes"],
                 n, _cost,
+                _atr_cap,
             )
 
             st.trades += 1
@@ -414,7 +452,8 @@ def _score_worker(args):
     if hasattr(cache, "flat_flag_mask") and cache.flat_flag_mask is not None:
         import numpy as _np
         sv = _np.array([scores.get(f, 0) for f in FLAG_ORDER], dtype=_np.int64)
-        trades, wins, losses, holds, total_ret, ret_sq = backtest_scores_nb(
+        _max_di = int(max(cache.flat_date_idx)) if len(cache.flat_date_idx) > 0 else 0
+        trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum = backtest_scores_nb(
             cache.flat_flag_mask, cache.flat_supply_bonus, cache.flat_has_pov,
             cache.flat_buy, cache.flat_atr, cache.flat_n_bars,
             cache.flat_opens, cache.flat_highs, cache.flat_lows, cache.flat_closes,
@@ -424,6 +463,9 @@ def _score_worker(args):
             params.tp1_ratio,
             params.max_hold_days_rev, params.max_hold_days_mix, params.max_hold_days_mom,
             SELL_COST_RATE,
+            cache.flat_idx_gap, params.max_idx_drop,
+            params.atr_cap,
+            cache.flat_date_idx, _max_di, HALF_LIFE,
         )
         st = Stats()
         st.trades = trades
@@ -432,6 +474,9 @@ def _score_worker(args):
         st.holds = holds
         st.total_ret = total_ret
         st.ret_sq = ret_sq
+        st.w_total_ret = w_total_ret
+        st.w_ret_sq = w_ret_sq
+        st.w_sum = w_sum
     else:
         st = backtest_scores(cache, params, scores, _WORKER_MIN_SCORE)
 
@@ -470,6 +515,8 @@ def optimize_scores(
         "max_hold_days_mom": params.max_hold_days_mom,
         "tp1_mult": params.tp1_mult,
         "tp1_ratio": params.tp1_ratio,
+        "max_idx_drop": params.max_idx_drop,
+        "atr_cap": params.atr_cap,
     }
 
     # 탐색 대상 외 신호: current_scores에서 고정
@@ -542,6 +589,8 @@ def recalc_cache_scores(cache: OptCache, scores: dict):
 # ─────────────────────────────────────────
 # 그리드 정의
 # ─────────────────────────────────────────
+HALF_LIFE: float = 120  # 시간 가중 반감기 (일 수 기준 인덱스)
+
 GRID = {
     "invest_min_score": [9, 10, 11, 12, 13],
     "atr_sl_mult": [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
@@ -551,7 +600,9 @@ GRID = {
     "max_hold_days_mom": [1, 2, 3],
     "tp1_mult": [0.7, 1.0, 1.5],
     "tp1_ratio": [0.3, 0.5, 0.7, 1.0],
-}  # 5×7×6×6×5×3×3×4 = 907,200 → _dedup 시 ~230,000
+    "max_idx_drop": [0.03, 0.05, 0.10, 1.0],
+    "atr_cap": [0.03, 0.05, 0.08, 0.50],
+}
 
 _SCORE_MIN_SCORE = min(GRID["invest_min_score"])  # 1단계 진입 기준: GRID 최소값
 _WORKER_MIN_SCORE: int = _SCORE_MIN_SCORE  # 1단계 워커용 min_score (동적 갱신)
@@ -589,6 +640,8 @@ def _report(ranked: list[tuple[Params, Stats]], elapsed: float):
         log.info(f"    MAX_HOLD_DAYS    = {best_p.max_hold_days_rev}")
         log.info(f"    MAX_HOLD_DAYS_MIX= {best_p.max_hold_days_mix}")
         log.info(f"    MAX_HOLD_DAYS_MOM= {best_p.max_hold_days_mom}")
+        log.info(f"    INDEX_DROP_LIMIT = {best_p.max_idx_drop}")
+        log.info(f"    ATR_CAP          = {best_p.atr_cap}")
         log.info(
             f"    → {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
             f"평균 {best_s.avg_ret:+.2f}%  총 {best_s.total_ret:+.1f}%"
@@ -610,6 +663,8 @@ def _check_boundaries(best_p: Params):
         "max_hold_days_mom": "max_hold_days_mom",
         "tp1_mult": "tp1_mult",
         "tp1_ratio": "tp1_ratio",
+        "max_idx_drop": "max_idx_drop",
+        "atr_cap": "atr_cap",
     }
     for attr, grid_key in _PARAM_TO_GRID.items():
         grid_vals = GRID.get(grid_key)
@@ -638,6 +693,8 @@ def _params_to_dict(p: Params) -> dict:
         "MAX_HOLD_DAYS": p.max_hold_days_rev,
         "MAX_HOLD_DAYS_MIX": p.max_hold_days_mix,
         "MAX_HOLD_DAYS_MOM": p.max_hold_days_mom,
+        "INDEX_DROP_LIMIT": p.max_idx_drop,
+        "ATR_CAP": p.atr_cap,
     }
 
 
@@ -744,23 +801,35 @@ def run(
     cache.precompute_signals(min_score=_SCORE_MIN_SCORE)
     cache.flatten_signals()
 
+    # numba 캐시 무효화 (서명 변경 시 필요)
+    import shutil
+    _nb_cache = Path(__file__).resolve().parent.parent / "__pycache__"
+    for _f in _nb_cache.glob("_sim_core.*.nbi"):
+        _f.unlink(missing_ok=True)
+
     # numba JIT 워밍업 (fork 전에 컴파일 완료)
     import numpy as _np
     _dummy = _np.ones(2, dtype=_np.float64)
     sim_one_nb(100.0, 90.0, 110.0, 120.0, 0.3, 2.0, 5.0,
-               _dummy, _dummy, _dummy, _dummy, 2, 0.002)
+               _dummy, _dummy, _dummy, _dummy, 2, 0.002, 0.50)
     _df = _np.ones(1, dtype=_np.float64)
     _di = _np.ones(1, dtype=_np.int64)
     _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
     backtest_nb(_df * 100, _df * 5, _di * 10, _di * 0, _di,
                 _d2, _d2, _d2, _d2,
-                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002,
+                _df * 0.0, 1.0,
+                0.50,
+                _di * 0, 0, 120.0)
     _sv = _np.ones(N_FLAGS, dtype=_np.int64)
     backtest_scores_nb(_di, _di * 0, _di * 0,
                        _df * 100, _df * 5, _di,
                        _d2, _d2, _d2, _d2,
                        _sv, MOM_MASK, REV_MASK, N_FLAGS,
-                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
+                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002,
+                       _df * 0.0, 1.0,
+                       0.50,
+                       _di * 0, 0, 120.0)
     log.info("[numba] JIT 컴파일 완료")
 
     # fork 전에 캐시를 전역 변수로 설정 (CoW — 자식 프로세스에 복사 없이 공유)
@@ -830,6 +899,7 @@ def _dedup_combos(grid):
             continue
         if d["tp1_mult"] >= d["atr_tp_mult"] and d["tp1_ratio"] != 1.0:
             continue
+        # max_idx_drop=1.0 (비활성) 시 임계값 중복 제거 불필요 — 이미 한 값만
         combos.append(c)
     return keys, combos
 
@@ -873,19 +943,25 @@ def run_alternating(
     import numpy as _np
     _dummy = _np.ones(2, dtype=_np.float64)
     sim_one_nb(100.0, 90.0, 110.0, 120.0, 0.3, 2.0, 5.0,
-               _dummy, _dummy, _dummy, _dummy, 2, 0.002)
+               _dummy, _dummy, _dummy, _dummy, 2, 0.002, 0.50)
     _df = _np.ones(1, dtype=_np.float64)
     _di = _np.ones(1, dtype=_np.int64)
     _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
     backtest_nb(_df * 100, _df * 5, _di * 10, _di * 0, _di,
                 _d2, _d2, _d2, _d2,
-                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002,
+                _df * 0.0, 1.0,
+                0.50,
+                _di * 0, 0, 120.0)
     _sv = _np.ones(N_FLAGS, dtype=_np.int64)
     backtest_scores_nb(_di, _di * 0, _di * 0,
                        _df * 100, _df * 5, _di,
                        _d2, _d2, _d2, _d2,
                        _sv, MOM_MASK, REV_MASK, N_FLAGS,
-                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
+                       9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002,
+                       _df * 0.0, 1.0,
+                       0.50,
+                       _di * 0, 0, 120.0)
     log.info("[numba] JIT 컴파일 완료")
 
     _WORKER_CACHE = cache
@@ -911,6 +987,8 @@ def run_alternating(
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
+        max_idx_drop=_f.INDEX_DROP_LIMIT,
+        atr_cap=_f.ATR_CAP,
     )
 
     t_total = time.time()
@@ -1113,13 +1191,16 @@ def run_walkforward(
     import numpy as _np
     _dummy = _np.ones(2, dtype=_np.float64)
     sim_one_nb(100.0, 90.0, 110.0, 120.0, 0.3, 2.0, 5.0,
-               _dummy, _dummy, _dummy, _dummy, 2, 0.002)
+               _dummy, _dummy, _dummy, _dummy, 2, 0.002, 0.50)
     _df = _np.ones(1, dtype=_np.float64)
     _di = _np.ones(1, dtype=_np.int64)
     _d2 = _np.ones((1, 1), dtype=_np.float64) * 100.0
     backtest_nb(_df * 100, _df * 5, _di * 10, _di * 0, _di,
                 _d2, _d2, _d2, _d2,
-                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002)
+                9, 2.0, 1.5, 3.0, 0.3, 7, 2, 3, 0.002,
+                _df * 0.0, 1.0,
+                0.50,
+                _di * 0, 0, 120.0)
     log.info("[numba] JIT 컴파일 완료")
 
     try:

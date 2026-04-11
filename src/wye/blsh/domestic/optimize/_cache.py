@@ -34,7 +34,6 @@ from wye.blsh.domestic.scanner import (
     GAP_THRESHOLD,
     RSI_OVERSOLD,
     W52_VOL_MULT,
-    INDEX_DROP_LIMIT,
     LOOKBACK_DAYS,
     TRDVAL_MIN,
     MACD_LONG,
@@ -217,9 +216,9 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────
 # 지수 환경 (시장 + 업종)
 # ─────────────────────────────────────────
-def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
-    """날짜별 KOSPI/KOSDAQ 20MA 환경. {date: {'KOSPI': bool, 'KOSDAQ': bool}}"""
-    result: dict[str, dict[str, bool]] = {}
+def _compute_index_env(start: str, end: str) -> dict[str, dict[str, float]]:
+    """날짜별 KOSPI/KOSDAQ 20MA 괴리율. {date: {'KOSPI': float, 'KOSDAQ': float}}"""
+    result: dict[str, dict[str, float]] = {}
     for idx_nm, key, clss in [
         ("코스피", "KOSPI", sector.IDX_CLSS_KOSPI),
         ("코스닥", "KOSDAQ", sector.IDX_CLSS_KOSDAQ),
@@ -241,7 +240,7 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
-                result.setdefault(d, {})[key] = v >= -INDEX_DROP_LIMIT
+                result.setdefault(d, {})[key] = float(v)
     return result
 
 
@@ -453,6 +452,8 @@ class OptCache:
             self.flat_flag_mask = np.empty(0, dtype=np.int64)
             self.flat_supply_bonus = np.empty(0, dtype=np.int64)
             self.flat_has_pov = np.empty(0, dtype=np.int64)
+            self.flat_idx_gap = np.empty(0, dtype=np.float64)
+            self.flat_date_idx = np.empty(0, dtype=np.int64)
             return
 
         max_bars = max(s["_n_bars"] for s in sigs_flat)
@@ -469,6 +470,10 @@ class OptCache:
         self.flat_flag_mask = np.empty(n, dtype=np.int64)
         self.flat_supply_bonus = np.empty(n, dtype=np.int64)
         self.flat_has_pov = np.empty(n, dtype=np.int64)
+        self.flat_idx_gap = np.empty(n, dtype=np.float64)
+        self.flat_date_idx = np.empty(n, dtype=np.int64)
+
+        date_to_ord = {d: i for i, d in enumerate(self.scan_dates)}
 
         for i, sig in enumerate(sigs_flat):
             self.flat_buy[i] = sig["_buy"]
@@ -495,6 +500,8 @@ class OptCache:
                 sig.get("raw_supply_bonus", 0), SUPPLY_CAP,
             )
             self.flat_has_pov[i] = 1 if "P_OV" in flags else 0
+            self.flat_idx_gap[i] = sig.get("idx_gap", 0.0)
+            self.flat_date_idx[i] = date_to_ord.get(sig.get("_base_date", ""), 0)
 
         log.info(f"[flat] {n:,}건 → numpy 배열 (max_bars={max_bars})")
 
@@ -644,7 +651,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
     # ── 4. 지수 환경 + 업종지수 환경
     log.info("[3/6] 지수 환경")
-    idx_ok = _compute_index_env(lookback_start, end_date)
+    idx_gaps = _compute_index_env(lookback_start, end_date)
 
     # ── 4. 거래대금 필터
     log.info("[4/6] 거래대금 필터")
@@ -683,7 +690,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     # ── 8. 날짜별 신호 수집
     log.info("[집계] 날짜별 신호 수집")
     for date in cache.scan_dates:
-        mkt_ok = idx_ok.get(date, {"KOSPI": True, "KOSDAQ": True})
+        date_idx_gaps = idx_gaps.get(date, {})
         eligible = trdval_pass.get(date, set())
         day_sigs: list[dict] = []
 
@@ -691,8 +698,6 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             if ticker not in eligible:
                 continue
             mkt = cache.ticker_market.get(ticker, "")
-            if not mkt_ok.get(mkt, True):
-                continue
             if date not in sig_df.index:
                 continue
 
@@ -737,6 +742,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                     "atr": atr_val,
                     "close": close_val,
                     "entry_price": entry_price,
+                    "idx_gap": date_idx_gaps.get(mkt, 0.0),
+                    "_base_date": date,
                 }
             )
         cache.signals[date] = day_sigs

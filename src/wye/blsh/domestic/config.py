@@ -12,6 +12,8 @@ class Optimized:
     MAX_HOLD_DAYS: int = 10
     MAX_HOLD_DAYS_MIX: int = 5
     MAX_HOLD_DAYS_MOM: int = 3
+    INDEX_DROP_LIMIT: float = 1.0
+    ATR_CAP: float = 0.50
     SIGNAL_SCORES = {
         "MGC": 0,
         "W52": 1,
@@ -53,9 +55,8 @@ SUPPLY_CAP: int = 3  # 수급 가산 상한 (백테스트 검증, 2026-03-29)
 TRDVAL_MIN: int = 1_000_000_000  # 최근 20일 평균 거래대금 최소값 (10억)
 TRDVAL_DAYS: int = 20
 INDEX_MA_DAYS: int = 20  # 지수 환경 체크 이동평균 기간
-INDEX_DROP_LIMIT: float = (
-    1.0  # MA 대비 괴리율 -100% 이하 → 사실상 지수 환경 체크 비활성화
-)
+INDEX_DROP_LIMIT: float = Optimized.INDEX_DROP_LIMIT
+ATR_CAP: float = Optimized.ATR_CAP
 INVEST_MIN_SCORE: int = (
     Optimized.INVEST_MIN_SCORE
 )  # 투자 적격 최소 점수 (백테스트 검증)

@@ -59,6 +59,7 @@ from wye.blsh.domestic import (
 from wye.blsh.domestic.config import (
     ATR_SL_MULT,
     ATR_TP_MULT,
+    ATR_CAP,
     TP1_MULT,
     TP1_RATIO,
     MAX_HOLD_DAYS,
@@ -379,9 +380,10 @@ def _restore_positions_from_db(
         tp1_ratio = TP1_RATIO
         max_hold = MAX_HOLD_DAYS
 
-        sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
-        tp1 = Tick.ceil_tick(buy_price + tp1_mult * atr)
-        tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
+        effective_atr = min(atr, buy_price * ATR_CAP)
+        sl = Tick.floor_tick(buy_price - atr_sl_mult * effective_atr)
+        tp1 = Tick.ceil_tick(buy_price + tp1_mult * effective_atr)
+        tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * effective_atr)
         qty_t1 = max(1, int(qty * tp1_ratio))
 
         is_orphan = buy_rec is None
@@ -486,9 +488,10 @@ def _make_position(
 
     tp1_mult = float(c["tp1_mult"] if c.get("tp1_mult") is not None else TP1_MULT)
     tp1_ratio = float(c["tp1_ratio"] if c.get("tp1_ratio") is not None else TP1_RATIO)
-    sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
-    tp1 = Tick.ceil_tick(buy_price + tp1_mult * atr)
-    tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
+    effective_atr = min(atr, buy_price * ATR_CAP)
+    sl = Tick.floor_tick(buy_price - atr_sl_mult * effective_atr)
+    tp1 = Tick.ceil_tick(buy_price + tp1_mult * effective_atr)
+    tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * effective_atr)
     qty_t1 = max(1, int(qty * tp1_ratio))
     if qty_t1 >= qty:
         qty_t1 = qty  # tp1_ratio=1.0 → 전량 청산

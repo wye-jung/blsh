@@ -333,6 +333,8 @@ def run(years: int = 2, rebuild: bool = False, top: int = 5):
         max_hold_days_mom=_f.MAX_HOLD_DAYS_MOM,
         tp1_mult=_f.TP1_MULT,
         tp1_ratio=_f.TP1_RATIO,
+        max_idx_drop=_f.INDEX_DROP_LIMIT,
+        atr_cap=_f.ATR_CAP,
     )
     log.info(f"파라미터: {params.label()}")
 

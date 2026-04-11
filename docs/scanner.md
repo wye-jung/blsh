@@ -53,6 +53,8 @@
 
 ### 진입/손절/익절가
 
+ATR은 base_date 시점까지의 OHLCV로 계산 (14일 기본). 미래 데이터 미사용 (forward bias 없음).
+
 ```
 entry_price = ceil_tick(close + 0.5 x ATR)
 SL          = floor_tick(close - ATR_SL_MULT x ATR)
