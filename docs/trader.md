@@ -22,7 +22,7 @@ SL/TP는 `effective_ATR = min(ATR, close x ATR_CAP)` 기준으로 계산 (scanne
 
 1. **손절**: `현재가 <= SL` -> 전량 시장가 매도 (KRX) / 하한가 지정가 (NXT)
 2. **1차 익절**: `현재가 >= TP1` -> `TP1_RATIO` 비율 매도, SL -> 매수가(본전)
-3. **트레일링 SL**: 진입 이후 최고가 기준 `high_since_entry - ATR x ATR_SL_MULT`로 상향만 (시뮬레이션과 동일)
+3. **트레일링 SL**: 진입 이후 최고가 기준 `high_since_entry - effective_ATR x ATR_SL_MULT`로 상향만 (시뮬레이션과 동일)
 4. **2차 익절**: `현재가 >= TP2` -> 잔량 전량 매도
 
 ### 거래소 라우팅

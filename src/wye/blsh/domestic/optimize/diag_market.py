@@ -230,16 +230,20 @@ def _report_market_mode(stats: dict[tuple[str, str], MarketStats]):
               f"{ms.avg_ret:>+9.2f}% {ms.total_ret:>+9.1f}%")
 
 
-def _report_score_distribution(cache: OptCache, params: Params, market_stats: dict[str, MarketStats]):
+def _report_score_distribution(
+    cache: OptCache, params: Params, market_stats: dict[str, MarketStats],
+    start_date: str | None = None, end_date: str | None = None,
+):
     """시장별 점수 분포."""
     print("\n" + "=" * 70)
     print("시장별 점수 분포 (최종 후보 기준)")
     print("=" * 70)
 
+    target = cache.slice_by_dates(start_date, end_date) if start_date and end_date else cache
     score_dist: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
 
-    for base_date in cache.scan_dates:
-        sigs = cache.signals.get(base_date, [])
+    for base_date in target.scan_dates:
+        sigs = target.signals.get(base_date, [])
         for sig in sigs:
             if "P_OV" in sig["flags"]:
                 continue
@@ -462,4 +466,4 @@ if __name__ == "__main__":
     analyze_mode_flag_combos(cache, params, start_date=_sd, end_date=_ed)
 
     # 점수 분포
-    _report_score_distribution(cache, params, market_stats)
+    _report_score_distribution(cache, params, market_stats, start_date=_sd, end_date=_ed)
