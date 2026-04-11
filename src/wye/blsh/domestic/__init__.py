@@ -110,7 +110,7 @@ class Tick:
 class Milestone:
     NXT_OPEN_TIME: Final = "080000"  # NXT 프리마켓 개장 (매수 SOR 가능)
     KRX_OPEN_TIME: Final = "090000"  # KRX 정규장 개장 (매도 가능)
-    KRX_EARLY_TIME: Final = "101500"  # 장 초반 매수
+    KRX_EARLY_TIME: Final = "114000"  # 장 초반 매수
     LIQUIDATE_TIME: Final = "151500"  # 청산시간
     KRX_CLOSE_TIME: Final = "153000"  # KRX 마감
     NXT_CLOSE_TIME: Final = "200000"  # NXT 마감
