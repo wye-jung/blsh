@@ -31,8 +31,8 @@ def _get_min_krx_holiday_date():
 _ALLOWED_TABLES = {
     "isu_ksp_ohlcv",
     "isu_ksd_ohlcv",
-    "isu_ksp_info",
-    "isu_ksd_info",
+    "isu_ksp_supply",
+    "isu_ksd_supply",
     "idx_stk_ohlcv",
     "etf_ohlcv",
 }

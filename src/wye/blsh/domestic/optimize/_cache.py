@@ -254,7 +254,7 @@ def _bulk_supply(start: str, end: str, scan_dates: list[str]) -> dict:
     result: dict[tuple, tuple] = {}
     pad_start = dtutils.add_days(start, -10)
 
-    for table in ("isu_ksp_info", "isu_ksd_info"):
+    for table in ("isu_ksp_supply", "isu_ksd_supply"):
         try:
             rows = select_all(
                 f"SELECT isu_srt_cd AS ticker, trd_dd AS date, "

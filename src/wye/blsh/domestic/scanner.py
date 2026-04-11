@@ -40,7 +40,7 @@
   → mode 컬럼: MOM(모멘텀) / REV(추세전환) / MIX(혼합) / WEAK
 
 [2단계] 수급 보강 (1단계 점수 2점 이상 종목만)
-  isu_ksp_info / isu_ksd_info 최근 5일 수급 추이 판별.
+  isu_ksp_supply / isu_ksd_supply 최근 5일 수급 추이 판별.
   DB 미보유 종목은 KIS API(investor_trade_by_stock_daily) fallback.
 
   ┌──────────────────────────────────────────┬──────┬──────┐
@@ -65,6 +65,8 @@
   po-{date}-ini.json — 오전 스캔 (KRX ~10:10 매수, 15%)
   po-{date}-fin.json — 청산 후 스캔 (KRX 15:15 매수 → 미체결분 NXT 재발주, 55%, max_hold_days +1)
 """
+
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -107,7 +109,7 @@ from wye.blsh.domestic.config import (
     SUPPLY_SCORES,
     DISQUALIFY_FLAGS,
 )
-from wye.blsh.database.models import TradeCandidates
+from wye.blsh.database.models import TradeCandidates, TradeSupplySnap
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import KIS_ENV, SCAN_ETF
 from wye.blsh import new_logger
@@ -631,34 +633,51 @@ def enrich_with_db(results: list, base_date: str) -> list:
         return result
 
     supply_db = {
-        **fetch_supply_from_db("isu_ksp_info", kospi_ticks),
-        **fetch_supply_from_db("isu_ksd_info", kosdaq_ticks),
+        **fetch_supply_from_db("isu_ksp_supply", kospi_ticks),
+        **fetch_supply_from_db("isu_ksd_supply", kosdaq_ticks),
     }
 
     _is_today = base_date == dtutils.today()
 
-    # 실전투자 장중: DB에 당일 수급 없는 종목 → 추정가집계 API 보강
+    # 실전투자 장중: 추정가집계 API로 수급 보강
+    # ini/fin 시점에는 전체 후보 조회, DB 당일 미보유 종목은 히스토리에 append
     if _is_today and KIS_ENV == "real" and dtutils.ctime() >= Milestone.KRX_OPEN_TIME:
-        no_today = [
-            r for r in candidates
-            if r["ticker"] in supply_db
-            and supply_db[r["ticker"]].get("last_date") != base_date
-        ]
-        if no_today:
-            log.info(f"[수급 가집계] 당일 DB 미보유 {len(no_today)}종목 → 추정가집계 조회")
-            for row in no_today:
+        targets = [r for r in candidates if r["ticker"] in supply_db]
+        if targets:
+            snap_time = dtutils.ctime()[:4]
+            snap_records: list[dict] = []
+            log.info(f"[수급 가집계] {len(targets)}종목 추정가집계 조회 ({snap_time})")
+            for row in targets:
                 t = row["ticker"]
                 frgn, orgn = fetch_investor_estimate(t)
                 if frgn or orgn:
                     sup = supply_db[t]
-                    sup["frgn"].append(frgn)
-                    sup["inst"].append(orgn)
+                    if sup.get("last_date") != base_date:
+                        # DB에 당일 데이터 없음 → 히스토리에 append
+                        sup["frgn"].append(frgn)
+                        sup["inst"].append(orgn)
+                    # today 값은 항상 최신 추정치로 갱신
                     sup["today_frgn"] = frgn
                     sup["today_inst"] = orgn
                     sup["today_indi"] = None
                     log.info(
                         f"  📊 {t} {row['name'][:10]}  외인={frgn:+,}  기관={orgn:+,}"
                     )
+                    snap_records.append({
+                        "trd_dd": base_date,
+                        "isu_srt_cd": t,
+                        "snap_time": snap_time,
+                        "frgn_qty": frgn,
+                        "orgn_qty": orgn,
+                        "fetched_at": datetime.now(),
+                    })
+            # 2-C: 추정가집계 스냅샷 DB 저장
+            if snap_records:
+                try:
+                    ModelManager(TradeSupplySnap).create(pd.DataFrame(snap_records))
+                    log.debug(f"[수급 스냅샷] {len(snap_records)}건 저장")
+                except Exception as e:
+                    log.debug(f"[수급 스냅샷] 저장 오류 (중복 PK 등): {e}")
 
     missing = [r for r in candidates if r["ticker"] not in supply_db]
     supply_api = {}

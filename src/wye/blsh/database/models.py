@@ -72,8 +72,8 @@ class IsuKsdOhlcv(Base):
     fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
 
 
-class IsuKspInfo(Base):
-    __tablename__ = "isu_ksp_info"
+class IsuKspSupply(Base):
+    __tablename__ = "isu_ksp_supply"
     __table_args__ = {"comment": "코스피 일별정보"}
     trd_dd = Column(String(8), primary_key=True, comment="기준일자")
     isu_srt_cd = Column(String(8), primary_key=True, comment="종목코드")
@@ -83,8 +83,8 @@ class IsuKspInfo(Base):
     fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
 
 
-class IsuKsdInfo(Base):
-    __tablename__ = "isu_ksd_info"
+class IsuKsdSupply(Base):
+    __tablename__ = "isu_ksd_supply"
     __table_args__ = {"comment": "코스닥 일별정보"}
     trd_dd = Column(String(8), primary_key=True, comment="기준일자")
     isu_srt_cd = Column(String(8), primary_key=True, comment="종목코드")
@@ -92,6 +92,17 @@ class IsuKsdInfo(Base):
     frgn_netbid_trdvol = Column(Float, comment="외국인 순매수")
     indi_netbid_trdvol = Column(Float, comment="개인 순매수")
     fetched_at = Column(DateTime, comment="API 조회 및 저장 일시")
+
+
+class TradeSupplySnap(Base):
+    __tablename__ = "trade_supply_snap"
+    __table_args__ = {"comment": "장중 수급 추정가집계"}
+    trd_dd = Column(String(8), primary_key=True, comment="기준일자")
+    isu_srt_cd = Column(String(8), primary_key=True, comment="종목코드")
+    snap_time = Column(String(4), primary_key=True, comment="스냅샷 시각 (HHMM)")
+    frgn_qty = Column(BigInteger, comment="외국인 추정 순매수량")
+    orgn_qty = Column(BigInteger, comment="기관 추정 순매수량")
+    fetched_at = Column(DateTime, comment="API 조회 일시")
 
 
 class IsuBaseInfo(Base):

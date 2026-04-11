@@ -1,7 +1,7 @@
 """
 ohlcv 데이터, 종목 기본정보 및 개장일 정보 수집
 idx_stk_ohlcv, isu_ksp_ohlcv, isu_ksd_ohlcv, etf_ohlcv
-idx_stk_info, isu_ksp_info, isu_ksd_info
+idx_stk_info, isu_ksp_supply, isu_ksd_supply
 stock_base_info, etf_base_info
 krx_holidays
 
@@ -20,8 +20,8 @@ from wye.blsh.database.models import (
     IsuKsdOhlcv,
     IdxStkOhlcv,
     EtfOhlcv,
-    IsuKspInfo,
-    IsuKsdInfo,
+    IsuKspSupply,
+    IsuKsdSupply,
     IsuBaseInfo,
     EtfBaseInfo,
 )
@@ -107,10 +107,10 @@ def _collect_idx_data(date):
 def _collect_isu_data(date):
     isu = Isu(date)
     _recreate(isu.get_ohlcv(mktid=Isu.KOSPI), IsuKspOhlcv, trd_dd=isu.trd_dd)
-    _recreate(isu.get_purchases_info(mktid=Isu.KOSPI), IsuKspInfo, trd_dd=isu.trd_dd)
+    _recreate(isu.get_purchases_info(mktid=Isu.KOSPI), IsuKspSupply, trd_dd=isu.trd_dd)
 
     _recreate(isu.get_ohlcv(mktid=Isu.KOSDAQ), IsuKsdOhlcv, trd_dd=isu.trd_dd)
-    _recreate(isu.get_purchases_info(mktid=Isu.KOSDAQ), IsuKsdInfo, trd_dd=isu.trd_dd)
+    _recreate(isu.get_purchases_info(mktid=Isu.KOSDAQ), IsuKsdSupply, trd_dd=isu.trd_dd)
 
 
 # etf 데이터 수집
