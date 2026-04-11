@@ -879,6 +879,11 @@ def run():
     mode_label = "🚨 실전투자" if KIS_ENV == "real" else "📋 모의투자"
     log.info(f"[{today}] 트레이더 시작 ({mode_label})")
     holdings, avg_prices, cash = kis.get_balance()
+    _stock_value = sum(qty * avg_prices.get(t, 0) for t, qty in holdings.items())
+    log.info(
+        f"[초기 잔고] 현금={cash:,.0f}  보유={len(holdings)}종목"
+        f"  총자산={cash + _stock_value:,.0f}"
+    )
 
     # ── 보유종목 및 잔고 텔레그램 알림
     lines = [f"[{today}] {mode_label}"]

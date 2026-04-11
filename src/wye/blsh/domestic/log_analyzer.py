@@ -81,6 +81,13 @@ def _analyze_trader(lines: list[dict]) -> dict:
         "errors": 0,
         "criticals": 0,
         "warning_msgs": [],
+        "initial_cash": None,
+        "initial_holdings": None,
+        "initial_total": None,
+        "partial_fill_count": 0,
+        "price_adj_count": 0,
+        "orphan_restored": 0,
+        "api_error_codes": [],
     }
 
     warning_set: set[str] = set()
@@ -142,6 +149,34 @@ def _analyze_trader(lines: list[dict]) -> dict:
         if "트레일링 SL:" in msg and "스킵" not in msg:
             result["trail_sl_count"] += 1
 
+        # 초기 잔고
+        if "[초기 잔고]" in msg:
+            m2 = re.search(r"현금=([\d,]+).*보유=(\d+)종목.*총자산=([\d,]+)", msg)
+            if m2:
+                result["initial_cash"] = int(m2.group(1).replace(",", ""))
+                result["initial_holdings"] = int(m2.group(2))
+                result["initial_total"] = int(m2.group(3).replace(",", ""))
+
+        # 부분 체결
+        if "부분 체결:" in msg or "부분체결" in msg:
+            result["partial_fill_count"] += 1
+
+        # 매입단가 보정 (슬리피지)
+        if "매입단가 보정:" in msg:
+            result["price_adj_count"] += 1
+
+        # 추적불가 복원
+        if "[추적불가 복원]" in msg:
+            m2 = re.search(r"복원 성공 (\d+)건", msg)
+            if m2:
+                result["orphan_restored"] += int(m2.group(1))
+
+        # API 에러 코드 수집
+        if "매수 오류" in msg or "매도 오류" in msg:
+            m2 = re.search(r"\[(\w+)\]", msg)
+            if m2:
+                result["api_error_codes"].append(m2.group(1))
+
     result["warning_msgs"] = sorted(warning_set)[:5]
     return result
 
@@ -167,6 +202,9 @@ def _analyze_scanner(lines: list[dict]) -> dict:
         # 수급 가집계 (실전투자 장중)
         "estimate_queried": 0,
         "estimate_hits": 0,
+        # 수급 결과 요약
+        "supply_db_count": 0,
+        "supply_api_count": 0,
     }
 
     for line in lines:
@@ -220,6 +258,12 @@ def _analyze_scanner(lines: list[dict]) -> dict:
             result["estimate_queried"] = int(m_est.group(1))
         if "📊" in msg and "외인=" in msg:
             result["estimate_hits"] += 1
+
+        # 수급 결과 요약
+        m = re.search(r"\[수급 결과\]\s+DB=(\d+)종목\s+API=(\d+)종목", msg)
+        if m:
+            result["supply_db_count"] = int(m.group(1))
+            result["supply_api_count"] = int(m.group(2))
 
     return result
 
@@ -283,6 +327,11 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
         )
     if trader["trail_sl_count"]:
         parts.append(f"  트레일링 SL 갱신 {trader['trail_sl_count']}회")
+    if trader.get("initial_total") is not None:
+        parts.append(
+            f"  초기 총자산 {trader['initial_total']:,}원"
+            f" (현금 {trader['initial_cash']:,})"
+        )
 
     parts.append("")
     parts.append("【신호】")
@@ -307,6 +356,11 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
         )
     if scanner["po_created"]:
         parts.append(f"  PO 생성 {scanner['po_created']}종목")
+    if scanner["supply_db_count"] or scanner["supply_api_count"]:
+        parts.append(
+            f"  수급 DB={scanner['supply_db_count']}"
+            f" / API={scanner['supply_api_count']}종목"
+        )
 
     if scanner["estimate_queried"]:
         parts.append(
@@ -330,6 +384,16 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
         parts.append(f"  매수 실패 {trader['buy_fail_count']}건")
     if trader["orphan_count"]:
         parts.append(f"  🚨 추적불가 청산 {trader['orphan_count']}건")
+    if trader["partial_fill_count"]:
+        parts.append(f"  부분체결 {trader['partial_fill_count']}건")
+    if trader["price_adj_count"]:
+        parts.append(f"  매입단가 보정 {trader['price_adj_count']}건")
+    if trader["orphan_restored"]:
+        parts.append(f"  추적불가 복원 {trader['orphan_restored']}건")
+    if trader["api_error_codes"]:
+        codes = Counter(trader["api_error_codes"]).most_common(3)
+        code_str = ", ".join(f"{c}:{n}" for c, n in codes)
+        parts.append(f"  API 에러: {code_str}")
 
     if trader["warning_msgs"]:
         parts.append("  주요 경고:")

@@ -682,6 +682,10 @@ def enrich_with_db(results: list, base_date: str) -> list:
             log.warning(f"  KIS API fallback 오류: {e}")
 
     supply_all = {**supply_db, **supply_api}
+    log.info(
+        f"[수급 결과] DB={len(supply_db)}종목  API={len(supply_api)}종목"
+        f"  총={len(supply_all)}종목"
+    )
     ticker_to_idx = {r["ticker"]: i for i, r in enumerate(results)}
 
     for row in candidates:
