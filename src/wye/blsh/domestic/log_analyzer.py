@@ -30,9 +30,9 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────
 # 로그 파싱
 # ─────────────────────────────────────────
-# 포맷: "%(asctime)s [%(name)s][%(levelname)s] %(message)s"  (wye.blsh.__init__)
+# 포맷: "%(asctime)s [%(levelname)s][%(module)s] %(message)s"  (wye.blsh.__init__)
 _LOG_PATTERN = re.compile(
-    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\s+\[[\w.]+\]\[(\w+)\]\s+(.*)$"
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\s+\[(\w+)\]\[[\w.]+\]\s+(.*)$"
 )
 
 
@@ -160,19 +160,13 @@ def _analyze_scanner(lines: list[dict]) -> dict:
         "supply_hits": Counter(),
         "kospi_skipped": False,
         "kosdaq_skipped": False,
-        "sector_adj_count": 0,
         "po_created": 0,
         "realtime_verified": 0,
         "realtime_dropped": 0,
         "realtime_dropped_names": [],
-        # [임시] DB vs API 수급 비교
-        "supply_cmp_total": 0,
-        "supply_cmp_match": 0,
-        "supply_cmp_mismatch": 0,
-        # [임시] ETF 수급 조회
-        "etf_supply_total": 0,
-        "etf_supply_has_data": 0,
-        "etf_supply_empty": 0,
+        # 수급 가집계 (실전투자 장중)
+        "estimate_queried": 0,
+        "estimate_hits": 0,
     }
 
     for line in lines:
@@ -207,10 +201,6 @@ def _analyze_scanner(lines: list[dict]) -> dict:
         if "[KOSDAQ] 지수 20MA 아래" in msg:
             result["kosdaq_skipped"] = True
 
-        m = re.search(r"\[업종패널티\]\s+(\d+)종목", msg)
-        if m:
-            result["sector_adj_count"] += int(m.group(1))
-
         m = re.search(r"(\d+)\s+종목\.\s+po-.*생성", msg)
         if m:
             result["po_created"] += int(m.group(1))
@@ -224,21 +214,12 @@ def _analyze_scanner(lines: list[dict]) -> dict:
         if m:
             result["realtime_dropped_names"].append(f"{m.group(1)}({m.group(2)})")
 
-        # [임시] DB vs API 수급 비교
-        if "✅" in msg and "외인: DB=" in msg:
-            result["supply_cmp_total"] += 1
-            result["supply_cmp_match"] += 1
-        elif "❌" in msg and "외인: DB=" in msg:
-            result["supply_cmp_total"] += 1
-            result["supply_cmp_mismatch"] += 1
-
-        # [임시] ETF 수급 조회
-        if "[ETF수급]" in msg:
-            result["etf_supply_total"] += 1
-            if "데이터=있음" in msg:
-                result["etf_supply_has_data"] += 1
-            elif "데이터=없음" in msg:
-                result["etf_supply_empty"] += 1
+        # 수급 가집계
+        m_est = re.search(r"\[수급 가집계\]\s+당일 DB 미보유\s+(\d+)종목", msg)
+        if m_est:
+            result["estimate_queried"] = int(m_est.group(1))
+        if "📊" in msg and "외인=" in msg:
+            result["estimate_hits"] += 1
 
     return result
 
@@ -319,8 +300,6 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
     if scanner["supply_hits"]:
         hits = ", ".join(f"{k}:{v}" for k, v in scanner["supply_hits"].most_common(5))
         parts.append(f"  수급 플래그: {hits}")
-    if scanner["sector_adj_count"]:
-        parts.append(f"  업종 점수 조정 {scanner['sector_adj_count']}종목")
     if scanner["realtime_dropped"]:
         names = ", ".join(scanner["realtime_dropped_names"][:5])
         parts.append(
@@ -329,24 +308,11 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
     if scanner["po_created"]:
         parts.append(f"  PO 생성 {scanner['po_created']}종목")
 
-    # [임시] 수급 비교 / ETF 수급 리포트
-    if scanner["supply_cmp_total"] or scanner["etf_supply_total"]:
-        parts.append("")
-        parts.append("【수급 검증 (임시)】")
-        if scanner["supply_cmp_total"]:
-            parts.append(
-                f"  DB vs API: {scanner['supply_cmp_total']}종목 대조"
-                f" → 일치 {scanner['supply_cmp_match']}"
-                f" / 불일치 {scanner['supply_cmp_mismatch']}"
-            )
-        if scanner["etf_supply_total"]:
-            parts.append(
-                f"  ETF 수급: {scanner['etf_supply_total']}종목 조회"
-                f" → 데이터 {scanner['etf_supply_has_data']}"
-                f" / 빈값 {scanner['etf_supply_empty']}"
-            )
-            if scanner["etf_supply_total"] == scanner["etf_supply_empty"]:
-                parts.append("  ⚠️ ETF 수급 전량 빈값 → 데이터 정확성 의심")
+    if scanner["estimate_queried"]:
+        parts.append(
+            f"  수급 가집계 조회 {scanner['estimate_queried']}종목"
+            f" → 데이터 {scanner['estimate_hits']}건"
+        )
 
     parts.append("")
     parts.append("【건전성】")

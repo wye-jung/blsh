@@ -31,8 +31,8 @@ CRON_ENTRIES=(
     # 2. 데이터 수집 + PO 생성 — PRE (매일 월~금 07:30, 전일 스캔 → PO①)
     "30 7 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
 
-    # 3. 데이터 수집 + PO 생성 — INI (매일 월~금 10:05, 장초반 스캔 → PO②)
-    "5 10 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
+    # 3. 데이터 수집 + PO 생성 — INI (매일 월~금 11:30, 장초반 스캔 → PO②)
+    "30 11 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
 
     # 4. 데이터 수집 + PO 생성 — FIN (매일 월~금 15:05, 청산 후 매수 → PO③)
     "5 15 * * 1-5 $CRON_INIT && uv run python -m wye.blsh po >> $CRON_LOG_DIR/po.log 2>&1 $BLSH_TAG"
@@ -79,7 +79,7 @@ install_cron() {
     echo "  월   06:00  휴장일 데이터 수집"
     echo "  월~금 07:30  데이터 수집 + PO① (전일 스캔)"
     echo "  월~금 07:55  트레이더 실행 + watchdog"
-    echo "  월~금 10:05  데이터 수집 + PO② (장초반 스캔)"
+    echo "  월~금 11:30  데이터 수집 + PO② (장초반 스캔)"
     echo "  월~금 15:05  데이터 수집 + PO③ (청산 후 스캔)"
     echo "  월~금 20:30  일일 로그 분석 리포트"
     echo "  토   02:00  Grid Search 최적화"

@@ -10,7 +10,7 @@
 |------|------|
 | 08:00 | PO(1) NXT 지정가 매수 (30%), 30초 간격 pending 체결 확인 |
 | 09:00 | KRX 개장. 실패 PRE 재시도, 유령 체크, 만기 청산, SL/TP 시작 |
-| ~10:10 | PO(2) 파일 감지 -> KRX 지정가 매수 (15%), 10분 후 미체결 취소 |
+| ~11:35 | PO(2) 파일 감지 -> KRX 지정가 매수 (15%), 10분 후 미체결 취소 |
 | 15:15 | 만기 종목 시장가 청산 -> PO(3) KRX 매수 (55% x 90%) |
 | 15:30 | KRX 마감 -> FIN 미체결분 NXT 재발주 |
 | 15:30-20:00 | NXT 에프터마켓 SL/TP (NXT는 지정가만) |
@@ -18,9 +18,11 @@
 
 ## SL/TP 로직
 
+SL/TP는 `effective_ATR = min(ATR, close x ATR_CAP)` 기준으로 계산 (scanner에서 설정, docs/scanner.md 참조).
+
 1. **손절**: `현재가 <= SL` -> 전량 시장가 매도 (KRX) / 하한가 지정가 (NXT)
 2. **1차 익절**: `현재가 >= TP1` -> `TP1_RATIO` 비율 매도, SL -> 매수가(본전)
-3. **트레일링 SL**: 전일 고가 기준 `prev_high - ATR x ATR_SL_MULT`로 상향만 (보수적)
+3. **트레일링 SL**: 진입 이후 최고가 기준 `high_since_entry - effective_ATR x ATR_SL_MULT`로 상향만 (시뮬레이션과 동일)
 4. **2차 익절**: `현재가 >= TP2` -> 잔량 전량 매도
 
 ### 거래소 라우팅
@@ -71,6 +73,7 @@ ticker, name, qty, buy_price, atr
 sl, tp1, tp2, mode, max_hold_days
 entry_date, expiry_date, t1_done, qty_t1
 realized_pnl, po_type, excg_cd, sell_fail_count
+high_since_entry  # 진입 이후 최고가 (트레일링 SL 기준)
 ```
 
 ## 종료 처리

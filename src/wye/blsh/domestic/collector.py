@@ -41,14 +41,20 @@ def collect() -> tuple[bool, str]:
         from_date = latest_biz_date
     else:
         fetched_at = query.get_fetched_at(max_ohlcv_date)
-        if (
+        fetched_str = (
             fetched_at.strftime(dtutils.DATE_FMT + dtutils.TIME_FMT)
             if fetched_at
             else "0"
-        ) < max_ohlcv_date + "220000":
+        )
+        threshold = max_ohlcv_date + "220000"
+        if fetched_str < threshold:
             from_date = max_ohlcv_date
         elif max_ohlcv_date < latest_biz_date:
             from_date = dtutils.add_biz_days(max_ohlcv_date, 1)
+        log.info(
+            f"[collect] latest_biz={latest_biz_date}  max_ohlcv={max_ohlcv_date}"
+            f"  fetched={fetched_str}  threshold={threshold}  from_date={from_date}"
+        )
 
     if from_date is not None:
         _collect_daily(
@@ -59,7 +65,13 @@ def collect() -> tuple[bool, str]:
             _collect_base_info()
 
     max_ohlcv_date = query.get_max_ohlcv_date()
-    return max_ohlcv_date == latest_biz_date, max_ohlcv_date
+    collected = max_ohlcv_date == latest_biz_date
+    if not collected:
+        log.warning(
+            f"[collect] 수집 후 불일치: max_ohlcv={max_ohlcv_date}"
+            f"  latest_biz={latest_biz_date}"
+        )
+    return collected, max_ohlcv_date
 
 
 def _collect_daily(from_date, to_date):

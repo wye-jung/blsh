@@ -1,7 +1,7 @@
 """
 최적화용 데이터 캐시
 ──────────────────────────────────
-Phase 1: OHLCV + 수급 + 지수 벌크 로드 (~1분)
+Phase 1: OHLCV + 지수 벌크 로드 (~1분)
 Phase 2: 종목별 벡터화 지표 계산 (~2분)
 Phase 3: 전 영업일 신호 수집 + 수급 보강 (~1분)
 Phase 4: pickle 저장 (~10초)
@@ -34,7 +34,6 @@ from wye.blsh.domestic.scanner import (
     GAP_THRESHOLD,
     RSI_OVERSOLD,
     W52_VOL_MULT,
-    INDEX_DROP_LIMIT,
     LOOKBACK_DAYS,
     TRDVAL_MIN,
     MACD_LONG,
@@ -42,12 +41,6 @@ from wye.blsh.domestic.scanner import (
     SUPPLY_CAP,
 )
 
-
-# 업종코드 → DB 지수명 매핑은 sector.py에서 참조
-_KOSPI_MID_TO_IDX = sector.KOSPI_MID_TO_IDX
-_KOSPI_BIG_TO_IDX = sector.KOSPI_BIG_TO_IDX
-_KOSDAQ_MID_TO_IDX = sector.KOSDAQ_MID_TO_IDX
-_KOSDAQ_BIG_TO_IDX = sector.KOSDAQ_BIG_TO_IDX
 
 log = logging.getLogger(__name__)
 CACHE_DIR = _BLSH_CACHE_DIR / "optimize"
@@ -155,7 +148,7 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     out["BBM"] = (c0 > bbm0) & (c1 <= bbm1)
 
     # 7. VS: 거래량 급증 + 양봉 (+1)
-    vol_avg = v.shift(1).rolling(19, min_periods=19).mean()
+    vol_avg = v.shift(1).rolling(20, min_periods=20).mean()
     out["VS"] = (v > vol_avg * 2) & (c0 > c1)
 
     # 8. MAA: 이동평균 정배열 전환 (+1)
@@ -204,7 +197,10 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
         & (c0 > (o_2 + c_2) / 2)
     )
 
-    # 15. OBV: 3일 연속 상승 (+1)
+    # 15. BE: Bullish Engulfing (+2)
+    out["BE"] = (c_1 < o_1) & (c0 > o) & (o <= c_1) & (c0 >= o_1)
+
+    # 16. OBV: 3일 연속 상승 (+1)
     out["OBV"] = (obv > obv.shift(1)) & (obv.shift(1) > obv.shift(2))
 
     # 메타 컬럼 (나중에 entry_price / SL / TP 계산용)
@@ -220,9 +216,9 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────
 # 지수 환경 (시장 + 업종)
 # ─────────────────────────────────────────
-def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
-    """날짜별 KOSPI/KOSDAQ 20MA 환경. {date: {'KOSPI': bool, 'KOSDAQ': bool}}"""
-    result: dict[str, dict[str, bool]] = {}
+def _compute_index_env(start: str, end: str) -> dict[str, dict[str, float]]:
+    """날짜별 KOSPI/KOSDAQ 20MA 괴리율. {date: {'KOSPI': float, 'KOSDAQ': float}}"""
+    result: dict[str, dict[str, float]] = {}
     for idx_nm, key, clss in [
         ("코스피", "KOSPI", sector.IDX_CLSS_KOSPI),
         ("코스닥", "KOSDAQ", sector.IDX_CLSS_KOSDAQ),
@@ -244,111 +240,9 @@ def _compute_index_env(start: str, end: str) -> dict[str, dict[str, bool]]:
         gap = (price - ma20) / ma20
         for d, v in gap.items():
             if pd.notna(v):
-                result.setdefault(d, {})[key] = v >= -INDEX_DROP_LIMIT
+                result.setdefault(d, {})[key] = float(v)
     return result
 
-
-def _compute_sector_gaps(start: str, end: str) -> dict[tuple[str, str, str], float]:
-    """업종지수별 MA20 괴리율. {(idx_nm, idx_clss, date): gap_pct}
-
-    gap_pct: (price - MA20) / MA20
-    예) -0.05 = MA20 대비 -5%
-    """
-    # (idx_nm, idx_clss) 쌍 생성 — KOSPI/KOSDAQ 동명 업종 구분
-    sector_pairs: set[tuple[str, str]] = set()
-    for nm in _KOSPI_MID_TO_IDX.values():
-        sector_pairs.add((nm, sector.IDX_CLSS_KOSPI))
-    for nm in _KOSPI_BIG_TO_IDX.values():
-        sector_pairs.add((nm, sector.IDX_CLSS_KOSPI))
-    for nm in _KOSDAQ_MID_TO_IDX.values():
-        sector_pairs.add((nm, sector.IDX_CLSS_KOSDAQ))
-    for nm in _KOSDAQ_BIG_TO_IDX.values():
-        sector_pairs.add((nm, sector.IDX_CLSS_KOSDAQ))
-    sector_pairs.add(("코스피", sector.IDX_CLSS_KOSPI))
-    sector_pairs.add(("코스닥", sector.IDX_CLSS_KOSDAQ))
-
-    result: dict[tuple[str, str, str], float] = {}
-
-    for idx_nm, clss in sector_pairs:
-        rows = select_all(
-            "SELECT trd_dd, clsprc_idx FROM idx_stk_ohlcv "
-            "WHERE idx_nm = :nm AND idx_clss = :clss "
-            "AND trd_dd >= :s AND trd_dd <= :e ORDER BY trd_dd",
-            nm=idx_nm,
-            clss=clss,
-            s=start,
-            e=end,
-        )
-        if not rows:
-            continue
-        df = pd.DataFrame(rows).drop_duplicates(subset="trd_dd").set_index("trd_dd")
-        price = pd.to_numeric(df["clsprc_idx"], errors="coerce")
-        ma20 = price.rolling(20).mean().shift(1)  # 당일 제외 MA20
-        gap = (price - ma20) / ma20
-        for d, v in gap.items():
-            if pd.notna(v):
-                result[(idx_nm, clss, d)] = float(v)
-
-    log.info(f"  업종지수 환경: {len(sector_pairs)}업종, {len(result):,}건")
-    return result
-
-
-def _build_ticker_sector_map(ticker_market: dict[str, str]) -> dict[str, str]:
-    """종목코드 → 업종지수명 매핑.
-
-    KOSPI: 중분류 우선, 대분류 fallback, 미매핑 → "코스피"
-    KOSDAQ: 중분류 우선, 대분류 fallback, 미매핑 → "코스닥"
-    """
-    from wye.blsh.kis.domestic_stock.domestic_stock_info import (
-        get_kospi_info,
-        get_kosdaq_info,
-    )
-
-    result: dict[str, str] = {}
-    kospi_tickers = {t for t, m in ticker_market.items() if m == "KOSPI"}
-    kosdaq_tickers = {t for t, m in ticker_market.items() if m == "KOSDAQ"}
-
-    try:
-        # KOSPI
-        kp = get_kospi_info()
-        for _, row in kp.iterrows():
-            ticker = str(row["단축코드"]).strip()
-            if ticker not in kospi_tickers:
-                continue
-            mid = int(row.get("지수업종중분류", 0) or 0)
-            big = int(row.get("지수업종대분류", 0) or 0)
-            idx_nm = _KOSPI_MID_TO_IDX.get(mid) or _KOSPI_BIG_TO_IDX.get(big)
-            result[ticker] = idx_nm or "코스피"  # 미매핑 → 전체 지수
-        kp_mapped = sum(1 for t in kospi_tickers if result.get(t, "코스피") != "코스피")
-        log.info(
-            f"  KOSPI 업종매핑: {kp_mapped}/{len(kospi_tickers)}종목 (미매핑→코스피)"
-        )
-
-        # KOSDAQ
-        kd = get_kosdaq_info()
-        for _, row in kd.iterrows():
-            ticker = str(row["단축코드"]).strip()
-            if ticker not in kosdaq_tickers:
-                continue
-            mid = int(row.get("지수 업종 중분류 코드", 0) or 0)
-            big = int(row.get("지수업종 대분류 코드", 0) or 0)
-            idx_nm = _KOSDAQ_MID_TO_IDX.get(mid) or _KOSDAQ_BIG_TO_IDX.get(big)
-            result[ticker] = idx_nm or "코스닥"  # 미매핑 → 전체 지수
-        kd_mapped = sum(
-            1 for t in kosdaq_tickers if result.get(t, "코스닥") != "코스닥"
-        )
-        log.info(
-            f"  KOSDAQ 업종매핑: {kd_mapped}/{len(kosdaq_tickers)}종목 (미매핑→코스닥)"
-        )
-    except Exception as e:
-        log.warning(f"  마스터 로드 실패: {e}")
-        # fallback: 미매핑 종목 전체 지수
-        for t in kospi_tickers:
-            result.setdefault(t, "코스피")
-        for t in kosdaq_tickers:
-            result.setdefault(t, "코스닥")
-
-    return result
 
 
 # ─────────────────────────────────────────
@@ -436,10 +330,6 @@ class OptCache:
         self.ohlcv_idx: dict[tuple[str, str], dict] = {}
         self.name_map: dict[str, str] = {}
         self.ticker_market: dict[str, str] = {}
-        self.ticker_sector: dict[str, str] = {}  # ticker → 업종지수명
-        self.sector_gaps: dict[
-            tuple[str, str, str], float
-        ] = {}  # (업종지수명, idx_clss, date) → MA20 괴리율
         # numba용 (build_arrays()로 생성)
         self.ohlcv_arrays: dict[str, np.ndarray] | None = None
         self.date_to_idx: dict[str, int] | None = None
@@ -466,12 +356,11 @@ class OptCache:
             f"[numpy] OHLCV 배열 변환 완료: {len(tickers)}종목 × {n_dates}일"
         )
 
-    def precompute_signals(self, min_score: int = 0, max_sector_bonus: int = 1):
+    def precompute_signals(self, min_score: int = 0):
         """signal별 OHLCV 슬라이스를 사전 계산 (backtest 루프 최적화).
 
         Args:
-            min_score: GRID 최소 invest_min_score. score + max_sector_bonus < min_score인 signal 제거.
-            max_sector_bonus: sector 보너스 최대값 (GRID에서 추출).
+            min_score: GRID 최소 invest_min_score. score < min_score인 signal 제거.
 
         각 signal dict에 _buy, _opens, _highs, _lows, _closes, _n_bars, _mode_id 추가.
         _skip=True인 signal은 backtest에서 건너뜀.
@@ -502,8 +391,8 @@ class OptCache:
             for sig in sigs:
                 total += 1
 
-                # score 사전 필터: 최대 가능 점수가 min_score 미달이면 스킵
-                if min_score > 0 and sig["score"] + max_sector_bonus < min_score:
+                # score 사전 필터: min_score 미달이면 스킵
+                if min_score > 0 and sig["score"] < min_score:
                     sig["_skip"] = True
                     skipped += 1
                     continue
@@ -554,7 +443,6 @@ class OptCache:
             self.flat_buy = np.empty(0, dtype=np.float64)
             self.flat_atr = np.empty(0, dtype=np.float64)
             self.flat_score = np.empty(0, dtype=np.int64)
-            self.flat_sec_gap = np.empty(0, dtype=np.float64)
             self.flat_mode_id = np.empty(0, dtype=np.int64)
             self.flat_n_bars = np.empty(0, dtype=np.int64)
             self.flat_opens = np.empty((0, 1), dtype=np.float64)
@@ -564,6 +452,8 @@ class OptCache:
             self.flat_flag_mask = np.empty(0, dtype=np.int64)
             self.flat_supply_bonus = np.empty(0, dtype=np.int64)
             self.flat_has_pov = np.empty(0, dtype=np.int64)
+            self.flat_idx_gap = np.empty(0, dtype=np.float64)
+            self.flat_date_idx = np.empty(0, dtype=np.int64)
             return
 
         max_bars = max(s["_n_bars"] for s in sigs_flat)
@@ -571,7 +461,6 @@ class OptCache:
         self.flat_buy = np.empty(n, dtype=np.float64)
         self.flat_atr = np.empty(n, dtype=np.float64)
         self.flat_score = np.empty(n, dtype=np.int64)
-        self.flat_sec_gap = np.empty(n, dtype=np.float64)
         self.flat_mode_id = np.empty(n, dtype=np.int64)
         self.flat_n_bars = np.empty(n, dtype=np.int64)
         self.flat_opens = np.zeros((n, max_bars), dtype=np.float64)
@@ -581,12 +470,15 @@ class OptCache:
         self.flat_flag_mask = np.empty(n, dtype=np.int64)
         self.flat_supply_bonus = np.empty(n, dtype=np.int64)
         self.flat_has_pov = np.empty(n, dtype=np.int64)
+        self.flat_idx_gap = np.empty(n, dtype=np.float64)
+        self.flat_date_idx = np.empty(n, dtype=np.int64)
+
+        date_to_ord = {d: i for i, d in enumerate(self.scan_dates)}
 
         for i, sig in enumerate(sigs_flat):
             self.flat_buy[i] = sig["_buy"]
             self.flat_atr[i] = sig["atr"]
             self.flat_score[i] = sig["score"]
-            self.flat_sec_gap[i] = sig.get("sector_gap", 0.0)
             self.flat_mode_id[i] = sig["_mode_id"]
             nb = sig["_n_bars"]
             self.flat_n_bars[i] = nb
@@ -608,6 +500,8 @@ class OptCache:
                 sig.get("raw_supply_bonus", 0), SUPPLY_CAP,
             )
             self.flat_has_pov[i] = 1 if "P_OV" in flags else 0
+            self.flat_idx_gap[i] = sig.get("idx_gap", 0.0)
+            self.flat_date_idx[i] = date_to_ord.get(sig.get("_base_date", ""), 0)
 
         log.info(f"[flat] {n:,}건 → numpy 배열 (max_bars={max_bars})")
 
@@ -627,8 +521,6 @@ class OptCache:
         sliced.date_to_idx = self.date_to_idx
         sliced.name_map = self.name_map
         sliced.ticker_market = self.ticker_market
-        sliced.ticker_sector = self.ticker_sector
-        sliced.sector_gaps = self.sector_gaps
         return sliced
 
     def update_flat_scores(self):
@@ -692,7 +584,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     cache = OptCache()
 
     # ── 1. 영업일
-    log.info("[1/8] 영업일 로드")
+    log.info("[1/6] 영업일 로드")
     lookback_start = dtutils.add_days(start_date, -(LOOKBACK_DAYS + 30))
     all_biz = [
         r["d"]
@@ -721,7 +613,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     }
 
     # ── 3. OHLCV 벌크 로드
-    log.info("[2/8] OHLCV 벌크 로드")
+    log.info("[2/6] OHLCV 벌크 로드")
     ohlcv_by_ticker: dict[str, pd.DataFrame] = {}
     for table, market in [("isu_ksp_ohlcv", "KOSPI"), ("isu_ksd_ohlcv", "KOSDAQ")]:
         t0 = time.time()
@@ -758,17 +650,11 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                 }
 
     # ── 4. 지수 환경 + 업종지수 환경
-    log.info("[3/8] 지수 환경")
-    idx_ok = _compute_index_env(lookback_start, end_date)
+    log.info("[3/6] 지수 환경")
+    idx_gaps = _compute_index_env(lookback_start, end_date)
 
-    log.info("[4/8] 업종지수 환경")
-    cache.sector_gaps = _compute_sector_gaps(lookback_start, end_date)
-
-    log.info("[5/8] 종목→업종 매핑")
-    cache.ticker_sector = _build_ticker_sector_map(cache.ticker_market)
-
-    # ── 5. 거래대금 필터
-    log.info("[6/8] 거래대금 필터")
+    # ── 4. 거래대금 필터
+    log.info("[4/6] 거래대금 필터")
     trdval_pass: dict[str, set[str]] = {}  # {date: set(ticker)}
     for ticker, df in ohlcv_by_ticker.items():
         avg20 = df["trdval"].rolling(20, min_periods=10).mean()
@@ -781,7 +667,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                 trdval_pass.setdefault(d, set()).add(ticker)
 
     # ── 6. 벡터화 신호 계산
-    log.info("[7/8] 벡터화 신호 계산")
+    log.info("[5/6] 벡터화 신호 계산")
     stock_sigs: dict[str, pd.DataFrame] = {}
     total = len(ohlcv_by_ticker)
     t0 = time.time()
@@ -798,13 +684,13 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
     log.info(f"  완료: {len(stock_sigs)}종목 ({time.time() - t0:.0f}초)")
 
     # ── 7. 수급 보강
-    log.info("[8/8] 수급 보강")
+    log.info("[6/6] 수급 보강")
     supply = _bulk_supply(start_date, end_date, cache.scan_dates)
 
     # ── 8. 날짜별 신호 수집
     log.info("[집계] 날짜별 신호 수집")
     for date in cache.scan_dates:
-        mkt_ok = idx_ok.get(date, {"KOSPI": True, "KOSDAQ": True})
+        date_idx_gaps = idx_gaps.get(date, {})
         eligible = trdval_pass.get(date, set())
         day_sigs: list[dict] = []
 
@@ -812,8 +698,6 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             if ticker not in eligible:
                 continue
             mkt = cache.ticker_market.get(ticker, "")
-            if not mkt_ok.get(mkt, True):
-                continue
             if date not in sig_df.index:
                 continue
 
@@ -845,13 +729,6 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
 
             entry_price = Tick.ceil_tick(close_val + 0.5 * atr_val)
 
-            # 업종지수 MA20 괴리율 (없으면 0.0 = 중립)
-            sec_nm = cache.ticker_sector.get(ticker, "")
-            idx_clss = sector.get_idx_clss(mkt)
-            sec_gap = (
-                cache.sector_gaps.get((sec_nm, idx_clss, date), 0.0) if sec_nm else 0.0
-            )
-
             day_sigs.append(
                 {
                     "ticker": ticker,
@@ -865,8 +742,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
                     "atr": atr_val,
                     "close": close_val,
                     "entry_price": entry_price,
-                    "sector_gap": sec_gap,
-                    "sector_nm": sec_nm,
+                    "idx_gap": date_idx_gaps.get(mkt, 0.0),
+                    "_base_date": date,
                 }
             )
         cache.signals[date] = day_sigs

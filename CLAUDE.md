@@ -36,9 +36,12 @@ KIS_ENV=real uv run python -m wye.blsh
 
 # 최적화
 uv run python -m wye.blsh.domestic.optimize.grid_search [--rebuild|--years N|--alternating]
-uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward [--train-months 18 --val-months 6]
+uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward [--train-months 18 --val-months 6 --detail]
 uv run python -m wye.blsh.domestic.optimize.signal_analysis
 uv run python -m wye.blsh.domestic.optimize.supply_cap_test
+
+# 진단
+uv run python -m wye.blsh.domestic.optimize.diag_market [--start YYYYMMDD --end YYYYMMDD]
 
 # bin/ 스크립트
 bin/watchdog.sh [monitor|stop|status]     # 트레이더 + 모니터링
@@ -77,7 +80,7 @@ src/wye/blsh/
 ```
 07:30 po → PO①(pre)     07:55 watchdog → trader 시작
 08:00 trader → NXT 매수   09:00 KRX 개장, SL/TP 시작
-10:05 po → PO②(ini)      ~10:10 trader → KRX 매수
+11:30 po → PO②(ini)      ~11:35 trader → KRX 매수
 15:05 po → PO③(fin)      15:15 trader → 청산 + 매수
 15:30 NXT 에프터마켓      20:00 trader 종료
 20:30 analyze → 텔레그램   토 02:00 grid_search
@@ -85,8 +88,8 @@ src/wye/blsh/
 
 ## Key Configuration (config.py)
 
-- `Optimized` 클래스: `grid_search`가 자동 갱신 (SL/TP/보유일/점수 등)
-- `SIGNAL_SCORES`: 15개 플래그 점수 (grid_search 자동 갱신)
+- `Optimized` 클래스: `grid_search`가 자동 갱신 (SL/TP/보유일/점수/INDEX_DROP_LIMIT/ATR_CAP 등)
+- `SIGNAL_SCORES`: Optimized 클래스 내 16개 플래그 점수 (BE 포함, grid_search 자동 갱신)
 - `SUPPLY_CAP = 3`: 수급 가산 상한 (scanner + _cache 양쪽 적용)
 - `MAX_ALLOC_TIERS`: 총자산 규모별 종목당 배분 비율 상한
 
@@ -98,6 +101,7 @@ src/wye/blsh/
 - `messageutils.send_message()`는 `future.result(timeout=10)` 대기 — CLI 종료 전 전송 보장
 - `_recreate()` (collector): 트랜잭션 분리 — 묶으면 커넥션 경합 발생
 - 코드 변경되면 문서도 업데이트 할 것
+- 업종(sector) 패널티/보너스는 완전히 제거됨 (scanner/config/optimize 모두)
 - 요청이 적절하지 않다고 판단하면 의견 제시할 것
 
 ## Docs

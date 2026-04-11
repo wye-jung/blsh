@@ -98,11 +98,15 @@ def ceil_tick_nb(price):
 def sim_one_nb(
     buy, sl, tp1, tp2, tp1_ratio, atr_sl_mult, atr,
     opens, highs, lows, closes, n_bars, sell_cost_rate,
+    atr_cap,
 ):
     """numba JIT SL/TP 루프. sim_one()과 동일 로직, numpy 배열 입력.
 
     Returns: (result_type_id, ret_pct, exit_price, exit_idx)
     """
+    # ATR cap: 변동성 과대 시 SL/TP 거리 제한
+    effective_atr = min(atr, buy * atr_cap)
+
     remaining = 1.0
     pnl = 0.0
     t1_done = False
@@ -121,7 +125,7 @@ def sim_one_nb(
 
         # 트레일링 SL: 전일 high 기준
         if prev_high > 0.0:
-            trail_sl = floor_tick_nb(prev_high - atr_sl_mult * atr)
+            trail_sl = floor_tick_nb(prev_high - atr_sl_mult * effective_atr)
             if trail_sl > sl and trail_sl < prev_high:
                 sl = float(trail_sl)
 
@@ -181,16 +185,19 @@ def sim_one_nb(
 
 @nb.jit(nopython=True, cache=True, fastmath=True)
 def backtest_nb(
-    buy_arr, atr_arr, score_arr, sec_gap_arr, mode_id_arr, n_bars_arr,
+    buy_arr, atr_arr, score_arr, mode_id_arr, n_bars_arr,
     opens_2d, highs_2d, lows_2d, closes_2d,
     min_score, sl_mult, tp1_mult, tp2_mult, tp1_ratio,
     max_hold_rev, max_hold_mix, max_hold_mom,
-    pen_pts, pen_th, bon_pts, bon_th, sell_cost_rate,
+    sell_cost_rate,
+    idx_gap_arr, max_idx_drop,
+    atr_cap,
+    date_idx_arr, max_date_idx, half_life,
 ):
     """전체 백테스트 루프 (numba JIT).
 
     flat numpy 배열로 전환된 신호 데이터를 받아 Python 오버헤드 없이 실행.
-    Returns: (trades, wins, losses, holds, total_ret, ret_sq)
+    Returns: (trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum)
     """
     n_sigs = len(buy_arr)
     trades = 0
@@ -199,23 +206,25 @@ def backtest_nb(
     holds = 0
     total_ret = 0.0
     ret_sq = 0.0
+    w_total_ret = 0.0
+    w_ret_sq = 0.0
+    w_sum = 0.0
 
     for i in range(n_sigs):
         eff_score = int(score_arr[i])
-        sg = sec_gap_arr[i]
-        if pen_pts != 0 and sg < pen_th:
-            eff_score += pen_pts
-        elif bon_pts != 0 and sg >= bon_th:
-            eff_score += bon_pts
 
         if eff_score < min_score:
             continue
 
+        if idx_gap_arr[i] < -max_idx_drop:
+            continue
+
         buy = buy_arr[i]
         atr = atr_arr[i]
-        sl = float(floor_tick_nb(buy - sl_mult * atr))
-        tp1 = float(ceil_tick_nb(buy + tp1_mult * atr))
-        tp2 = float(ceil_tick_nb(buy + tp2_mult * atr))
+        effective_atr = min(atr, buy * atr_cap)
+        sl = float(floor_tick_nb(buy - sl_mult * effective_atr))
+        tp1 = float(ceil_tick_nb(buy + tp1_mult * effective_atr))
+        tp2 = float(ceil_tick_nb(buy + tp2_mult * effective_atr))
 
         mid = mode_id_arr[i]
         if mid == 2:
@@ -232,11 +241,21 @@ def backtest_nb(
             buy, sl, tp1, tp2, tp1_ratio, sl_mult, atr,
             opens_2d[i], highs_2d[i], lows_2d[i], closes_2d[i],
             n, sell_cost_rate,
+            atr_cap,
         )
 
         trades += 1
         total_ret += ret_pct
         ret_sq += ret_pct * ret_pct
+
+        if half_life > 0:
+            w = 2.0 ** (-(max_date_idx - date_idx_arr[i]) / half_life)
+        else:
+            w = 1.0
+        w_total_ret += ret_pct * w
+        w_ret_sq += ret_pct * ret_pct * w
+        w_sum += w
+
         if res_id <= 3:
             if res_id == 0:
                 losses += 1
@@ -245,19 +264,22 @@ def backtest_nb(
         else:
             holds += 1
 
-    return trades, wins, losses, holds, total_ret, ret_sq
+    return trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum
 
 
 @nb.jit(nopython=True, cache=True, fastmath=True)
 def backtest_scores_nb(
     flag_mask_arr, supply_bonus_arr, has_pov_arr,
-    buy_arr, atr_arr, sec_gap_arr, n_bars_arr,
+    buy_arr, atr_arr, n_bars_arr,
     opens_2d, highs_2d, lows_2d, closes_2d,
     score_values, mom_mask, rev_mask, n_flags,
     min_score,
     sl_mult, tp1_mult, tp2_mult, tp1_ratio,
     max_hold_rev, max_hold_mix, max_hold_mom,
-    pen_pts, pen_th, bon_pts, bon_th, sell_cost_rate,
+    sell_cost_rate,
+    idx_gap_arr, max_idx_drop,
+    atr_cap,
+    date_idx_arr, max_date_idx, half_life,
 ):
     """backtest_scores의 numba 버전. 플래그 비트마스크 + 점수 배열로 score 재계산.
 
@@ -267,7 +289,7 @@ def backtest_scores_nb(
         has_pov_arr: (N,) int64 — P_OV 여부 (0/1)
         score_values: (n_flags,) int64 — 플래그 인덱스별 점수
         mom_mask, rev_mask: int64 — 모멘텀/전환 플래그 비트마스크
-    Returns: (trades, wins, losses, holds, total_ret, ret_sq)
+    Returns: (trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum)
     """
     n_sigs = len(buy_arr)
     trades = 0
@@ -276,8 +298,14 @@ def backtest_scores_nb(
     holds = 0
     total_ret = 0.0
     ret_sq = 0.0
+    w_total_ret = 0.0
+    w_ret_sq = 0.0
+    w_sum = 0.0
 
     for i in range(n_sigs):
+        if idx_gap_arr[i] < -max_idx_drop:
+            continue
+
         fm = flag_mask_arr[i]
         mom_cnt = 0
         rev_cnt = 0
@@ -316,20 +344,15 @@ def backtest_scores_nb(
         if has_pov_arr[i]:
             eff_score -= 1
 
-        sg = sec_gap_arr[i]
-        if pen_pts != 0 and sg < pen_th:
-            eff_score += pen_pts
-        elif bon_pts != 0 and sg >= bon_th:
-            eff_score += bon_pts
-
         if eff_score < min_score:
             continue
 
         buy = buy_arr[i]
         atr = atr_arr[i]
-        sl = float(floor_tick_nb(buy - sl_mult * atr))
-        tp1 = float(ceil_tick_nb(buy + tp1_mult * atr))
-        tp2 = float(ceil_tick_nb(buy + tp2_mult * atr))
+        effective_atr = min(atr, buy * atr_cap)
+        sl = float(floor_tick_nb(buy - sl_mult * effective_atr))
+        tp1 = float(ceil_tick_nb(buy + tp1_mult * effective_atr))
+        tp2 = float(ceil_tick_nb(buy + tp2_mult * effective_atr))
 
         if mode_id == 2:
             max_d = max_hold_mom
@@ -345,11 +368,21 @@ def backtest_scores_nb(
             buy, sl, tp1, tp2, tp1_ratio, sl_mult, atr,
             opens_2d[i], highs_2d[i], lows_2d[i], closes_2d[i],
             n, sell_cost_rate,
+            atr_cap,
         )
 
         trades += 1
         total_ret += ret_pct
         ret_sq += ret_pct * ret_pct
+
+        if half_life > 0:
+            w = 2.0 ** (-(max_date_idx - date_idx_arr[i]) / half_life)
+        else:
+            w = 1.0
+        w_total_ret += ret_pct * w
+        w_ret_sq += ret_pct * ret_pct * w
+        w_sum += w
+
         if res_id == 0:
             losses += 1
         elif res_id <= 3:
@@ -357,7 +390,7 @@ def backtest_scores_nb(
         else:
             holds += 1
 
-    return trades, wins, losses, holds, total_ret, ret_sq
+    return trades, wins, losses, holds, total_ret, ret_sq, w_total_ret, w_ret_sq, w_sum
 
 
 def sim_one(
@@ -371,6 +404,7 @@ def sim_one(
     dates: list[str],
     get_ohv: Callable[[str], dict | None],
     sell_cost_rate: float = SELL_COST_RATE,
+    atr_cap: float = 0.50,
 ) -> tuple[str, float, float | None, str | None, dict | None]:
     """
     단일 종목 SL/TP 루프.
@@ -409,8 +443,9 @@ def sim_one(
         last_ohv = ohv
 
         if prev_high is not None:
-            # 트레일링 SL: 전일 high 기준 갱신
-            trail_sl = Tick.floor_tick(prev_high - atr_sl_mult * atr)
+            # 트레일링 SL: 전일 high 기준 갱신 (ATR_CAP 적용)
+            eff_atr = min(atr, buy * atr_cap)
+            trail_sl = Tick.floor_tick(prev_high - atr_sl_mult * eff_atr)
             if trail_sl > sl and trail_sl < prev_high:
                 sl = trail_sl
 

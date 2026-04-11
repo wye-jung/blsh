@@ -36,6 +36,14 @@
 - 환경별: `DATA_DIR`, `LOG_DIR`, `BACKUP_DIR` -> `~/.blsh/{KIS_ENV}/{data,logs,backup}`
 - 공통: `CACHE_DIR` -> `~/.blsh/cache`, `TEMP_DIR` -> `~/.blsh/temp`
 
+## 실시간 수급 추정 (scanner.py)
+
+`fetch_investor_estimate()` -- 실전투자 장중 전용:
+- KIS `investor_trend_estimate` API (TR_ID: HHPTJ04160200) 호출
+- 외국인 09:30, 기관 11:20부터 당일 가집계 데이터 제공
+- DB에 당일 수급 데이터가 없는 종목에 대해 보강
+- 모의투자에서는 미지원 (실전투자 전용 API)
+
 ## KIS Client (kis_client.py)
 
 ```python

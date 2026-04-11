@@ -14,6 +14,7 @@ from wye.blsh.database import query
 from wye.blsh.domestic import reporter, Tick
 from wye.blsh.domestic._sim_core import sim_one
 from wye.blsh.domestic.config import (
+    ATR_CAP,
     ATR_SL_MULT,
     ATR_TP_MULT,
     TP1_MULT,
@@ -161,6 +162,7 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
             atr=atr,
             dates=sig_hold_dates,
             get_ohv=days.get,
+            atr_cap=ATR_CAP,
         )
 
         # "미확정" 레이블에 보유일수 추가

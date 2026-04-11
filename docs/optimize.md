@@ -20,15 +20,14 @@
 
 - invest_min_score, atr_sl_mult, atr_tp_mult, tp1_mult, tp1_ratio
 - max_hold_days (REV/MIX/MOM)
-- sector_penalty/bonus (threshold, pts)
 
 ### 최적화 지표
 
 ```
-metric = avg_ret x sqrt(trades)
+metric = (weighted_avg_ret / weighted_std) x sqrt(trades)
 ```
-신호 품질(평균 수익률)을 우선하면서 거래 수가 적으면 sqrt로 자연스럽게 불이익.
-30건 미만은 통계 무의미로 제외 (-9999).
+시간 가중 Sharpe 지표. half-life=120 거래일로 최근 거래에 높은 가중치 부여.
+30건 미만은 통계 무의미로 제외 (-9999). std=0이면 `weighted_avg_ret x sqrt(trades)` fallback.
 
 ### GRID 범위
 
@@ -40,10 +39,14 @@ metric = avg_ret x sqrt(trades)
 | max_hold_days_rev | 3, 5, 7, 10, 15, 20 |
 | max_hold_days_mix | 2, 3, 5, 7, 10 |
 | max_hold_days_mom | 1, 2, 3 |
-| tp1_mult | 0.7, 1.0, 1.5 |
+| tp1_mult | 0.7, 1.0, 1.5, 2.0, 2.5 |
 | tp1_ratio | 0.3, 0.5, 0.7, 1.0 |
+| index_drop_limit | 0.03, 0.05, 0.10, 1.0 (1.0 = 비활성) |
+| atr_cap | 0.03, 0.05, 0.08, 0.50 (0.50 = 비활성) |
 
 최적 파라미터가 GRID 경계값에 도달하면 `[BOUNDARY]` 경고 출력.
+
+R/R 최소 비율 제약: `_dedup_combos()`에서 R/R < 0.5인 조합을 필터링 (리스크 대비 보상이 너무 낮은 파라미터 제거).
 
 ### 사용법
 
@@ -54,7 +57,7 @@ uv run python -m wye.blsh.domestic.optimize.grid_search --rebuild       # 캐시
 uv run python -m wye.blsh.domestic.optimize.grid_search --alternating   # Stage1->2 교대 수행
 ```
 
-결과는 `config.py`의 `Optimized` 클래스와 `SIGNAL_SCORES`에 자동 기록.
+결과는 `config.py`의 `Optimized` 클래스(`SIGNAL_SCORES` 포함)에 자동 기록.
 
 크론: 매주 토요일 02:00 `--alternating` 모드로 실행.
 
@@ -71,7 +74,10 @@ uv run python -m wye.blsh.domestic.optimize.grid_search --alternating   # Stage1
 uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward                 # 기본 (18개월 train + 6개월 val)
 uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --train-months 12 --val-months 6
 uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --step-months 6  # 6개월 간격 롤링
+uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --detail         # val 윈도우별 모드/시장/플래그 상세 분석
 ```
+
+`--detail`: 각 validation 윈도우에서 모드별(MOM/REV), 시장별(KOSPI/KOSDAQ), 플래그별 성과를 상세 출력.
 
 `--alternating`과 `--walkforward`는 상호 배타.
 
@@ -100,7 +106,6 @@ uv run python -m wye.blsh.domestic.optimize.supply_cap_test
 백테스트용 신호/OHLCV 캐시 빌더:
 - 수급 점수 상한(`SUPPLY_CAP`) 적용 포함
 - `--rebuild` 없이도 캐시 범위 불일치(5일 초과) 시 자동 재빌드
-- 업종 gap 계산 시 `idx_clss` 필터 적용 (KOSPI="02", KOSDAQ="03")
 
 ## Simulator (_sim_core.py + simulator.py)
 
@@ -112,12 +117,17 @@ uv run python -m wye.blsh.domestic.optimize.supply_cap_test
 
 `_sim_core.py`와 `grid_search` 내부 시뮬레이션은 동일 로직을 병행 유지해야 함.
 
+### backtest_with_trades()
+
+개별 TradeRecord 리스트를 반환하는 진단 함수. 각 거래의 진입/청산 정보를 상세히 확인할 때 사용.
+
 ## diag_market.py
 
 시장별(KOSPI/KOSDAQ) + 모드별(MOM/MIX/REV) 백테스트 성과 비교 진단 도구.
 
 ```bash
 uv run python -m wye.blsh.domestic.optimize.diag_market
+uv run python -m wye.blsh.domestic.optimize.diag_market --start 20250101 --end 20251231  # 기간 필터
 ```
 
 ## 백테스트 기간별 성과 비교 (2026-04-04)
