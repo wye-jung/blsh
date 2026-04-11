@@ -1278,6 +1278,24 @@ def _wf_report(results: list[tuple[int, str, str, str, str, Stats, Stats, Params
         log.warning(f"  Window {w}: 과적합 의심 (avg_ret 비율 < 50%)")
     log.info("=" * 100)
 
+    # 텔레그램 WF 검증 결과 요약 발송
+    try:
+        from wye.blsh.common import messageutils
+        lines = ["📊 Walk-Forward 검증 결과"]
+        for idx, ts, te, vs, ve, train_st, val_st, best_p in results:
+            ratio = val_st.avg_ret / train_st.avg_ret * 100 if train_st.avg_ret > 0 else 0
+            warn = " ⚠️" if ratio < 50 else ""
+            lines.append(
+                f"  W{idx}: T={train_st.avg_ret:+.2f}% V={val_st.avg_ret:+.2f}% ({ratio:.0f}%){warn}"
+            )
+        if ratios:
+            lines.append(f"  평균 비율: {avg_ratio:.0f}%")
+        if overfit_windows:
+            lines.append(f"  🚨 과적합 의심: W{', W'.join(str(w) for w in overfit_windows)}")
+        messageutils.send_message("\n".join(lines))
+    except Exception:
+        pass  # 텔레그램 실패 시 무시
+
 
 def _wf_detail_report(w_idx: int, trades: list[TradeRecord]):
     """WF 윈도우별 상세 분석: mode/market/flag 조합별 성과."""

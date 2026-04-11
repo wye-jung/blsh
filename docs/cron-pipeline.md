@@ -23,7 +23,7 @@ bin/setup_cron.sh status     # 현재 등록 상태 확인
 | 11:30 | 월~금 | `po` -- 데이터 수집 + PO(2) (INI: 장중 스캔) | po.log |
 | 15:05 | 월~금 | `po` -- 데이터 수집 + PO(3) (FIN: 청산 후 스캔) | po.log |
 | 20:30 | 월~금 | `analyze` -- 일일 로그 분석 -> 텔레그램 리포트 | analyze.log |
-| 02:00 | 토 | `grid_search --alternating` -- 파라미터 최적화 | optimize.log |
+| 02:00 | 토 | `grid_search --alternating` + `--walkforward` -- 최적화 + OOS 검증 | optimize.log |
 
 로그 위치: `~/.blsh/logs/`
 
