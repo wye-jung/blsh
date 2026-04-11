@@ -542,7 +542,9 @@ def _process_position(
     # _sim_core.py: SL/TP 체크 → prev_high 갱신 (당일 고가는 다음 봉에서 반영)
     # trader.py:   SL/TP 체크 → high_since_entry 갱신 (현재 틱은 다음 틱에서 반영)
     if pos.high_since_entry > 0:
-        trail_sl = Tick.floor_tick(pos.high_since_entry - pos.atr_sl_mult * pos.atr)
+        # ATR_CAP 적용 (sim_one_nb의 effective_atr와 동일)
+        eff_atr = min(pos.atr, pos.buy_price * ATR_CAP)
+        trail_sl = Tick.floor_tick(pos.high_since_entry - pos.atr_sl_mult * eff_atr)
         if trail_sl > pos.sl and trail_sl < pos.high_since_entry:
             log.info(
                 f"  🔺 트레일링 SL: {pos.ticker}  {pos.sl:,.0f} → {trail_sl:,.0f}"

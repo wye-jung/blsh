@@ -404,6 +404,7 @@ def sim_one(
     dates: list[str],
     get_ohv: Callable[[str], dict | None],
     sell_cost_rate: float = SELL_COST_RATE,
+    atr_cap: float = 0.50,
 ) -> tuple[str, float, float | None, str | None, dict | None]:
     """
     단일 종목 SL/TP 루프.
@@ -442,8 +443,9 @@ def sim_one(
         last_ohv = ohv
 
         if prev_high is not None:
-            # 트레일링 SL: 전일 high 기준 갱신
-            trail_sl = Tick.floor_tick(prev_high - atr_sl_mult * atr)
+            # 트레일링 SL: 전일 high 기준 갱신 (ATR_CAP 적용)
+            eff_atr = min(atr, buy * atr_cap)
+            trail_sl = Tick.floor_tick(prev_high - atr_sl_mult * eff_atr)
             if trail_sl > sl and trail_sl < prev_high:
                 sl = trail_sl
 

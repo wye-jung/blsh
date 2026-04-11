@@ -221,6 +221,7 @@ def _simulate_one(
         atr_sl_mult=params.atr_sl_mult,
         atr=atr, dates=dates,
         get_ohv=lambda d: ohlcv_idx.get((ticker, d)),
+        atr_cap=params.atr_cap,
     )
 
     if result_type == "미확정" and max_d == 0:
@@ -345,7 +346,7 @@ _RESULT_ID_TO_LABEL = {
     0: "SL",
     1: "TP1_SL",
     2: "TP_FULL",
-    3: "TP1",
+    3: "TP1+TP2",
     4: "HOLD",  # RES_HOLD (미확정)
 }
 
@@ -925,6 +926,8 @@ def run(
     _nb_cache = Path(__file__).resolve().parent.parent / "__pycache__"
     for _f in _nb_cache.glob("_sim_core.*.nbi"):
         _f.unlink(missing_ok=True)
+    for _f in _nb_cache.glob("_sim_core.*.nbc"):
+        _f.unlink(missing_ok=True)
 
     # numba JIT 워밍업 (fork 전에 컴파일 완료)
     import numpy as _np
@@ -1320,14 +1323,15 @@ def _wf_detail_report(w_idx: int, trades: list[TradeRecord]):
         combo_stats.setdefault(key, []).append(t)
 
     sorted_combos = sorted(combo_stats.items(), key=lambda x: len(x[1]), reverse=True)[:5]
-    log.info(f"  {'Flag조합':<25} {'거래':>5} {'승률':>7}")
-    log.info(f"  {'-' * 40}")
+    log.info(f"  {'Flag조합':<25} {'거래':>5} {'승률':>7} {'평균수익':>9}")
+    log.info(f"  {'-' * 50}")
     for combo, ctrades in sorted_combos:
         n = len(ctrades)
         wins = sum(1 for t in ctrades if t.result not in ("SL", "HOLD"))
         wr = 100 * wins / n
+        avg_r = sum(t.ret_pct for t in ctrades) / n
         label = combo[:25]
-        log.info(f"  {label:<25} {n:>5} {wr:>6.1f}%")
+        log.info(f"  {label:<25} {n:>5} {wr:>6.1f}% {avg_r:>+8.2f}%")
 
 
 def run_walkforward(
