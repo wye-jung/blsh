@@ -50,6 +50,10 @@ CRON_ENTRIES=(
 
     # 8. 업종지수 매핑 확인 (매주 월 06:30)
     "30 6 * * 1 $CRON_INIT && uv run python -m wye.blsh sector >> $CRON_LOG_DIR/sector.log 2>&1 $BLSH_TAG"
+
+    # 9. Claude Code 주간 로그 분석 (매주 일 21:00)
+    # Claude Code CLI + ANTHROPIC_API_KEY 필요
+    "0 21 * * 0 $CRON_INIT && bin/weekly-analysis.sh >> $CRON_LOG_DIR/weekly-analysis.log 2>&1 $BLSH_TAG"
 )
 
 install_cron() {

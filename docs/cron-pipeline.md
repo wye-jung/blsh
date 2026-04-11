@@ -24,8 +24,10 @@ bin/setup_cron.sh status     # 현재 등록 상태 확인
 | 15:05 | 월~금 | `po` -- 데이터 수집 + PO(3) (FIN: 청산 후 스캔) | po.log |
 | 20:30 | 월~금 | `analyze` -- 일일 로그 분석 -> 텔레그램 리포트 | analyze.log |
 | 02:00 | 토 | `grid_search --alternating` + `--walkforward` -- 최적화 + OOS 검증 | optimize.log |
+| 21:00 | 일 | `weekly-analysis.sh` -- Claude Code 주간 로그 분석 → 텔레그램 | weekly-analysis.log |
 
 로그 위치: `~/.blsh/logs/`
+리포트 위치: `~/.blsh/reports/weekly-YYYYMMDD.md`
 
 ## 평일 파이프라인 흐름
 
