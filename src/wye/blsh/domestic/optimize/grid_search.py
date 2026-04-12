@@ -1422,6 +1422,8 @@ def _wf_detail_report(w_idx: int, trades: list[TradeRecord]):
     for market in markets:
         mkt_trades = [t for t in trades if t.market == market]
         n = len(mkt_trades)
+        if n == 0:
+            continue
         wins = sum(1 for t in mkt_trades if t.result not in ("SL", "HOLD"))
         avg_ret = sum(t.ret_pct for t in mkt_trades) / n
         wr = 100 * wins / n
@@ -1440,6 +1442,8 @@ def _wf_detail_report(w_idx: int, trades: list[TradeRecord]):
     log.info(f"  {'-' * 50}")
     for combo, ctrades in sorted_combos:
         n = len(ctrades)
+        if n == 0:
+            continue
         wins = sum(1 for t in ctrades if t.result not in ("SL", "HOLD"))
         wr = 100 * wins / n
         avg_r = sum(t.ret_pct for t in ctrades) / n

@@ -242,17 +242,29 @@ def _recover_odno(kis: KISClient, ticker: str, qty: int, today: str) -> str | No
     """매수 직후 odno가 빈값일 때 미체결 조회로 odno 복구 시도.
 
     KIS API가 SOR 분할 등으로 빈 odno를 반환하는 경우 대비.
-    Returns: 복구된 odno 또는 None.
+    동일 조건(ticker/side/qty) 매칭이 2건 이상이면 모호하므로 None 반환
+    (잘못된 odno 복구로 엉뚱한 주문을 취소하는 것보다 안전).
+
+    Returns: 복구된 odno 또는 None (실패/모호).
     """
     try:
         time.sleep(0.5)  # 미체결 조회 가능 시점까지 짧은 대기
+        matches = []
         for o in kis.get_pending_orders(today):
             if (
                 o.get("ticker") == ticker
                 and o.get("side") == "매수"
                 and int(o.get("qty", 0)) == qty
             ):
-                return str(o.get("odno", "")) or None
+                odno = str(o.get("odno", ""))
+                if odno:
+                    matches.append(odno)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            log.warning(
+                f"[odno 복구] {ticker} 동일 조건 미체결 {len(matches)}건 → 모호로 복구 포기"
+            )
     except Exception as e:
         log.debug(f"[odno 복구] {ticker}: {e}")
     return None
