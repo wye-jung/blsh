@@ -761,8 +761,56 @@ def _submit_buy_orders(
                 odno = recovered
                 log.info(f"  ✅ [po] {ticker} odno 복구 성공: {recovered}")
             else:
+                # 즉시 잔고 재확인 — 이미 체결됐으면 Position 직접 생성
                 log.warning(
-                    f"  ❌ [po] {ticker} odno 복구 실패 → UNKNOWN 등록"
+                    f"  ❌ [po] {ticker} odno 복구 실패 → 즉시 잔고 재확인"
+                )
+                hold_after, avg_after, _ = kis.get_balance()
+                filled_qty = hold_after.get(ticker, 0)
+                if filled_qty > 0:
+                    if filled_qty < qty:
+                        log.warning(
+                            f"  ⚠️ 부분 체결 감지: {ticker}  주문={qty}"
+                            f"  체결={filled_qty}  (odno 미확인 → 잔량 취소 불가)"
+                        )
+                    buy_price = avg_after.get(ticker) or entry_price
+                    try:
+                        pos = _make_position(
+                            o,
+                            buy_price,
+                            filled_qty,
+                            dtutils.today(),
+                            o.get("expiry_date") or "",
+                            po_type=po_type,
+                            excg_cd=excg_id_dvsn_cd,
+                            ticker=ticker,
+                        )
+                    except Exception as e:
+                        log.error(
+                            f"  Position 생성 실패 ({ticker}): {e}"
+                            f" → UNKNOWN pending으로 fallback"
+                        )
+                    else:
+                        positions[ticker] = pos
+                        _save_history(
+                            "buy",
+                            ticker,
+                            pos.name,
+                            filled_qty,
+                            buy_price,
+                            "po즉시체결감지",
+                            pos.po_type,
+                        )
+                        log.info(
+                            f"  ✅ 즉시 체결 감지: {ticker} {pos.name}"
+                            f"  {filled_qty}주 @ {buy_price:,.0f}"
+                            f"  SL={pos.sl:,.0f}  TP1={pos.tp1:,.0f}"
+                            f"  TP2={pos.tp2:,.0f}"
+                        )
+                        continue  # pending 등록 생략
+                # 잔고에도 없음 → 실제 미체결 → UNKNOWN 등록 (기존 동작)
+                log.warning(
+                    f"  ❌ [po] {ticker} 잔고에도 없음 → UNKNOWN 등록"
                     f" (취소 불가, deadline 도달 후 잔고 확인으로 처리)"
                 )
         pending[ticker] = PendingOrder(
