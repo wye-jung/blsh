@@ -198,12 +198,42 @@ def _sell_market(
         log.warning(
             f"  ⚠️ 체결가 조회 실패: {name}({ticker}) odno={odno} → 현재가로 대체"
         )
-        fill_price = kis.get_price(ticker)  # 최후 수단: 현재가 사용
+        # 현재가 fallback도 일시 오류 대비 재시도 (1초 간격 3회)
+        for fb_attempt in range(1, 4):
+            fill_price = kis.get_price(ticker)
+            if fill_price is not None and fill_price > 0:
+                break
+            if fb_attempt < 3:
+                time.sleep(1)
+        if fill_price is None or fill_price <= 0:
+            log.critical(
+                f"  🚨 현재가 fallback 조회도 실패: {name}({ticker}) → PnL 보정 불가"
+            )
     _save_history("sell", ticker, name, qty, fill_price, reason, po_type)
     return True
 
 
 _SELL_FAIL_BALANCE_CHECK = 3  # 연속 N회 매도 실패 시 KIS 잔고 재확인
+
+
+def _recover_odno(kis: KISClient, ticker: str, qty: int, today: str) -> str | None:
+    """매수 직후 odno가 빈값일 때 미체결 조회로 odno 복구 시도.
+
+    KIS API가 SOR 분할 등으로 빈 odno를 반환하는 경우 대비.
+    Returns: 복구된 odno 또는 None.
+    """
+    try:
+        time.sleep(0.5)  # 미체결 조회 가능 시점까지 짧은 대기
+        for o in kis.get_pending_orders(today):
+            if (
+                o.get("ticker") == ticker
+                and o.get("side") == "매수"
+                and int(o.get("qty", 0)) == qty
+            ):
+                return str(o.get("odno", "")) or None
+    except Exception as e:
+        log.debug(f"[odno 복구] {ticker}: {e}")
+    return None
 
 
 def _sell_or_log(
@@ -217,16 +247,22 @@ def _sell_or_log(
     """nxt_price > 0 이면 NXT 지정가 매도, 아니면 KRX 시장가 매도.
     연속 실패 시 KIS 잔고 확인 → 유령 포지션이면 True 반환하여 포지션 제거."""
     if nxt_price > 0:
-        ok = kis.sell_nxt(pos.ticker, qty, nxt_price, reason)
-        if ok:
+        odno = kis.sell_nxt(pos.ticker, qty, nxt_price, reason)
+        if odno is not None:
             pos.sell_fail_count = 0
+            note = f"{reason} (지정가. 실제 체결가 미정)"
+            if not odno:
+                note += " ⚠️odno빈값"
+                log.warning(
+                    f"  ⚠️ NXT 매도 odno 빈값: {pos.ticker} → 잔고 확인으로 추적"
+                )
             _save_history(
                 "sell",
                 pos.ticker,
                 pos.name,
                 qty,
                 nxt_price,
-                f"{reason} (지정가. 실제 체결가 미정)",
+                note,
                 pos.po_type,
             )
             return True
@@ -684,11 +720,17 @@ def _submit_buy_orders(
             log.warning(f"  [po] {excg_id_dvsn_cd} 주문 실패: {ticker}")
             continue
         if not odno:
-            # odno="" (API 성공이나 주문번호 빈값) → 접수되었을 수 있음
-            log.warning(
-                f"  ⚠️ [po] 주문번호 빈값: {ticker}"
-                f" → pending 등록 (체결 확인 대기)"
-            )
+            # odno="" (API 성공이나 주문번호 빈값) → 미체결 조회로 복구 시도
+            log.warning(f"  ⚠️ [po] 주문번호 빈값: {ticker} → 복구 시도")
+            recovered = _recover_odno(kis, ticker, qty, dtutils.today())
+            if recovered:
+                odno = recovered
+                log.info(f"  ✅ [po] {ticker} odno 복구 성공: {recovered}")
+            else:
+                log.warning(
+                    f"  ❌ [po] {ticker} odno 복구 실패 → UNKNOWN 등록"
+                    f" (취소 불가, deadline 도달 후 잔고 확인으로 처리)"
+                )
         pending[ticker] = PendingOrder(
             cand=o,
             odno=odno or "UNKNOWN",
@@ -721,6 +763,13 @@ def _check_pending_orders(
     changed = False
 
     for ticker, po in pending.items():
+        # UNKNOWN odno면 매 polling마다 복구 시도 (체결 전이면 미체결 조회로 odno 회수)
+        if po.odno == "UNKNOWN":
+            recovered = _recover_odno(kis, ticker, po.qty, today)
+            if recovered:
+                po.odno = recovered
+                log.info(f"  ✅ pending {ticker} odno 복구: {recovered}")
+
         if ticker in positions:
             log.info(f"  [po] {ticker} 이미 보유 중 → 미체결 주문 취소")
             if po.odno != "UNKNOWN" and not kis.cancel_order(

@@ -365,8 +365,9 @@ class KISClient:
             log.debug(f"미체결 조회 실패: {e}")
         return []
 
-    def sell_nxt(self, ticker: str, qty: int, price: int, reason: str = "") -> bool:
-        """NXT 지정가 매도. NXT는 시장가 불가이므로 지정가만 지원. 성공 시 True."""
+    def sell_nxt(self, ticker: str, qty: int, price: int, reason: str = "") -> str | None:
+        """NXT 지정가 매도. NXT는 시장가 불가이므로 지정가만 지원.
+        성공 시 주문번호(odno) 반환, 실패 시 None."""
         try:
             self.rate_limiter.wait()
             with _api_sem:
@@ -382,13 +383,14 @@ class KISClient:
                     excg_id_dvsn_cd="NXT",
                 )
             if df is not None and not df.empty:
+                odno = str(df.iloc[0].get("odno", ""))
                 log.info(
-                    f"  📤 NXT매도: {ticker}  수량={qty}  지정가={int(price):,}  [{reason}]"
+                    f"  📤 NXT매도: {ticker}  수량={qty}  지정가={int(price):,}  no={odno}  [{reason}]"
                 )
-                return True
+                return odno or ""  # 빈값이라도 성공 시그널 (호출자가 ""→fallback 처리)
         except Exception as e:
             log.error(f"  NXT 매도 오류 ({ticker}): {e}")
-        return False
+        return None
 
     def cancel_order(
         self, ticker: str, odno: str, qty: int, excg_id_dvsn_cd: str = "KRX"

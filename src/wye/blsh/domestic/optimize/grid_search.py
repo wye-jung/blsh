@@ -943,7 +943,10 @@ def _update_config_file(
             flags=re.MULTILINE | re.DOTALL,
         )
 
-    _FACTOR_PATH.write_text(content, encoding="utf-8")
+    # 원자적 쓰기: tmp 파일에 먼저 쓰고 os.replace로 교체 (동시 실행 경합 방지)
+    tmp_path = _FACTOR_PATH.with_suffix(_FACTOR_PATH.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, _FACTOR_PATH)
     log.info(f"\n  💾 config.py 자동 갱신: {_FACTOR_PATH}")
     log.info(
         f"    {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
