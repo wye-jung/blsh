@@ -352,6 +352,9 @@ class OptCache:
         # numba용 (build_arrays()로 생성)
         self.ohlcv_arrays: dict[str, np.ndarray] | None = None
         self.date_to_idx: dict[str, int] | None = None
+        # 빌드 시점 모듈 상수 스냅샷 (build_or_load에서 현재 값과 비교)
+        # None = 이 가드 도입 전의 legacy 캐시 (비교 불가)
+        self._meta: dict | None = None
 
     def build_arrays(self):
         """ohlcv_idx를 종목별 numpy 배열로 변환 (numba sim용)."""
@@ -592,6 +595,7 @@ def build_or_load(start_date: str, end_date: str, tag: str = "") -> OptCache:
         end_gap = int(end_date) - int(cached.scan_dates[-1])
         end_ok = 0 <= end_gap <= 5
         if start_ok and end_ok:
+            _check_cache_meta(cached)
             return cached
         log.info(
             f"캐시 범위 불일치 → 재빌드  "
@@ -783,5 +787,37 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
         f"캐시 빌드 완료: {elapsed:.0f}초  |  {len(cache.scan_dates)}일  "
         f"|  총 {total_sigs:,}건 신호  |  OHLCV {len(cache.ohlcv_idx):,}건"
     )
+    # 빌드 시점 모듈 상수 스냅샷 — 로드 시 현재 값과 비교해 stale 감지용
+    cache._meta = {
+        "atr_cap": ATR_CAP,
+        "supply_cap": SUPPLY_CAP,
+    }
     cache.save(tag)
     return cache
+
+
+def _check_cache_meta(cached: OptCache) -> None:
+    """로드된 캐시의 빌드 시점 상수와 현재 모듈 상수 비교. 불일치 시 경고.
+
+    근본적으로는 cache의 entry_price/flat_supply_bonus가 ATR_CAP/SUPPLY_CAP로
+    pre-bake되는 구조(L518, L758) 때문. 현재는 수동 실행 경로에 대한 개발자
+    안전망 — grid_search가 탐색 대상이 아닌 값을 수동으로 바꾼 후 --rebuild
+    없이 재실행하는 상황을 포착한다. 근본 수정 후에는 이 가드도 불필요.
+    """
+    meta = getattr(cached, "_meta", None)
+    if meta is None:
+        log.info(
+            "캐시 메타데이터 없음 (legacy) → ATR_CAP/SUPPLY_CAP 일치 여부 확인 불가. "
+            "최적화 결과에 의문이 있으면 --rebuild 권장."
+        )
+        return
+    if meta.get("atr_cap") != ATR_CAP:
+        log.warning(
+            f"⚠️ 캐시 ATR_CAP={meta.get('atr_cap')} ≠ 현재 {ATR_CAP} → "
+            f"entry_price 게이트 불일치. --rebuild 권장."
+        )
+    if meta.get("supply_cap") != SUPPLY_CAP:
+        log.warning(
+            f"⚠️ 캐시 SUPPLY_CAP={meta.get('supply_cap')} ≠ 현재 {SUPPLY_CAP} → "
+            f"flat_supply_bonus 불일치. --rebuild 권장."
+        )
