@@ -133,9 +133,10 @@ def simulate(candidates, cash: float = 0) -> tuple | None:
         if buy_price <= 0:
             rows_miss.append(sig.to_dict())
             continue
-        sl = Tick.floor_tick(buy_price - atr_sl_mult * atr)
-        tp1 = Tick.ceil_tick(buy_price + TP1_MULT * atr)
-        tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * atr)
+        effective_atr = min(atr, buy_price * ATR_CAP)
+        sl = Tick.floor_tick(buy_price - atr_sl_mult * effective_atr)
+        tp1 = Tick.ceil_tick(buy_price + TP1_MULT * effective_atr)
+        tp2 = Tick.ceil_tick(buy_price + atr_tp_mult * effective_atr)
 
         # 모드별 최대 보유 기간
         mode = sig.get("mode", "")

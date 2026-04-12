@@ -49,6 +49,7 @@ from wye.blsh.domestic.config import (
     SIGNAL_SCORES_MOM as _SCORES_MOM,
     SIGNAL_SCORES_REV as _SCORES_REV,
     SUPPLY_CAP,
+    ATR_CAP,
 )
 _ALL_FLAGS = _MOMENTUM_FLAGS | _REVERSAL_FLAGS  # 중립 = 전체 - 이 집합
 
@@ -732,7 +733,8 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             if atr_val <= 0 or close_val <= 0:
                 continue
 
-            entry_price = Tick.ceil_tick(close_val + 0.5 * atr_val)
+            effective_atr = min(atr_val, close_val * ATR_CAP)
+            entry_price = Tick.ceil_tick(close_val + 0.5 * effective_atr)
 
             day_sigs.append(
                 {
