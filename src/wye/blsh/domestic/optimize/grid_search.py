@@ -874,18 +874,25 @@ def _update_config_file(
     best_scores_mom: dict | None = None,
     best_scores_rev: dict | None = None,
 ):
-    """최적 파라미터로 config.py의 Optimized 클래스 속성 갱신."""
+    """최적 파라미터로 config.py의 Optimized 클래스 속성 갱신.
+
+    각 regex 치환 건수를 검증해, 어느 하나라도 기대(1건) 아니면 원본 파일을
+    건드리지 않고 텔레그램 경고 후 RuntimeError로 종료. silent failure 방지.
+    """
     import re
     from datetime import datetime
 
+    from wye.blsh.common import messageutils
+
     d = _params_to_dict(best_p)
     content = _FACTOR_PATH.read_text(encoding="utf-8")
+    failures: list[str] = []
 
     # 파라미터 갱신
     for k, v in d.items():
         val_str = _fmt_val(k, v)
         type_hint = "int" if isinstance(v, int) else "float"
-        content = re.sub(
+        content, n = re.subn(
             rf"^(    {k}: \w+ = )\S+(  # .*)?$",
             lambda m, vs=val_str, th=type_hint, key=k: (
                 f"    {key}: {th} = {vs}{m.group(2) or ''}"
@@ -893,29 +900,37 @@ def _update_config_file(
             content,
             flags=re.MULTILINE,
         )
+        if n != 1:
+            failures.append(f"param:{k}(n={n})")
 
     # 백테스트 결과 주석 갱신
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     elapsed_min = elapsed / 60
-    content = re.sub(
+    content, n = re.subn(
         r"^(    # 수행일시:).*$",
         rf"\g<1> {ts} ({elapsed_min:.0f}분)",
         content,
         flags=re.MULTILINE,
     )
-    content = re.sub(
+    if n != 1:
+        failures.append(f"comment:수행일시(n={n})")
+    content, n = re.subn(
         r"^(    # 기간:).*$",
         rf"\g<1> {start_date} ~ {end_date}",
         content,
         flags=re.MULTILINE,
     )
-    content = re.sub(
+    if n != 1:
+        failures.append(f"comment:기간(n={n})")
+    content, n = re.subn(
         r"^(    # 성과:).*$",
         rf"\g<1> {best_s.trades}건  승률 {best_s.win_rate:.1f}%  "
         rf"평균 {best_s.avg_ret:+.2f}% (std {best_s.ret_std:.2f}%)  총 {best_s.total_ret:+.1f}%",
         content,
         flags=re.MULTILINE,
     )
+    if n != 1:
+        failures.append(f"comment:성과(n={n})")
 
     # SIGNAL_SCORES_MOM 갱신 (Optimized 클래스 내부)
     if best_scores_mom:
@@ -923,12 +938,14 @@ def _update_config_file(
         for k, v in best_scores_mom.items():
             mom_str += f'        "{k}": {v},\n'
         mom_str += "    }"
-        content = re.sub(
+        content, n = re.subn(
             r"^    SIGNAL_SCORES_MOM = \{[^}]+\}",
             mom_str,
             content,
             flags=re.MULTILINE | re.DOTALL,
         )
+        if n != 1:
+            failures.append(f"dict:SIGNAL_SCORES_MOM(n={n})")
 
     # SIGNAL_SCORES_REV 갱신 (Optimized 클래스 내부)
     if best_scores_rev:
@@ -936,12 +953,25 @@ def _update_config_file(
         for k, v in best_scores_rev.items():
             rev_str += f'        "{k}": {v},\n'
         rev_str += "    }"
-        content = re.sub(
+        content, n = re.subn(
             r"^    SIGNAL_SCORES_REV = \{[^}]+\}",
             rev_str,
             content,
             flags=re.MULTILINE | re.DOTALL,
         )
+        if n != 1:
+            failures.append(f"dict:SIGNAL_SCORES_REV(n={n})")
+
+    if failures:
+        msg = (
+            "🚨 grid_search: config.py 자동 갱신 실패\n"
+            f"  실패 항목: {', '.join(failures)}\n"
+            f"  파일 구조가 변경되었거나 regex가 깨졌습니다.\n"
+            f"  config.py는 이전 값 그대로 유지됩니다."
+        )
+        log.error(msg)
+        messageutils.send_message(msg)
+        raise RuntimeError(f"config.py 자동 갱신 실패: {failures}")
 
     # 원자적 쓰기: tmp 파일에 먼저 쓰고 os.replace로 교체 (동시 실행 경합 방지)
     tmp_path = _FACTOR_PATH.with_suffix(_FACTOR_PATH.suffix + ".tmp")
