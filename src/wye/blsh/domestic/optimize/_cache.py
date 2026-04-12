@@ -166,8 +166,8 @@ def _compute_stock_signals(df: pd.DataFrame, ticker: str = "") -> pd.DataFrame:
     out["SGC"] = (sk0 > sd0) & (sk1 < sd1) & (sk0 < 50)
 
     # 10. W52: 52주 신고가 돌파 (+2)
-    # scanner.py와 동일: 전일까지의 251일 최고가 (당일 제외)
-    w52_high = h.shift(1).rolling(251, min_periods=200).max()
+    # scanner.py:263과 동일: 252봉 이상 확보된 종목만 신호 허용 (당일 제외, 251봉)
+    w52_high = h.shift(1).rolling(251, min_periods=251).max()
     vol_20_avg = v.rolling(20).mean().shift(1)
     out["W52"] = (h > w52_high) & (v > vol_20_avg * W52_VOL_MULT)
 

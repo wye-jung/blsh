@@ -824,6 +824,15 @@ def scan(base_date=None, report: bool = False) -> pd.DataFrame:
     if base_date is None:
         base_date = dtutils.get_latest_biz_date()
 
+    # 시점의존 신호(MPGC/W52/RBO 등)는 base_date < today를 가정하며 EOD 기반.
+    # collector가 EOD만 적재하므로 정상 경로에서는 발생 불가하지만, 향후 intraday
+    # 데이터가 들어오면 look-ahead 위험이 즉시 복귀하므로 방어 로그만 남긴다.
+    if base_date >= dtutils.today():
+        log.warning(
+            f"⚠️ scan base_date={base_date} >= today — "
+            f"intraday 데이터 사용 가능성, 시점의존 신호 신뢰도 저하"
+        )
+
     if not query.has_ohlcv_data(base_date):
         log.warning(f"{base_date} - ohlcv 데이터가 없습니다")
         return pd.DataFrame()

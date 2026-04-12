@@ -363,17 +363,23 @@ def _load_positions() -> dict[str, Position]:
                     p.expiry_date = dtutils.add_biz_days(p.entry_date, p.max_hold_days)
                 except Exception as e:
                     log.warning(f"  expiry_date 보정 실패 ({t}): {e}")
-                    p.expiry_date = None
+                    p.expiry_date = ""
                 if p.expiry_date:
                     log.info(
                         f"  expiry_date 보정: {t}  entry={p.entry_date}"
                         f"  +{p.max_hold_days}d → {p.expiry_date}"
                     )
                 else:
-                    msg = f"⚠️ expiry_date 보정 실패 ({t}) → 오늘 청산"
+                    # 휴장일 DB 미보유 등으로 계산 불가 → 빈값 유지.
+                    # 자동 만기/기간초과 청산에서 제외 (호출부는
+                    # `if p.expiry_date and ...` 가드 보유). 수동 개입 대기.
+                    msg = (
+                        f"⚠️ expiry_date 계산 실패 ({t}) entry={p.entry_date} "
+                        f"+{p.max_hold_days}d → 자동 청산 비활성. "
+                        f"휴장일 DB 확인 후 수동 설정 필요"
+                    )
                     log.warning(msg)
                     messageutils.send_message(msg)
-                    p.expiry_date = today  # 안전 fallback: 오늘 청산 대상
             valid[t] = p
         return valid
     except Exception as e:
