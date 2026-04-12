@@ -567,18 +567,29 @@ def fetch_investor_estimate(ticker: str) -> tuple[int, int]:
     return 0, 0
 
 
-def classify_supply(qty_list):
+def classify_supply(qty_list, today_override: int | None = None):
     """
     수급 흐름 분류 → (flag_suffix, score)
       TRN (+3): 직전 N-1일 전부 순매도/0 → 오늘 순매수 (진정한 전환)
       C3  (+2): 3일 이상 연속 순매수
       1   (+1): 오늘만 순매수
       None ( 0): 해당 없음
+
+    today_override: 장중 부분일 추정치를 "오늘" 값으로 사용. 이 경우
+      qty_list 전체를 완전일 history로 해석하고 override를 today로 취급.
+      None이면 기존 동작(qty_list[-1]을 today로 사용).
     """
-    if not qty_list or len(qty_list) < 2:
-        return None, 0
-    today = qty_list[-1]
-    history = qty_list[:-1]
+    if today_override is not None:
+        today = today_override
+        history = list(qty_list)
+        if not history:  # legacy `len(qty_list) < 2` 등가
+            return None, 0
+    else:
+        if not qty_list or len(qty_list) < 2:
+            return None, 0
+        today = qty_list[-1]
+        history = qty_list[:-1]
+
     if today <= 0:
         return None, 0
     # TRN: 최소 2일 이상 매도/0 후 전환이어야 의미 있음
@@ -655,11 +666,14 @@ def enrich_with_db(results: list, base_date: str) -> list:
                 frgn, orgn = fetch_investor_estimate(t)
                 if frgn or orgn:
                     sup = supply_db[t]
+                    # DB에 당일 데이터 없으면 추정치를 별도 필드로 보관.
+                    # 히스토리 리스트(sup["frgn"]/sup["inst"])는 완전일만 유지 →
+                    # classify_supply가 today_override로 부분일을 받되
+                    # 연속성은 완전일 history로만 판정 (부분일 혼입 왜곡 차단).
                     if sup.get("last_date") != base_date:
-                        # DB에 당일 데이터 없음 → 히스토리에 append
-                        sup["frgn"].append(frgn)
-                        sup["inst"].append(orgn)
-                    # today 값은 항상 최신 추정치로 갱신
+                        sup["est_frgn"] = frgn
+                        sup["est_inst"] = orgn
+                    # today 값은 항상 최신 추정치로 갱신 (P_OV 체크 등 소비자용)
                     sup["today_frgn"] = frgn
                     sup["today_inst"] = orgn
                     sup["today_indi"] = None
@@ -718,8 +732,14 @@ def enrich_with_db(results: list, base_date: str) -> list:
         if not sup:
             continue
 
-        f_sig, f_sc = classify_supply(sup["frgn"])
-        o_sig, o_sc = classify_supply(sup["inst"])
+        # est_frgn/est_inst가 설정된 경우(PO② ini 장중 추정치) today로 사용하고
+        # qty_list 전체를 완전일 history로 해석. 미설정이면 legacy 경로.
+        f_sig, f_sc = classify_supply(
+            sup["frgn"], today_override=sup.get("est_frgn")
+        )
+        o_sig, o_sc = classify_supply(
+            sup["inst"], today_override=sup.get("est_inst")
+        )
 
         results[idx]["foreign_netbuy"] = sup["today_frgn"]
         results[idx]["inst_netbuy"] = sup["today_inst"]
