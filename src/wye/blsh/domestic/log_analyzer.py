@@ -19,6 +19,7 @@ import logging
 import re
 import sys
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 from wye.blsh.common import dtutils, messageutils
@@ -26,6 +27,8 @@ from wye.blsh.common.env import LOG_DIR, KIS_ENV
 from wye.blsh.database import query
 
 log = logging.getLogger(__name__)
+
+_REMINDERS_PATH = Path(__file__).resolve().parents[4] / "ops" / "reminders.yml"
 
 # ─────────────────────────────────────────
 # 로그 파싱
@@ -328,6 +331,43 @@ def _analyze_db(date_str: str) -> dict:
 
 
 # ─────────────────────────────────────────
+# 예약 리마인더
+# ─────────────────────────────────────────
+def _load_due_reminders(date_str: str) -> list[dict]:
+    """ops/reminders.yml에서 due 도달(≤ date_str)한 항목을 반환.
+
+    파일이 없거나 파싱 실패 시 빈 리스트. 각 항목은 dict로 id/due/title/body 포함.
+    due 오름차순 정렬.
+    """
+    if not _REMINDERS_PATH.exists():
+        return []
+    try:
+        import yaml
+
+        items = yaml.safe_load(_REMINDERS_PATH.read_text(encoding="utf-8")) or []
+    except Exception as e:
+        log.warning(f"리마인더 파일 로드 실패 ({_REMINDERS_PATH}): {e}")
+        return []
+
+    today = date.fromisoformat(
+        f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    )
+    due: list[tuple[date, dict]] = []
+    for r in items:
+        if not isinstance(r, dict):
+            continue
+        try:
+            r_due = date.fromisoformat(str(r.get("due", "")))
+        except ValueError:
+            log.warning(f"리마인더 due 파싱 실패: {r}")
+            continue
+        if r_due <= today:
+            due.append((r_due, r))
+    due.sort(key=lambda x: x[0])
+    return [r for _, r in due]
+
+
+# ─────────────────────────────────────────
 # 리포트 생성
 # ─────────────────────────────────────────
 def _build_report(date_str: str, trader: dict, scanner: dict, db: dict, system: dict | None = None) -> str:
@@ -471,6 +511,22 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict, system: 
             parts.append(
                 f"  ⚠️ 매도 불일치: 로그 {trader['sell_count']} ≠ DB {db['db_sells']}"
             )
+
+    reminders = _load_due_reminders(date_str)
+    if reminders:
+        parts.append("")
+        parts.append(f"【📋 예약 알림 ({len(reminders)}건)】")
+        for r in reminders:
+            title = str(r.get("title") or "(제목 없음)")[:60]
+            due = r.get("due", "")
+            parts.append(f"  • [{due}] {title}")
+            body = r.get("body")
+            if body:
+                for raw_ln in str(body).strip().splitlines():
+                    ln = raw_ln.strip()
+                    if ln:
+                        parts.append(f"    {ln[:70]}")
+        parts.append("  (해제: ops/reminders.yml에서 항목 삭제 후 커밋)")
 
     parts.append("━" * 24)
     return "\n".join(parts)
