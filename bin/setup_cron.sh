@@ -45,9 +45,11 @@ CRON_ENTRIES=(
 
     # 7. Grid Search 최적화 + Walk-Forward 검증 (매주 토 02:00)
     # 1) collect: 최신 OHLCV/수급 수집 (캐시 빌드 정확도 보장)
-    # 2) --alternating: 파라미터 최적화 + config.py 갱신 (~35분)
-    # 3) --walkforward: 갱신된 파라미터의 OOS 검증 + 텔레그램 리포트 (~60분)
-    "0 2 * * 6 $CRON_INIT && uv run python -m wye.blsh collect >> $CRON_LOG_DIR/optimize.log 2>&1 && uv run python -m wye.blsh.domestic.optimize.grid_search --alternating >> $CRON_LOG_DIR/optimize.log 2>&1 && uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --years 3 >> $CRON_LOG_DIR/optimize.log 2>&1 $BLSH_TAG"
+    # 2) --alternating --rebuild: 파라미터 최적화 + config.py 갱신 (~35분)
+    # 3) --walkforward --rebuild: 갱신된 config.py 값으로 캐시 재빌드 후 OOS 검증 (~60분)
+    # --rebuild는 캐시의 entry_price/flat_supply_bonus가 모듈 상수(ATR_CAP/SUPPLY_CAP)
+    # 로 pre-bake되는 구조 때문에, 탐색 값과 캐시 빌드 값의 불일치를 차단하기 위함.
+    "0 2 * * 6 $CRON_INIT && uv run python -m wye.blsh collect >> $CRON_LOG_DIR/optimize.log 2>&1 && uv run python -m wye.blsh.domestic.optimize.grid_search --alternating --rebuild >> $CRON_LOG_DIR/optimize.log 2>&1 && uv run python -m wye.blsh.domestic.optimize.grid_search --walkforward --years 3 --rebuild >> $CRON_LOG_DIR/optimize.log 2>&1 $BLSH_TAG"
 
     # 8. 업종지수 매핑 확인 (매주 월 06:30)
     "30 6 * * 1 $CRON_INIT && uv run python -m wye.blsh sector >> $CRON_LOG_DIR/sector.log 2>&1 $BLSH_TAG"
