@@ -1,40 +1,40 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-11 12:46 (34분)
-    # 기간: 20240411 ~ 20260411
-    # 성과: 1332건  승률 50.0%  평균 +1.96% (std 7.01%)  총 +2606.2%
+    # 수행일시: 2026-04-12 10:11 (63분)
+    # 기간: 20240412 ~ 20260412
+    # 성과: 14078건  승률 45.0%  평균 +1.15% (std 8.08%)  총 +16223.0%
     # ──────────────────────────────────────────
     INVEST_MIN_SCORE: int = 9
-    ATR_SL_MULT: float = 3.5
+    ATR_SL_MULT: float = 4.0
     ATR_TP_MULT: float = 1.5
-    TP1_MULT: float = 2.0  # 1차 익절: buy + ATR × TP1_MULT
+    TP1_MULT: float = 2.5  # 1차 익절: buy + ATR × TP1_MULT
     TP1_RATIO: float = 1.0  # 1차 익절 매도 비율 (1.0 = 전량)
-    MAX_HOLD_DAYS: int = 7
-    MAX_HOLD_DAYS_MIX: int = 2
+    MAX_HOLD_DAYS: int = 15
+    MAX_HOLD_DAYS_MIX: int = 7
     MAX_HOLD_DAYS_MOM: int = 3
     INDEX_DROP_LIMIT: float = 1.0
     ATR_CAP: float = 0.05
     SIGNAL_SCORES_MOM = {
-        "MGC": 0,
-        "W52": 0,
-        "PB": 0,
-        "LB": 0,
-        "VS": 0,
+        "MGC": 2,
+        "W52": 3,
+        "PB": 1,
+        "LB": 2,
+        "VS": 2,
         "MAA": 2,
-        "OBV": 1,
-        "MPGC": 2,
-        "BBM": 1,
+        "OBV": 2,
+        "MPGC": 1,
+        "BBM": 2,
         "SGC": 2,
     }
     SIGNAL_SCORES_REV = {
-        "RBO": 3,
         "MS": 3,
-        "ROV": 0,
-        "BBL": 2,
+        "RBO": 3,
+        "ROV": -1,
+        "BBL": 3,
         "HMR": 2,
-        "BE": 1,
+        "BE": 0,
         "MPGC": 2,
-        "BBM": 1,
+        "BBM": 0,
         "SGC": 2,
     }
 
