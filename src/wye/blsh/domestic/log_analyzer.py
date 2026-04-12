@@ -88,6 +88,7 @@ def _analyze_trader(lines: list[dict]) -> dict:
         "price_adj_count": 0,
         "orphan_restored": 0,
         "api_error_codes": [],
+        "manual_interventions": [],  # 수동 개입 필요 알림 [(category, detail), ...]
     }
 
     warning_set: set[str] = set()
@@ -176,6 +177,13 @@ def _analyze_trader(lines: list[dict]) -> dict:
             m2 = re.search(r"\[(\w+)\]", msg)
             if m2:
                 result["api_error_codes"].append(m2.group(1))
+
+        # 수동 개입 알림 수집 (_alert_manual()이 생성하는 마커)
+        m_manual = re.search(r"\[수동개입\]\s+(\S+):\s+(.+)$", msg)
+        if m_manual:
+            result["manual_interventions"].append(
+                (m_manual.group(1), m_manual.group(2))
+            )
 
     result["warning_msgs"] = sorted(warning_set)[:5]
     return result
@@ -428,6 +436,25 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict, system: 
         parts.append("  주요 경고:")
         for wm in trader["warning_msgs"][:3]:
             parts.append(f"    · {wm[:50]}")
+
+    # 수동 개입 필요 알림 (가장 중요 — 별도 섹션으로 강조)
+    if trader.get("manual_interventions"):
+        parts.append("")
+        parts.append("【🚨 수동 개입 필요】")
+        # 카테고리별 집계
+        from collections import Counter as _C
+        cat_counter: _C = _C()
+        for cat, _ in trader["manual_interventions"]:
+            cat_counter[cat] += 1
+        for cat, n in cat_counter.most_common():
+            parts.append(f"  ▸ {cat}: {n}건")
+        # 첫 5건 상세
+        parts.append("  상세:")
+        for cat, detail in trader["manual_interventions"][:5]:
+            parts.append(f"    · [{cat}] {detail[:55]}")
+        if len(trader["manual_interventions"]) > 5:
+            remaining = len(trader["manual_interventions"]) - 5
+            parts.append(f"    · ... 외 {remaining}건 (로그 확인 필요)")
 
     if db["db_buys"] or db["db_sells"]:
         parts.append("")

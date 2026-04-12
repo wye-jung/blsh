@@ -137,6 +137,27 @@ class PendingOrder:
 
 
 # ─────────────────────────────────────────
+# 수동 개입 필요 알림 (텔레그램 + log.critical + 일일 리포트 마커)
+# ─────────────────────────────────────────
+def _alert_manual(category: str, detail: str):
+    """수동 개입이 필요한 상황을 통일된 방식으로 알림.
+
+    - log.critical로 기록 ([수동개입] 마커 포함 → log_analyzer가 파싱)
+    - 텔레그램 메시지 전송
+
+    Args:
+        category: 카테고리 (예: "매도실패", "기간초과", "fallback실패")
+        detail: 상세 설명
+    """
+    msg = f"🚨 [수동개입] {category}: {detail}"
+    log.critical(msg)
+    try:
+        messageutils.send_message(msg)
+    except Exception as e:
+        log.warning(f"수동 개입 알림 텔레그램 전송 실패: {e}")
+
+
+# ─────────────────────────────────────────
 # 이력 저장 (DB INSERT ~1-5ms, 동기, 스레드 불필요)
 # ─────────────────────────────────────────
 def _save_history(
@@ -152,7 +173,7 @@ def _save_history(
         query.save_trade_history(side, ticker, name, qty, price, reason, po_type)
     except Exception as e:
         if KIS_ENV == "real":
-            log.critical(f"🚨 이력 저장 실패 [{KIS_ENV}] ({ticker}): {e}")
+            _alert_manual("이력저장실패", f"{name}({ticker}) {side}: {e}")
         else:
             log.warning(f"이력 저장 실패 ({ticker}): {e}")
 
@@ -184,9 +205,7 @@ def _sell_market(
             )
             time.sleep(attempt)
     if not odno:
-        msg = f"🚨 매도 3회 실패: {name}({ticker}) [{reason}]"
-        log.critical(msg)
-        messageutils.send_message(msg)
+        _alert_manual("매도3회실패", f"{name}({ticker}) [{reason}]")
         return False
     fill_price = None
     for wait in (2, 3, 5):  # 최대 3회: 2초 → 3초 → 5초 대기 후 조회
@@ -207,8 +226,9 @@ def _sell_market(
             if fb_attempt < 3:
                 time.sleep(1)
         if fill_price is None or fill_price <= 0:
-            log.critical(
-                f"  🚨 현재가 fallback 조회도 실패: {name}({ticker}) → PnL 보정 불가"
+            _alert_manual(
+                "체결가조회실패",
+                f"{name}({ticker}) odno={odno} → PnL 보정 불가",
             )
     _save_history("sell", ticker, name, qty, fill_price, reason, po_type)
     return True
@@ -1075,9 +1095,10 @@ def run():
                     po_type=PO_TYPE_PRE,
                 )
                 if still_failed:
-                    msg = f"🚨 매수 재주문 실패: {', '.join(still_failed.keys())}"
-                    log.warning(f"  {msg}")
-                    messageutils.send_message(msg)
+                    _alert_manual(
+                        "매수재주문실패",
+                        f"프리마켓 실패분 KRX 재시도도 실패: {', '.join(still_failed.keys())}",
+                    )
                 retry_done = True
 
             # ── 0-1. 유령/추적불가 체크 (KRX 개장 후 1회, 기간초과 청산보다 먼저 실행)
@@ -1140,8 +1161,9 @@ def run():
                             if _sell_market(kis, ticker, ticker, qty, reason, today):
                                 log.info(f"  추적불가 청산: {ticker}  수량={qty}")
                             else:
-                                log.warning(
-                                    f"  추적불가 청산 실패: {ticker}  수량={qty}"
+                                _alert_manual(
+                                    "추적불가청산실패",
+                                    f"{ticker} {qty}주 → 시장가 청산 실패",
                                 )
 
             # ── 0-2. 기간초과 청산 (유령 체크 후 실행, 슬로우 틱 간격 재시도)
@@ -1170,14 +1192,12 @@ def run():
                         else:
                             pos.overdue_fail_count += 1
                             if pos.overdue_fail_count >= OVERDUE_MAX_RETRIES:
-                                msg = (
-                                    f"🚨 기간초과 청산 {OVERDUE_MAX_RETRIES}회 실패: "
-                                    f"{ticker} {pos.name} (만기 {pos.expiry_date})"
-                                    f" → 자동 재시도 중단, 수동 개입 필요"
-                                    f" (거래정지/관리종목 가능성)"
+                                _alert_manual(
+                                    "기간초과청산실패",
+                                    f"{ticker} {pos.name} {OVERDUE_MAX_RETRIES}회 실패"
+                                    f" (만기 {pos.expiry_date}) → 자동 재시도 중단"
+                                    f" (거래정지/관리종목 가능성)",
                                 )
-                                log.critical(msg)
-                                messageutils.send_message(msg)
                             else:
                                 log.warning(
                                     f"  기간초과 청산 실패 ({pos.overdue_fail_count}/{OVERDUE_MAX_RETRIES}): "
