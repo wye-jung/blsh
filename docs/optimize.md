@@ -193,3 +193,19 @@ MIX 모드 제거 + SIGNAL_SCORES 재최적화 후, `--alternating --rebuild`로
 - 6개월/1년은 거래 수가 적어 과적합 위험, 3년은 과거 시장 특성이 희석
 
 **결론: 2년이 최근 시장 특성 반영과 데이터 충분성의 균형점. 기본값으로 채택.**
+
+## Known limitation: 캐시 entry_price / flat_supply_bonus pre-bake
+
+`_cache.py`는 신호 빌드 시점의 모듈 상수 `ATR_CAP` / `SUPPLY_CAP`으로 `entry_price`([L749](../src/wye/blsh/domestic/optimize/_cache.py#L749))와 `flat_supply_bonus`([L518](../src/wye/blsh/domestic/optimize/_cache.py#L518))를 pre-compute해 저장한다.
+
+이 때문에 `grid_search`가 `params.atr_cap` 또는 장래 `supply_cap`을 탐색할 때 SL/TP는 후보 값으로 재계산되지만, **entry_price 게이트**(시가 > entry_price면 스킵)는 캐시 빌드 당시 값으로 고정. 탐색 공간과 캐시가 어긋나는 만큼 최적화 결과가 편향된다.
+
+**임시 조치**: 매주 토요일 cron에 `--rebuild` 강제 (`bin/setup_cron.sh`). 매 실행마다 현재 config.py 기준으로 캐시를 새로 빌드하므로, 탐색이 캐시 빌드 값 근처에서만 유효해도 최종 수렴값은 일관됨. 현재 최적값과 캐시 빌드 값이 일치하므로 실전 괴리는 없음.
+
+**근본 수정 (deferred)**:
+- `_cache.py`가 `raw_atr`, `close_val`, `raw_supply_bonus`만 저장
+- `entry_price` / `effective_supply_bonus` 계산을 `_sim_core` / `grid_search` 런타임으로 이동
+- 각 후보 `params.atr_cap` / `params.supply_cap`로 게이트 재평가
+- 회귀 검증: 기존 WF OOS 평균 112%가 유지되는지 확인. 수치가 크게 흔들리면 편향이 실제로 컸다는 뜻 → 실전 파라미터 재검토 필요
+
+**착수 조건**: 실전 운영 1~2주간 일일 리포트에 이상 없고, 지표가 백테스트 수준과 크게 괴리되지 않음을 확인한 후.

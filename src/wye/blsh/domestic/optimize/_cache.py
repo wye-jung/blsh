@@ -515,6 +515,9 @@ class OptCache:
                 if idx is not None:
                     mask |= 1 << idx
             self.flat_flag_mask[i] = mask
+            # TODO(H2-부수): SUPPLY_CAP이 pre-bake됨. 현재 SUPPLY_CAP은
+            # grid 탐색 대상이 아니라 무영향이지만, 탐색 추가 시 stale. 상세는
+            # entry_price 계산 주석(L749) 참고.
             self.flat_supply_bonus[i] = min(
                 sig.get("raw_supply_bonus", 0), SUPPLY_CAP,
             )
@@ -746,6 +749,12 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
             if atr_val <= 0 or close_val <= 0:
                 continue
 
+            # TODO(H2-부수): ATR_CAP이 모듈 상수로 pre-bake되어, grid_search가
+            # params.atr_cap을 탐색할 때 SL/TP만 변동하고 entry_price 게이트는
+            # 불변. 임시로 bin/setup_cron.sh에 --rebuild 강제. 근본 수정은
+            # atr_val + close_val만 저장하고 entry_price 계산을 _sim_core /
+            # grid_search 런타임으로 이동하는 것. flat_supply_bonus(L518)도
+            # 같은 레이어의 문제. 실전 안정화 후 착수.
             effective_atr = min(atr_val, close_val * ATR_CAP)
             entry_price = Tick.ceil_tick(close_val + 0.5 * effective_atr)
 
