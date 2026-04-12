@@ -244,16 +244,21 @@ class KISClient:
             log.error(f"  매도 오류 ({ticker}): {e}")
         return None
 
-    def get_filled_price(self, ticker: str, odno: str, today: str) -> float | None:
-        """시장가 매도 주문의 실제 체결가 조회.
+    def get_fill_summary(
+        self, ticker: str, odno: str, today: str
+    ) -> tuple[float | None, int]:
+        """매도 주문의 (평균 체결가, 총 체결수량) 조회.
+
+        분할 체결된 경우 가중평균 + 수량 합산으로 집계한다.
 
         Args:
             ticker: 종목코드
-            odno: 주문번호 (sell() 반환값)
+            odno: 주문번호 (sell()/sell_nxt() 반환값)
             today: 조회일자 (YYYYMMDD)
 
         Returns:
-            체결가 (float) 또는 미체결/조회실패 시 None
+            (avg_price, total_qty). 미체결/조회실패 시 (None, 0).
+            부분체결이면 total_qty < 발주수량.
         """
         try:
             self.rate_limiter.wait()
@@ -273,17 +278,32 @@ class KISClient:
                     odno=odno,
                 )
             if df1 is None or df1.empty:
-                return None
+                return None, 0
             # 주문번호로 필터 (API가 종목 전체를 반환할 수 있으므로)
-            row = df1[df1["odno"].astype(str) == odno]
-            if row.empty:
-                log.debug(f"체결가 조회: odno={odno} 매칭 없음")
-                return None
-            price = float(row.iloc[0].get("avg_prvs", 0) or row.iloc[0].get("ccld_unpr", 0))
-            return price if price > 0 else None
+            rows = df1[df1["odno"].astype(str) == odno]
+            if rows.empty:
+                log.debug(f"체결 조회: odno={odno} 매칭 없음")
+                return None, 0
+            total_amt = 0.0
+            total_qty = 0
+            for _, r in rows.iterrows():
+                qty = int(r.get("ccld_qty", 0) or 0)
+                price = float(r.get("ccld_unpr", 0) or 0)
+                if qty <= 0 or price <= 0:
+                    continue
+                total_amt += price * qty
+                total_qty += qty
+            if total_qty <= 0:
+                return None, 0
+            return total_amt / total_qty, total_qty
         except Exception as e:
-            log.debug(f"체결가 조회 실패 ({ticker} no={odno}): {e}")
-        return None
+            log.debug(f"체결 조회 실패 ({ticker} no={odno}): {e}")
+        return None, 0
+
+    def get_filled_price(self, ticker: str, odno: str, today: str) -> float | None:
+        """매도 주문의 실제 체결가 조회. (호환 래퍼: 수량은 무시)"""
+        price, _ = self.get_fill_summary(ticker, odno, today)
+        return price
 
     def get_sell_fills(self, today: str) -> dict[str, tuple[float, int]]:
         """당일 매도 체결 내역 일괄 조회. {종목코드: (가중평균체결가, 총수량)} 반환."""

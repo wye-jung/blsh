@@ -358,6 +358,9 @@ def update_sell_prices(date_str: str, fills: dict[str, tuple[float, int]]):
 
     with Session(engine) as session:
         for ticker, (avg_price, _) in fills.items():
+            # 두 가지 보정 대상:
+            #   1) NXT 지정가 매도 (reason에 "실제 체결가 미정" 포함, price=nxt_price)
+            #   2) KRX 시장가 매도 중 체결 조회 실패로 NULL 저장된 건 (H4/M1)
             session.execute(
                 text(
                     """
@@ -368,7 +371,7 @@ def update_sell_prices(date_str: str, fills: dict[str, tuple[float, int]]):
                       AND side = 'sell'
                       AND traded_at::date = to_date(:d, 'YYYYMMDD')
                       AND (kis_env = :env OR kis_env IS NULL)
-                      AND reason LIKE '%실제 체결가 미정%'
+                      AND (reason LIKE '%실제 체결가 미정%' OR price IS NULL)
                     """
                 ),
                 {"price": avg_price, "ticker": ticker, "d": date_str, "env": KIS_ENV},

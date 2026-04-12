@@ -192,8 +192,17 @@ def _sell_market(
     reason: str,
     today: str,
     po_type: str = "",
-) -> bool:
-    """KRX 시장가 매도 + 체결가 조회 후 이력 저장. 성공 시 True."""
+) -> tuple[bool, int]:
+    """KRX 시장가 매도 + 체결가/수량 조회 후 이력 저장.
+
+    Returns:
+        (success, sold_qty): 주문 성공 여부와 실제 체결된 수량.
+        - (True, qty): 전량 체결
+        - (True, n) where n < qty: 부분 체결 (호출부는 pos.qty -= n 처리)
+        - (True, 0): 주문은 접수됐으나 체결 조회 실패 → 잔고 재확인으로 추정 실패.
+          세션 종료 시 update_sell_prices 정정에 의존. 호출부는 실패처럼 취급 권장.
+        - (False, 0): 주문 자체 실패 (3회 재시도 모두 실패)
+    """
     odno = None
     for attempt in range(1, 4):  # 최대 3회 시도
         odno = kis.sell(ticker, qty, reason)
@@ -206,32 +215,43 @@ def _sell_market(
             time.sleep(attempt)
     if not odno:
         _alert_manual("매도3회실패", f"{name}({ticker}) [{reason}]")
-        return False
-    fill_price = None
+        return False, 0
+
+    fill_price: float | None = None
+    fill_qty: int = 0
     for wait in (2, 3, 5):  # 최대 3회: 2초 → 3초 → 5초 대기 후 조회
         time.sleep(wait)
-        fill_price = kis.get_filled_price(ticker, odno, today)
-        if fill_price is not None:
+        fill_price, fill_qty = kis.get_fill_summary(ticker, odno, today)
+        if fill_qty > 0:
             break
-        log.debug(f"  체결가 조회 대기 중: {ticker} odno={odno} (대기={wait}s)")
-    if fill_price is None:
+        log.debug(f"  체결 조회 대기 중: {ticker} odno={odno} (대기={wait}s)")
+
+    if fill_qty == 0:
+        # 체결 조회 실패 — 세션 종료 시 get_sell_fills + update_sell_prices로 보정됨.
+        # 현재가 fallback은 제거: 잘못된 PnL이 일중 리포트에 노출되는 것을 방지.
         log.warning(
-            f"  ⚠️ 체결가 조회 실패: {name}({ticker}) odno={odno} → 현재가로 대체"
+            f"  ⚠️ 체결 조회 실패: {name}({ticker}) odno={odno} "
+            f"→ 이력 NULL 저장 (세션 종료 시 정정)"
         )
-        # 현재가 fallback도 일시 오류 대비 재시도 (1초 간격 3회)
-        for fb_attempt in range(1, 4):
-            fill_price = kis.get_price(ticker)
-            if fill_price is not None and fill_price > 0:
-                break
-            if fb_attempt < 3:
-                time.sleep(1)
-        if fill_price is None or fill_price <= 0:
-            _alert_manual(
-                "체결가조회실패",
-                f"{name}({ticker}) odno={odno} → PnL 보정 불가",
-            )
-    _save_history("sell", ticker, name, qty, fill_price, reason, po_type)
-    return True
+        _alert_manual(
+            "체결조회실패",
+            f"{name}({ticker}) odno={odno} → DB NULL 저장, 세션 종료 시 보정",
+        )
+        _save_history("sell", ticker, name, qty, None, reason, po_type)
+        return True, 0
+
+    if fill_qty < qty:
+        log.warning(
+            f"  ⚠️ 부분 체결: {name}({ticker}) {fill_qty}/{qty}주 @ {fill_price:,.0f}"
+        )
+        _save_history(
+            "sell", ticker, name, fill_qty, fill_price,
+            f"{reason} (부분체결 {fill_qty}/{qty})", po_type,
+        )
+        return True, fill_qty
+
+    _save_history("sell", ticker, name, fill_qty, fill_price, reason, po_type)
+    return True, fill_qty
 
 
 _SELL_FAIL_BALANCE_CHECK = 3  # 연속 N회 매도 실패 시 KIS 잔고 재확인
@@ -277,9 +297,16 @@ def _sell_or_log(
     reason: str,
     nxt_price: int = 0,
     today: str = "",
-) -> bool:
+) -> tuple[bool, int]:
     """nxt_price > 0 이면 NXT 지정가 매도, 아니면 KRX 시장가 매도.
-    연속 실패 시 KIS 잔고 확인 → 유령 포지션이면 True 반환하여 포지션 제거."""
+    연속 실패 시 KIS 잔고 확인 → 유령 포지션이면 True 반환하여 포지션 제거.
+
+    Returns:
+        (success, sold_qty).
+        NXT 지정가 성공 경로는 (True, qty)로 가정 — 실제 체결은 NXT 세션에서 발생하며,
+        부분 체결/미체결은 ghost detection(_restore_positions_from_db) + 세션 종료
+        update_sell_prices로 보정됨. 호출부는 sold_qty를 기준으로 pos.qty를 차감한다.
+    """
     if nxt_price > 0:
         odno = kis.sell_nxt(pos.ticker, qty, nxt_price, reason)
         if odno is not None:
@@ -290,6 +317,8 @@ def _sell_or_log(
                 log.warning(
                     f"  ⚠️ NXT 매도 odno 빈값: {pos.ticker} → 잔고 확인으로 추적"
                 )
+            # qty 미검증 — NXT 지정가 부분체결은 ghost detection + 세션종료
+            # update_sell_prices 정정으로 보정. H4 NXT 경로는 의도적 미검증.
             _save_history(
                 "sell",
                 pos.ticker,
@@ -299,7 +328,7 @@ def _sell_or_log(
                 note,
                 pos.po_type,
             )
-            return True
+            return True, qty
         # 매도 API 실패 → 잔고 확인하여 이미 체결 여부 검증
         holdings, _, _ = kis.get_balance()
         remaining = holdings.get(pos.ticker, 0)
@@ -321,12 +350,12 @@ def _sell_or_log(
             )
             pos.sell_fail_count = 0
             if remaining <= 0:
-                return True
+                return True, sold_qty
             pos.qty = remaining
-            return False
+            return False, sold_qty
         pos.sell_fail_count += 1
         log.critical(f"  🚨 매도 실패: {pos.ticker} [{reason}] → 다음 틱 재시도")
-        return False
+        return False, 0
     return _sell_market(
         kis, pos.ticker, pos.name, qty, reason, today or dtutils.today(), pos.po_type
     )
@@ -371,7 +400,7 @@ def _load_positions() -> dict[str, Position]:
                     )
                 else:
                     # 휴장일 DB 미보유 등으로 계산 불가 → 빈값 유지.
-                    # 자동 만기/기간초과 청산에서 제외 (호출부는
+                    # 자동 만기/기간초과 청산에서 제외 (호출부 1235/1331은
                     # `if p.expiry_date and ...` 가드 보유). 수동 개입 대기.
                     msg = (
                         f"⚠️ expiry_date 계산 실패 ({t}) entry={p.entry_date} "
@@ -642,24 +671,29 @@ def _process_position(
         else:
             sl_sell_price = 0  # KRX 시장가
         reason = f"손절 {ret_pct:+.2f}% (SL={pos.sl:,.0f})"
-        if _sell_or_log(
+        ok, sold = _sell_or_log(
             kis, pos, pos.qty, reason, nxt_price=sl_sell_price, today=today
-        ):
+        )
+        if ok:
             pos.realized_pnl += (
                 current - pos.buy_price
-            ) * pos.qty - current * pos.qty * SELL_COST_RATE
-            pos.qty = 0
-            return True, True
+            ) * sold - current * sold * SELL_COST_RATE
+            pos.qty -= sold
+            return pos.qty == 0, True
         return False, changed
 
     if not pos.t1_done and current >= pos.tp1:
         qty_sell = min(pos.qty_t1, pos.qty)  # DB 복원 포지션 qty 불일치 방어
         reason = f"1차익절 {ret_pct:+.2f}% (TP1={pos.tp1:,.0f})"
-        if _sell_or_log(kis, pos, qty_sell, reason, nxt_price=sell_price, today=today):
+        ok, sold = _sell_or_log(
+            kis, pos, qty_sell, reason, nxt_price=sell_price, today=today
+        )
+        if ok:
             pos.realized_pnl += (
                 current - pos.buy_price
-            ) * qty_sell - current * qty_sell * SELL_COST_RATE
-            pos.qty -= qty_sell
+            ) * sold - current * sold * SELL_COST_RATE
+            pos.qty -= sold
+            # 부분 체결 시 t1_done=True로 마킹해도 qty_t1이 이미 발주됐으므로 안전
             pos.t1_done = True
             if pos.buy_price > pos.sl:
                 log.info(
@@ -671,12 +705,15 @@ def _process_position(
 
     if current >= pos.tp2:
         reason = f"2차익절 {ret_pct:+.2f}% (TP2={pos.tp2:,.0f})"
-        if _sell_or_log(kis, pos, pos.qty, reason, nxt_price=sell_price, today=today):
+        ok, sold = _sell_or_log(
+            kis, pos, pos.qty, reason, nxt_price=sell_price, today=today
+        )
+        if ok:
             pos.realized_pnl += (
                 current - pos.buy_price
-            ) * pos.qty - current * pos.qty * SELL_COST_RATE
-            pos.qty = 0
-            return True, True
+            ) * sold - current * sold * SELL_COST_RATE
+            pos.qty -= sold
+            return pos.qty == 0, True
         return False, changed
 
     # 최고가 갱신: SL/TP 체크 후 (sim_core.py의 prev_high 갱신 위치와 동일)
@@ -1224,8 +1261,22 @@ def run():
                         )
                         for ticker, qty in unrestorable.items():
                             reason = "추적불가(복원실패)"
-                            if _sell_market(kis, ticker, ticker, qty, reason, today):
-                                log.info(f"  추적불가 청산: {ticker}  수량={qty}")
+                            ok, sold = _sell_market(
+                                kis, ticker, ticker, qty, reason, today
+                            )
+                            if ok:
+                                if sold == 0:
+                                    log.warning(
+                                        f"  추적불가 체결조회실패: {ticker}"
+                                        f"  {qty}주 (다음 세션에서 재감지)"
+                                    )
+                                elif sold < qty:
+                                    log.warning(
+                                        f"  추적불가 청산 부분체결: {ticker}"
+                                        f"  {sold}/{qty}주 (잔량은 다음 세션에서 재감지)"
+                                    )
+                                else:
+                                    log.info(f"  추적불가 청산: {ticker}  수량={sold}")
                             else:
                                 _alert_manual(
                                     "추적불가청산실패",
@@ -1245,7 +1296,7 @@ def run():
                     log.info(f"[기간초과 청산] {len(overdue)}종목 시도")
                     for ticker in overdue:
                         pos = positions[ticker]
-                        if _sell_market(
+                        ok, sold = _sell_market(
                             kis,
                             ticker,
                             pos.name,
@@ -1253,8 +1304,23 @@ def run():
                             "기간초과청산",
                             today,
                             pos.po_type,
-                        ):
-                            session_closed[ticker] = positions.pop(ticker)
+                        )
+                        if ok:
+                            if sold == 0:
+                                # 주문 접수됐으나 체결 조회 실패 → 포지션 유지,
+                                # 다음 슬로우 틱에서 overdue 재감지되어 재시도.
+                                log.warning(
+                                    f"  기간초과 체결조회실패: {ticker}"
+                                    f"  → 포지션 유지, 슬로우 틱 재시도"
+                                )
+                            elif sold < pos.qty:
+                                pos.qty -= sold
+                                log.warning(
+                                    f"  기간초과 부분체결: {ticker} {sold}/{pos.qty + sold}"
+                                    f"  → 잔량 {pos.qty}주 다음 슬로우 틱 재시도"
+                                )
+                            else:
+                                session_closed[ticker] = positions.pop(ticker)
                         else:
                             pos.overdue_fail_count += 1
                             if pos.overdue_fail_count >= OVERDUE_MAX_RETRIES:
@@ -1340,11 +1406,28 @@ def run():
 
                 for ticker, pos in to_liq:
                     reason = f"만기청산 (expiry={pos.expiry_date})"
-                    if _sell_market(
+                    ok, sold = _sell_market(
                         kis, ticker, pos.name, pos.qty, reason, today, pos.po_type
-                    ):
-                        session_closed[ticker] = positions.pop(ticker)
-                        log.info(f"  청산: {ticker} {pos.name}  qty={pos.qty}")
+                    )
+                    if ok:
+                        if sold == 0:
+                            # 주문 접수됐으나 체결 조회 실패 → 포지션 유지,
+                            # 다음 영업일 expiry 재감지에서 재시도.
+                            log.warning(
+                                f"  만기청산 체결조회실패: {ticker}"
+                                f"  → 포지션 유지, 다음 영업일 재시도"
+                            )
+                        elif sold < pos.qty:
+                            pos.qty -= sold
+                            log.warning(
+                                f"  만기청산 부분체결: {ticker} {sold}/{pos.qty + sold}"
+                                f"  → 잔량 {pos.qty}주 다음 영업일 재시도"
+                            )
+                        else:
+                            session_closed[ticker] = positions.pop(ticker)
+                            log.info(
+                                f"  청산: {ticker} {pos.name}  qty={sold}"
+                            )
                     else:
                         log.warning(f"  청산 실패: {ticker} → 다음 영업일 재시도")
 
