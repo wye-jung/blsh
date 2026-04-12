@@ -46,7 +46,7 @@ class _RateLimiter:
 # ── 모듈 레벨 singleton rate_limiter ──
 # KIS 스펙: 실전 20/sec, 모의 2/sec (계좌 단위)
 # scanner/trader/collector가 같은 프로세스에서 공유하여 합산 호출량 보장
-_CPS_REAL = 4  # 실전 CPS (스펙 20의 20%, 안전 마진)
+_CPS_REAL = 8  # 실전 CPS (스펙 20의 40%, 2.5x 안전 마진)
 _CPS_DEMO = 2  # 모의 CPS (스펙 정확히 매칭)
 _cps = _CPS_REAL if KIS_ENV == "real" else _CPS_DEMO
 rate_limiter = _RateLimiter(calls_per_sec=_cps)
