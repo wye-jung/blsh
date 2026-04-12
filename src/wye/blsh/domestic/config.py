@@ -1,26 +1,26 @@
 class Optimized:
     # ── 백테스트 결과 (grid_search 자동 갱신) ──
-    # 수행일시: 2026-04-12 10:11 (63분)
+    # 수행일시: 2026-04-12 11:29 (33분)
     # 기간: 20240412 ~ 20260412
-    # 성과: 14078건  승률 45.0%  평균 +1.15% (std 8.08%)  총 +16223.0%
+    # 성과: 3933건  승률 48.7%  평균 +1.81% (std 7.36%)  총 +7134.6%
     # ──────────────────────────────────────────
     INVEST_MIN_SCORE: int = 9
     ATR_SL_MULT: float = 4.0
     ATR_TP_MULT: float = 1.5
     TP1_MULT: float = 2.5  # 1차 익절: buy + ATR × TP1_MULT
     TP1_RATIO: float = 1.0  # 1차 익절 매도 비율 (1.0 = 전량)
-    MAX_HOLD_DAYS: int = 15
-    MAX_HOLD_DAYS_MIX: int = 7
+    MAX_HOLD_DAYS: int = 10
+    MAX_HOLD_DAYS_MIX: int = 3
     MAX_HOLD_DAYS_MOM: int = 3
     INDEX_DROP_LIMIT: float = 1.0
     ATR_CAP: float = 0.05
     SIGNAL_SCORES_MOM = {
-        "MGC": 2,
-        "W52": 3,
-        "PB": 1,
-        "LB": 2,
+        "MGC": 0,
+        "W52": 1,
+        "PB": 0,
+        "LB": -1,
         "VS": 2,
-        "MAA": 2,
+        "MAA": 0,
         "OBV": 2,
         "MPGC": 1,
         "BBM": 2,
