@@ -20,6 +20,7 @@ import json
 import logging
 import queue
 import threading
+import time
 
 from wye.blsh.kis import kis_auth as ka
 from wye.blsh.kis.domestic_stock import domestic_stock_functions_ws as ws_fn
@@ -31,6 +32,9 @@ _RECONNECT_MAX = 5
 _RECONNECT_BASE_DELAY = 5  # 초 (지수 백오프: 5→10→20→40→60)
 _RECONNECT_MAX_DELAY = 60
 _CMD_BATCH_DELAY = 0.3  # 구독 변경 간 대기 (초)
+_STALE_THRESHOLD_SEC = 30.0   # WS 캐시 가격 신선도 임계치 (trader TICK_SEC=10초 × 3)
+_RECONNECT_GRACE_SEC = 5.0    # 재연결 직후 WS 캐시 우회 기간
+_FALLBACK_LOG_INTERVAL = 30.0  # REST fallback info 로그 간 최소 간격
 
 
 class PriceMonitor:
@@ -45,12 +49,19 @@ class PriceMonitor:
         self._kis = kis_client  # KISClient 인스턴스 (REST fallback용)
         self._use_ws = use_ws
 
-        # thread-safe 가격 캐시
-        self._prices: dict[str, float] = {}
+        # thread-safe 가격 캐시: ticker → (price, monotonic_ts)
+        # ts 동반 저장으로 get_prices에서 freshness 검증 → stale 시 REST fallback
+        self._prices: dict[str, tuple[float, float]] = {}
         self._lock = threading.Lock()
 
         # 구독 상태
         self._subscribed: set[str] = set()
+
+        # 재연결 직후 WS 캐시 우회용 타임스탬프 (grace window)
+        self._reconnect_ts: float | None = None
+
+        # REST fallback 로그 도배 방지
+        self._last_fallback_log_ts: float = 0.0
 
         # 메인→WS 스레드 커맨드 큐
         self._cmd_queue: queue.Queue = queue.Queue()
@@ -127,8 +138,8 @@ class PriceMonitor:
     def get_prices(self, tickers: list[str]) -> dict[str, float]:
         """종목별 현재가 조회 (WS 가격 + REST fallback).
 
-        WS 구독 중이고 가격 수신된 종목 → WS 캐시에서 즉시 반환
-        나머지 (미구독 / 미수신) → REST 폴링
+        WS 구독 중이고 신선한(≤ _STALE_THRESHOLD_SEC) 가격만 WS 캐시에서 반환.
+        미구독 / 미수신 / stale / 재연결 grace window 내 → REST 폴링.
         use_ws=False이면 전체 REST 폴링.
         """
         if not self._use_ws or not self._running:
@@ -136,17 +147,37 @@ class PriceMonitor:
 
         result: dict[str, float] = {}
         rest_needed: list[str] = []
+        now = time.monotonic()
 
         with self._lock:
+            in_grace = (
+                self._reconnect_ts is not None
+                and now - self._reconnect_ts < _RECONNECT_GRACE_SEC
+            )
             for t in tickers:
-                if t in self._subscribed and t in self._prices:
-                    result[t] = self._prices[t]
-                else:
-                    rest_needed.append(t)
+                if (
+                    not in_grace
+                    and t in self._subscribed
+                    and t in self._prices
+                ):
+                    price, ts = self._prices[t]
+                    if now - ts <= _STALE_THRESHOLD_SEC:
+                        result[t] = price
+                        continue
+                rest_needed.append(t)
 
         if rest_needed:
             rest_prices = self._kis.fetch_prices(rest_needed)
             result.update(rest_prices)
+            if (
+                (in_grace or len(rest_needed) >= max(1, len(tickers) // 2))
+                and now - self._last_fallback_log_ts >= _FALLBACK_LOG_INTERVAL
+            ):
+                log.info(
+                    f"[WS] REST fallback {len(rest_needed)}/{len(tickers)}종목"
+                    f" (grace={in_grace})"
+                )
+                self._last_fallback_log_ts = now
 
         return result
 
@@ -213,11 +244,12 @@ class PriceMonitor:
                     consecutive_failures = 0  # 성공 → 실패 카운터 리셋
                     log.info(f"[WS] 연결 성공")
 
-                    # 재연결 시 stale 가격 캐시 클리어 → 새 WS 데이터 수신 전까지
-                    # get_prices가 REST fallback으로 신선한 가격 사용 (트레일링 SL high
-                    # 누락 방지)
+                    # 재연결 시 stale 가격 캐시 클리어 + grace window 설정
+                    # → 재구독 후 첫 틱 수신 전까지 get_prices가 REST fallback으로
+                    # 신선한 가격 사용 (트레일링 SL high 누락 방지)
                     with self._lock:
                         self._prices.clear()
+                        self._reconnect_ts = time.monotonic()
                         restore_list = list(self._subscribed)
                     for ticker in restore_list:
                         await self._send_subscribe(ws, ticker)
@@ -364,8 +396,9 @@ class PriceMonitor:
                 try:
                     price = float(fields[2])  # STCK_PRPR
                     if price > 0:
+                        now = time.monotonic()
                         with self._lock:
-                            self._prices[ticker] = price
+                            self._prices[ticker] = (price, now)
                 except (ValueError, IndexError):
                     pass
         else:
