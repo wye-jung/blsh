@@ -45,6 +45,9 @@ KRX_LOGIN_PW: Final = os.getenv("KRX_LOGIN_PW")
 USE_WEBSOCKET: Final = os.getenv("USE_WEBSOCKET", "").lower() in ("1", "true", "yes")
 SCAN_ETF: Final = os.getenv("SCAN_ETF", "").lower() in ("1", "true", "yes")
 
+_kis_rate_limit_cps_raw = os.getenv("KIS_RATE_LIMIT_CPS", "").strip()
+KIS_RATE_LIMIT_CPS: Final = int(_kis_rate_limit_cps_raw) if _kis_rate_limit_cps_raw else None
+
 _missing = [
     k
     for k, v in {

@@ -80,6 +80,9 @@ _DEBUG = False
 _isPaper = False
 _smartSleep = 0.1
 
+# EGW00201(rate limit) 누적 카운터 — 운영 중 유량 위반 빈도 관측용
+_egw00201_count = 0
+
 # 기본 헤더값 정의
 _base_headers = {
     "Content-Type": "application/json",
@@ -477,10 +480,12 @@ def _url_fetch(
 
     def backoff_sleep(attempt):
         """EGW00201 rate limit 백오프: 0.5s, 1.0s, 1.5s 점진 대기."""
+        global _egw00201_count
+        _egw00201_count += 1
         wait = (attempt + 1) * 0.5
         print(
             f"[_url_fetch] rate limit (EGW00201) → {wait}s 대기 후 재시도"
-            f" ({attempt + 1}/{MAX_RETRIES})"
+            f" ({attempt + 1}/{MAX_RETRIES}) [누적 {_egw00201_count}회]"
         )
         time.sleep(wait)
 
