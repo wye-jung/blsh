@@ -1337,7 +1337,21 @@ def run():
         # ── 당일 결과 요약 (실제 체결가로 PnL 보정, 타임아웃 보호)
         try:
             if session_closed:
-                sell_fills = kis.get_sell_fills(today)
+                # 일시 API 오류 대비 재시도 (2초 간격 3회)
+                sell_fills = None
+                for attempt in range(1, 4):
+                    try:
+                        sell_fills = kis.get_sell_fills(today)
+                        if sell_fills:
+                            break
+                    except Exception as e:
+                        log.warning(
+                            f"  매도체결 조회 실패 ({attempt}/3): {e}"
+                        )
+                    if attempt < 3:
+                        time.sleep(2)
+                if sell_fills is None:
+                    sell_fills = {}
                 if sell_fills:
                     try:
                         query.update_sell_prices(today, sell_fills)

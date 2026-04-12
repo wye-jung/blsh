@@ -94,10 +94,11 @@ def _calc_score(flags: set, mode: str) -> int:
 # ─────────────────────────────────────────
 # 벡터화 신호 계산 (종목 1개, 전 기간)
 # ─────────────────────────────────────────
-def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
+def _compute_stock_signals(df: pd.DataFrame, ticker: str = "") -> pd.DataFrame:
     """종목 OHLCV 전체에 대해 매수 신호 벡터 계산.
 
     scanner.evaluate_buy() 와 동일한 15개 신호를 벡터화.
+    ticker: 데이터 품질 경고 로그용 (선택).
     """
     c = df["close"].astype(float)
     h = df["high"].astype(float)
@@ -212,6 +213,18 @@ def _compute_stock_signals(df: pd.DataFrame) -> pd.DataFrame:
     # 메타 컬럼 (나중에 entry_price / SL / TP 계산용)
     out["_atr"] = atr
     out["_close"] = c
+
+    # 데이터 품질 검증: warmup 이후(60일~) 핵심 메타 컬럼에 NaN 있으면 경고
+    # 시작부 NaN은 정상(MA60/RSI 등 lookback 미충족) → row 60 이후만 검사
+    if len(out) > 60:
+        tail = out.iloc[60:]
+        nan_atr = int(tail["_atr"].isna().sum())
+        nan_close = int(tail["_close"].isna().sum())
+        if nan_atr > 0 or nan_close > 0:
+            log.warning(
+                f"  [데이터 품질] {ticker or '?'}: warmup 이후 NaN — "
+                f"_atr={nan_atr} _close={nan_close} (총 {len(tail)}행)"
+            )
 
     for col in FLAG_ORDER:
         out[col] = out[col].fillna(False).astype(bool)
@@ -681,7 +694,7 @@ def _build(start_date: str, end_date: str, tag: str) -> OptCache:
         if len(df) < MACD_LONG + MACD_SIGNAL + 5:
             continue
         try:
-            stock_sigs[ticker] = _compute_stock_signals(df)
+            stock_sigs[ticker] = _compute_stock_signals(df, ticker=ticker)
         except Exception as e:
             if i < 3:  # 처음 3건만 로깅
                 log.warning(f"  신호 계산 실패 ({ticker}): {e}")
