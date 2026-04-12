@@ -27,6 +27,7 @@
 |------|------|
 | `KIS_APP_KEY`, `KIS_APP_SECRET` | KIS API 인증 |
 | `KIS_ENV` | `demo` (모의투자, 기본) / `real` (실전) |
+| `KIS_RATE_LIMIT_CPS` | (선택) REST API 초당 호출 상한 오버라이드. 미지정 시 기본값 사용 (실전 8, 모의 2) |
 | `USE_WEBSOCKET` | `1` -> WebSocket 체결가 / 그 외 -> REST 폴링 |
 | `DB_USER/PASSWORD/NAME/HOST/PORT` | PostgreSQL |
 | `KRX_LOGIN_ID`, `KRX_LOGIN_PW` | KRX 사이트 로그인 |
@@ -60,7 +61,32 @@ cancel_order(ticker, odno, qty)    # 주문 취소
 get_filled_price(ticker, odno, today)  # 체결가 조회
 ```
 
-Rate limit: 모의 2 calls/s / 실전 4 calls/s. 동시 호출 수 = `_API_CONCURRENCY = 2`.
+### Rate Limit (KIS 스펙: 실전 20/sec, 모의 2/sec — 계좌 단위)
+
+- **모듈 레벨 singleton `rate_limiter`** (kis_client.py) — scanner/trader/collector가 같은 프로세스에서 공유하여 합산 호출량 보장
+- **기본값**: 실전 `8 CPS` (125ms 간격, 스펙의 40%) / 모의 `2 CPS` (500ms 간격, 스펙 정확히 매칭)
+- **동시 호출 수**: `_API_CONCURRENCY = 2` (세마포어)
+- **EGW00201 백오프**: `kis_auth._url_fetch()`에서 0.5s → 1.0s → 1.5s 점진 재시도. 누적 카운터(`_egw00201_count`) 로그 출력
+
+#### `KIS_RATE_LIMIT_CPS` — 언제 .env에 설정할까
+
+기본값으로 안전하게 운영되므로 **평상시에는 설정 불필요**. 다음 상황에서만 오버라이드:
+
+| 상황 | 권장값 | 근거 |
+|------|-------|------|
+| 평상시 | (미설정) | 기본값 실전 8 / 모의 2 |
+| EGW00201 누적이 잦음 (일일 리포트에 🟠/🔴) | `6` 또는 `4` | reactive 백오프에 의존하지 않고 proactive 하향 |
+| 실전 더 많은 유량 활용 필요 | `12` → `16` | 스펙 20까지 점진 확장, 관측 후 재조정 |
+| 장애/디버깅 (호출 패턴 격리 관측) | `1` | 호출 간격을 극단적으로 벌려 원인 분리 |
+
+운영 관측 방법:
+- 일일 로그 분석 리포트의 **건전성 섹션**에서 `API rate limit (EGW00201) N회 발생` 메시지 확인
+- `grep EGW00201 ~/.blsh/logs/blsh.log*`로 직접 확인 (누적값 포함)
+
+아이콘 기준:
+- `< 5회`: ⚠️ 경고 (기본값으로 충분)
+- `5~19회`: 🟠 주의 (CPS 하향 검토)
+- `≥ 20회`: 🔴 심각 (즉시 CPS 하향 필요)
 
 ## KIS 인증 흐름
 

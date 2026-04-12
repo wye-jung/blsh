@@ -83,6 +83,8 @@ _smartSleep = 0.1
 # EGW00201(rate limit) 누적 카운터 — 운영 중 유량 위반 빈도 관측용
 _egw00201_count = 0
 
+_log = logging.getLogger("wye.blsh.kis.kis_auth")
+
 # 기본 헤더값 정의
 _base_headers = {
     "Content-Type": "application/json",
@@ -483,7 +485,7 @@ def _url_fetch(
         global _egw00201_count
         _egw00201_count += 1
         wait = (attempt + 1) * 0.5
-        print(
+        _log.warning(
             f"[_url_fetch] rate limit (EGW00201) → {wait}s 대기 후 재시도"
             f" ({attempt + 1}/{MAX_RETRIES}) [누적 {_egw00201_count}회]"
         )

@@ -269,6 +269,29 @@ def _analyze_scanner(lines: list[dict]) -> dict:
 
 
 # ─────────────────────────────────────────
+# blsh.log — 시스템 전반 (KIS API rate limit 등)
+# ─────────────────────────────────────────
+def _analyze_system(lines: list[dict]) -> dict:
+    """blsh.log 라인 목록 → 시스템 건전성 분석."""
+    result = {
+        "egw00201_count": 0,  # KIS rate limit 백오프 누적
+        "egw00201_peak": 0,   # 단일 메시지 내 최대 누적값 (전체 누적 집계)
+    }
+
+    for line in lines:
+        msg = line["msg"]
+        if "EGW00201" in msg:
+            result["egw00201_count"] += 1
+            m = re.search(r"\[누적 (\d+)회\]", msg)
+            if m:
+                peak = int(m.group(1))
+                if peak > result["egw00201_peak"]:
+                    result["egw00201_peak"] = peak
+
+    return result
+
+
+# ─────────────────────────────────────────
 # DB trade_history 분석
 # ─────────────────────────────────────────
 def _analyze_db(date_str: str) -> dict:
@@ -299,7 +322,7 @@ def _analyze_db(date_str: str) -> dict:
 # ─────────────────────────────────────────
 # 리포트 생성
 # ─────────────────────────────────────────
-def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
+def _build_report(date_str: str, trader: dict, scanner: dict, db: dict, system: dict | None = None) -> str:
     """분석 결과 → 텔레그램 리포트 문자열."""
     d = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     env_label = "🚨real" if KIS_ENV == "real" else "📋demo"
@@ -395,6 +418,12 @@ def _build_report(date_str: str, trader: dict, scanner: dict, db: dict) -> str:
         code_str = ", ".join(f"{c}:{n}" for c, n in codes)
         parts.append(f"  API 에러: {code_str}")
 
+    if system and system.get("egw00201_count", 0) > 0:
+        count = system["egw00201_count"]
+        peak = system.get("egw00201_peak", 0)
+        icon = "🔴" if count >= 20 else ("🟠" if count >= 5 else "⚠️")
+        parts.append(f"  {icon} API rate limit (EGW00201) {count}회 발생 (누적 {peak})")
+
     if trader["warning_msgs"]:
         parts.append("  주요 경고:")
         for wm in trader["warning_msgs"][:3]:
@@ -430,19 +459,24 @@ def analyze(date_str: str | None = None):
     date_suffix = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     trader_log = LOG_DIR / f"trader.log.{date_suffix}"
     scanner_log = LOG_DIR / f"scanner.log.{date_suffix}"
+    blsh_log = LOG_DIR / f"blsh.log.{date_suffix}"
 
     if date_str == dtutils.today():
         if not trader_log.exists():
             trader_log = LOG_DIR / "trader.log"
         if not scanner_log.exists():
             scanner_log = LOG_DIR / "scanner.log"
+        if not blsh_log.exists():
+            blsh_log = LOG_DIR / "blsh.log"
 
     log.info(f"[로그 분석] 날짜={date_str}")
     log.info(f"  trader: {trader_log}  (존재: {trader_log.exists()})")
     log.info(f"  scanner: {scanner_log}  (존재: {scanner_log.exists()})")
+    log.info(f"  blsh: {blsh_log}  (존재: {blsh_log.exists()})")
 
     trader_lines = _parse_log_file(trader_log, date_str)
     scanner_lines = _parse_log_file(scanner_log, date_str)
+    blsh_lines = _parse_log_file(blsh_log, date_str)
 
     if not trader_lines and not scanner_lines:
         log.info(f"[로그 분석] {date_str} 로그 없음 → 리포트 미발송")
@@ -450,9 +484,10 @@ def analyze(date_str: str | None = None):
 
     trader_result = _analyze_trader(trader_lines)
     scanner_result = _analyze_scanner(scanner_lines)
+    system_result = _analyze_system(blsh_lines)
     db_result = _analyze_db(date_str)
 
-    report = _build_report(date_str, trader_result, scanner_result, db_result)
+    report = _build_report(date_str, trader_result, scanner_result, db_result, system_result)
 
     print(report)
     messageutils.send_message(report)
