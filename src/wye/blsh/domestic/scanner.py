@@ -111,6 +111,7 @@ from wye.blsh.domestic.config import (
     DISQUALIFY_FLAGS,
 )
 from wye.blsh.database.models import TradeCandidates, TradeSupplySnap
+from wye.blsh.domestic.kis_client import rate_limiter as _kis_rate_limiter
 from wye.blsh.common import dtutils
 from wye.blsh.common.env import KIS_ENV, SCAN_ETF
 from wye.blsh import new_logger
@@ -650,6 +651,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
             log.info(f"[수급 가집계] {len(targets)}종목 추정가집계 조회 ({snap_time})")
             for row in targets:
                 t = row["ticker"]
+                _kis_rate_limiter.wait()
                 frgn, orgn = fetch_investor_estimate(t)
                 if frgn or orgn:
                     sup = supply_db[t]
@@ -686,6 +688,7 @@ def enrich_with_db(results: list, base_date: str) -> list:
         log.debug(f"  DB 미보유 {len(missing)}종목 → KIS API fallback")
         try:
             for row in missing:
+                _kis_rate_limiter.wait()
                 fl, ol = fetch_investor_daily(
                     row["ticker"], base_date, n_days=5, market=row["market"]
                 )
@@ -1034,6 +1037,7 @@ def _verify_tradable(df: pd.DataFrame) -> pd.DataFrame:
     for _, row in df.iterrows():
         ticker = row["ticker"]
         try:
+            _kis_rate_limiter.wait()
             result = ds.search_stock_info(prdt_type_cd="300", pdno=ticker)
             if result is None or result.empty:
                 continue
