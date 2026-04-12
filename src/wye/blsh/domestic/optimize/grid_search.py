@@ -108,13 +108,14 @@ class Stats:
     def metric(self) -> float:
         """최적화 지표: 시간 가중 Sharpe-like 지표.
 
-        최근 거래에 더 높은 가중치를 부여한 (w_avg / w_std) × sqrt(trades).
-        가중치 합이 0이면 균등 가중 fallback.
+        최근 거래에 더 높은 가중치를 부여한 (w_avg / w_std) × sqrt(min(trades, MAX_TRADES)).
+        거래 수 보상은 MAX_TRADES에서 포화되어 거래 수 인플레이션을 방지.
         30건 미만은 통계 무의미로 제외.
         """
         if self.trades < 30:
             return -9999
         import math
+        n = min(self.trades, MAX_TRADES)
         if self.w_sum > 0:
             w_avg = self.w_total_ret / self.w_sum
             w_var = self.w_ret_sq / self.w_sum - w_avg ** 2
@@ -123,8 +124,8 @@ class Stats:
             w_avg = self.avg_ret
             w_std = self.ret_std
         if w_std <= 0:
-            return w_avg * math.sqrt(self.trades)
-        return (w_avg / w_std) * math.sqrt(self.trades)
+            return w_avg * math.sqrt(n)
+        return (w_avg / w_std) * math.sqrt(n)
 
 
 # ─────────────────────────────────────────
@@ -751,6 +752,7 @@ def recalc_cache_scores(cache: OptCache, scores_mom: dict, scores_rev: dict):
 # 그리드 정의
 # ─────────────────────────────────────────
 HALF_LIFE: float = 120  # 시간 가중 반감기 (일 수 기준 인덱스)
+MAX_TRADES: int = 2000  # metric의 sqrt(trades) 보상 cap (거래 수 인플레이션 방지)
 
 GRID = {
     "invest_min_score": [9, 10, 11, 12, 13],

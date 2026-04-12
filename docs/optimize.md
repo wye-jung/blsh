@@ -26,10 +26,12 @@
 ### 최적화 지표
 
 ```
-metric = (weighted_avg_ret / weighted_std) x sqrt(trades)
+metric = (weighted_avg_ret / weighted_std) x sqrt(min(trades, MAX_TRADES))
 ```
 시간 가중 Sharpe 지표. half-life=120 거래일로 최근 거래에 높은 가중치 부여.
-30건 미만은 통계 무의미로 제외 (-9999). std=0이면 `weighted_avg_ret x sqrt(trades)` fallback.
+30건 미만은 통계 무의미로 제외 (-9999). std=0이면 `weighted_avg_ret x sqrt(min(trades, MAX_TRADES))` fallback.
+
+**`MAX_TRADES = 2000`**: 거래 수 보상 cap. 2년 484일 기준 일 4건 수준에서 포화시켜, 옵티마이저가 플래그 가중치를 인플레이션시켜 거래 수를 늘리는 방향으로 치우치지 않도록 방지. Sharpe(avg/std)는 그대로 최적화되므로 거래 품질 최적화는 손상 없음.
 
 ### GRID 범위
 
