@@ -393,9 +393,19 @@ class KISClient:
         return None
 
     def cancel_order(
-        self, ticker: str, odno: str, qty: int, excg_id_dvsn_cd: str = "KRX"
+        self,
+        ticker: str,
+        odno: str,
+        qty: int,
+        excg_id_dvsn_cd: str = "KRX",
+        all_qty: bool = True,
     ) -> bool:
-        """주문 취소. 성공 시 True. excg_id_dvsn_cd는 발주 시의 거래소와 일치해야 함."""
+        """주문 취소. 성공 시 True. excg_id_dvsn_cd는 발주 시의 거래소와 일치해야 함.
+
+        Args:
+            qty: 취소 수량 (all_qty=True면 무시되고 전량 취소)
+            all_qty: True → 전량 취소 / False → qty만큼 부분 취소
+        """
         try:
             self.rate_limiter.wait()
             with _api_sem:
@@ -409,11 +419,14 @@ class KISClient:
                     rvse_cncl_dvsn_cd="02",
                     ord_qty=str(qty),
                     ord_unpr="0",
-                    qty_all_ord_yn="Y",
+                    qty_all_ord_yn="Y" if all_qty else "N",
                     excg_id_dvsn_cd=excg_id_dvsn_cd,
                 )
             if df is not None and not df.empty:
-                log.info(f"  🚫 주문취소: {ticker}  no={odno}  [{excg_id_dvsn_cd}]")
+                mode = "전량" if all_qty else f"{qty}주"
+                log.info(
+                    f"  🚫 주문취소: {ticker}  no={odno}  {mode}  [{excg_id_dvsn_cd}]"
+                )
                 return True
             log.warning(f"  주문 취소 응답 없음 ({ticker} no={odno})")
             return False

@@ -213,13 +213,16 @@ class PriceMonitor:
                     consecutive_failures = 0  # 성공 → 실패 카운터 리셋
                     log.info(f"[WS] 연결 성공")
 
-                    # 기존 구독 복원 (재연결 시)
+                    # 재연결 시 stale 가격 캐시 클리어 → 새 WS 데이터 수신 전까지
+                    # get_prices가 REST fallback으로 신선한 가격 사용 (트레일링 SL high
+                    # 누락 방지)
                     with self._lock:
+                        self._prices.clear()
                         restore_list = list(self._subscribed)
                     for ticker in restore_list:
                         await self._send_subscribe(ws, ticker)
                     if restore_list:
-                        log.info(f"[WS] {len(restore_list)}종목 재구독 완료")
+                        log.info(f"[WS] {len(restore_list)}종목 재구독 완료 (가격 캐시 클리어)")
 
                     # 수신 루프 (+ 커맨드 처리)
                     await self._receive_loop(ws)

@@ -119,6 +119,7 @@ class Position:
     po_type: str = ""
     excg_cd: str = "KRX"  # 매수 시 거래소 (KRX/NXT)
     sell_fail_count: int = 0  # 연속 매도 실패 횟수 (잔고 재확인 트리거)
+    overdue_fail_count: int = 0  # 기간초과 청산 누적 실패 횟수 (5회 초과 시 수동 개입 대기)
     high_since_entry: float = 0.0  # 진입 이후 최고가 (트레일링 SL 기준)
 
 
@@ -214,6 +215,7 @@ def _sell_market(
 
 
 _SELL_FAIL_BALANCE_CHECK = 3  # 연속 N회 매도 실패 시 KIS 잔고 재확인
+OVERDUE_MAX_RETRIES = 5  # 기간초과 청산 최대 재시도 횟수 (초과 시 수동 개입 대기)
 
 
 def _recover_odno(kis: KISClient, ticker: str, qty: int, today: str) -> str | None:
@@ -788,7 +790,7 @@ def _check_pending_orders(
                 if po.odno == "UNKNOWN":
                     log.warning(f"  부분체결 잔량 취소 불가 (odno 미확인): {ticker}")
                 elif not kis.cancel_order(
-                    ticker, po.odno, po.qty - actual_qty, po.excg_cd
+                    ticker, po.odno, po.qty - actual_qty, po.excg_cd, all_qty=False
                 ):
                     log.warning(
                         f"  부분체결 잔량 취소 실패: {ticker} (체결분 {actual_qty}주로 포지션 생성)"
@@ -1144,10 +1146,12 @@ def run():
 
             # ── 0-2. 기간초과 청산 (유령 체크 후 실행, 슬로우 틱 간격 재시도)
             if krx_open and not overdue_done and is_slow_tick:
+                # 5회 초과 실패한 종목은 자동 재시도 중단 (수동 개입 대기)
                 overdue = [
                     t
                     for t, p in list(positions.items())
                     if p.expiry_date and today > p.expiry_date
+                    and p.overdue_fail_count < OVERDUE_MAX_RETRIES
                 ]
                 if overdue:
                     log.info(f"[기간초과 청산] {len(overdue)}종목 시도")
@@ -1164,9 +1168,21 @@ def run():
                         ):
                             session_closed[ticker] = positions.pop(ticker)
                         else:
-                            log.warning(
-                                f"  기간초과 청산 실패: {ticker} → 30초 후 재시도"
-                            )
+                            pos.overdue_fail_count += 1
+                            if pos.overdue_fail_count >= OVERDUE_MAX_RETRIES:
+                                msg = (
+                                    f"🚨 기간초과 청산 {OVERDUE_MAX_RETRIES}회 실패: "
+                                    f"{ticker} {pos.name} (만기 {pos.expiry_date})"
+                                    f" → 자동 재시도 중단, 수동 개입 필요"
+                                    f" (거래정지/관리종목 가능성)"
+                                )
+                                log.critical(msg)
+                                messageutils.send_message(msg)
+                            else:
+                                log.warning(
+                                    f"  기간초과 청산 실패 ({pos.overdue_fail_count}/{OVERDUE_MAX_RETRIES}): "
+                                    f"{ticker} → 30초 후 재시도"
+                                )
                     dirty = True
                     monitor.sync_subscriptions(list(positions.keys()))
                 # 미청산 기간초과 종목이 남아있으면 다음 슬로우 틱에서 재시도
