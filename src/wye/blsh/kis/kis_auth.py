@@ -287,7 +287,8 @@ def auth(svr="prod", product=_cfg["my_prod"], url=None):
 # 프로그램 실행시 _last_auth_time에 저장하여 유효시간 체크, 유효시간 만료시 토큰 발급 처리
 def reAuth(svr="prod", product=_cfg["my_prod"]):
     n2 = datetime.now()
-    if (n2 - _last_auth_time).seconds >= 86400:  # 유효시간 1일
+    # total_seconds() 사용: .seconds는 days 무관 나머지(0~86399)만 반환하여 1일 경과 판단 실패
+    if (n2 - _last_auth_time).total_seconds() >= 86400:  # 유효시간 1일
         auth(svr, product)
 
 
@@ -597,7 +598,8 @@ def auth_ws(svr="prod", product=_cfg["my_prod"]):
 
 def reAuth_ws(svr="prod", product=_cfg["my_prod"]):
     n2 = datetime.now()
-    if (n2 - _last_auth_time).seconds >= 86400:
+    # total_seconds() 사용: .seconds는 days 무관 나머지만 반환 (reAuth와 동일 버그 수정)
+    if (n2 - _last_auth_time).total_seconds() >= 86400:
         auth_ws(svr, product)
 
 
